@@ -28,7 +28,7 @@ already in place, so new semiconductors reuse it rather than reinventing it.
 | 3 | Instrumentation | Oscilloscope (probe nodes, live multi-trace) + sine source to drive it | Frequency-response test + UI capture | ✅ done |
 | 4 | Analyses | AC small-signal sweep + Bode plot (magnitude & phase) | RC/RLC transfer-function checks | ✅ done |
 | 5 | Persistence & sharing | Save/load circuits as JSON, shareable URLs, named example gallery | Round-trip serialize tests | ✅ done |
-| 6 | Cross-platform packaging | TypeScript port, Capacitor (iOS/Android), Tauri (desktop), PWA offline | Per-platform launch + touch tests | ✅ web/PWA done; native launches pending |
+| 6 | Cross-platform packaging | TypeScript port, Capacitor (iOS/Android), Tauri (desktop), PWA offline | Per-platform launch + touch tests | ✅ web/PWA + desktop launched, Android packaged; iOS pending |
 | 7 | Differentiators | "Show the math" learning mode, MCU co-sim, AI circuit assistant | Feature-specific | |
 
 ## Phase 1 — what was just delivered (reference implementation)
@@ -222,11 +222,30 @@ scrolling strip, inspector along the bottom, canvas full-width), the header
 orders Run and Bode first so the primary action is never the thing scrolled
 off-screen, and `100dvh` keeps mobile browser chrome from cropping the canvas.
 
-**Remaining in this phase.** Only the native launches — a Tauri desktop window
-and iOS/Android via Capacitor. Each needs a toolchain (Rust ~1.5 GB, Xcode
-~15 GB, Android Studio ~10 GB) plus a device or simulator to mean anything.
-Neither the toolchains nor the disk space were available here. The web/PWA
-target is done and verified, on desktop and phone viewports alike.
+**Desktop (Tauri) — built and launched.** The desktop target had never been
+compiled, and it could not have been: `tauri.conf.json` pointed its bundle icon
+at `icons/icon.png` while `src-tauri/icons/` did not exist, so the build failed
+before touching Rust. The icon set is now generated from the app's own
+`public/icon.svg`. On macOS, cargo builds the release binary, Tauri bundles
+`Zuri.app`, and the app launches: registered as `com.zuri.livecircuit`, resident
+at ~88 MB, with a WebKit content process — the webview really loaded the
+simulator rather than opening an empty shell.
+
+**Android (Capacitor) — packaged.** Capacitor was pinned at core 6 with no
+platform packages at all, so `cap add` failed outright on a peer conflict. The
+stack is now on **Capacitor 7**: v8 requires Node ≥ 22 (this toolchain is on
+20), and v6 predates the target-SDK level Google Play now requires. Doing that
+upgrade before any native project existed cost no migration at all. The Android
+project scaffolds, `cap sync` embeds the production web build, and Gradle
+produces a 3.9 MB `app-debug.apk` whose manifest reads `com.zuri.livecircuit`
+at **targetSdk 35** with the real JS bundle inside. Building needs a JDK 21
+specifically — the Android Gradle plugin rejects newer JDKs.
+
+**Remaining in this phase.** (1) Running the Android APK on a device or
+emulator — the APK is verified correct but has not been launched; that needs a
+plugged-in phone or an emulator system image. (2) iOS, which needs CocoaPods and
+full Xcode (~15 GB, Apple ID); neither is installed here and both are the
+developer's own install to make.
 
 ## Phase 7 — where you actually differentiate
 

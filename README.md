@@ -64,23 +64,46 @@ npm run preview    # serve the production build
 **Web (PWA).** `npm run build` produces an installable, offline-capable PWA in
 `dist/`. Deploy `dist/` to any static host (GitHub Pages, Netlify, Vercel).
 
-**Desktop (Tauri).** Requires the Rust toolchain.
+**Desktop (Tauri).** Requires the Rust toolchain (`rustup`). Verified on macOS —
+`Zuri.app` builds and launches with the simulator running inside it.
 
 ```bash
 npm run tauri dev      # develop in a native window
 npm run tauri build    # produce native installers (.dmg/.msi/.deb/AppImage)
 ```
 
-**Mobile (Capacitor).** Requires Xcode (iOS) and/or Android Studio.
+The bundle icons in `src-tauri/icons/` are generated from `public/icon.svg`. To
+regenerate them, render that SVG to a 1024×1024 PNG and run
+`npx tauri icon <file>.png`.
+
+**Mobile (Capacitor 7).** Requires a JDK 21 and the Android SDK (Android
+Studio, or the command-line tools) for Android; Xcode and CocoaPods for iOS.
+Android is verified: `assembleDebug` produces a 3.9 MB APK
+(`com.zuri.livecircuit`, targetSdk 35) with the web build embedded.
 
 ```bash
 npm run build
-npm run cap:add:ios        # once
 npm run cap:add:android    # once
+npm run cap:add:ios        # once (needs CocoaPods)
 npm run cap:sync           # after each web build
-npx cap open ios           # open in Xcode
 npx cap open android       # open in Android Studio
+npx cap open ios           # open in Xcode
 ```
+
+Building Android from the command line needs both env vars set — the Gradle
+project resolves the SDK from `ANDROID_HOME`, and the Android Gradle plugin
+wants a JDK 21 (a newer JDK will fail):
+
+```bash
+export ANDROID_HOME="$HOME/Library/Android/sdk"
+export JAVA_HOME=/opt/homebrew/opt/openjdk@21   # macOS/Homebrew
+cd android && ./gradlew assembleDebug           # -> app/build/outputs/apk/debug/
+```
+
+> Capacitor is pinned to 7.x deliberately: 8.x requires Node ≥ 22, and 6.x
+> predates the target-SDK level Google Play now requires. The generated
+> `android/` and `ios/` directories are gitignored — Capacitor recreates them
+> from `capacitor.config.ts`.
 
 ## Status
 
