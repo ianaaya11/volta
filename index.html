@@ -300,10 +300,24 @@
           members' work. Everything in the editor keeps working without an account.</p>
         <div class="field"><label>Email</label><input id="authEmail" type="email" autocomplete="email" /></div>
         <div class="field"><label>Password</label><input id="authPassword" type="password" autocomplete="current-password" /></div>
+        <button class="linkbtn" id="authForgot">Forgot your password?</button>
         <div id="authStatus"></div>
         <div class="sheetfoot">
           <button class="btn ghost" id="authSignUp">Create account</button>
           <button class="btn primary" id="authSignIn">Sign in</button>
+        </div>
+      </div>
+
+      <!-- Shown only when the page was opened from a reset email. The token is
+           in the URL fragment and Supabase has already turned it into a
+           short-lived session by the time this appears. -->
+      <div id="authRecovery" hidden>
+        <p class="empty">Choose a new password for <b id="authRecoveryWho"></b>.</p>
+        <div class="field"><label>New password — at least 8 characters</label>
+          <input id="authNewPassword" type="password" autocomplete="new-password" /></div>
+        <div id="authRecoveryStatus"></div>
+        <div class="sheetfoot">
+          <button class="btn primary" id="authSetPassword">Set new password</button>
         </div>
       </div>
 

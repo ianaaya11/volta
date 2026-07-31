@@ -76,9 +76,24 @@ export function mountCommunity(hooks: CommunityHooks) {
     profile = await C.myProfile().catch(() => null);
     paintAccount(true, s.user.email ?? undefined);
   });
+  // A reset link produces a real session, so without this the modal would show
+  // the profile form to somebody whose only reason for being here is that they
+  // cannot get in.
+  let recovering = false;
+
   // Set when the open document came from someone else's design, so publishing
   // it records the lineage instead of quietly presenting it as original work.
   let forkedFrom: string | null = null;
+
+  // Arriving from a reset email. The SDK has already exchanged the fragment for
+  // a session by the time this module loads, so all that is left is to put the
+  // right form in front of the member. Checked before anything else touches the
+  // hash, because the handler clears it.
+  if (C.isRecoveryLink()) {
+    recovering = true;
+    el('authModal').hidden = false;
+    void refreshAccount();
+  }
 
   const say = (id: string, msg: string, kind: 'good' | 'bad' | '' = '') => {
     el(id).innerHTML = msg ? `<div class="${kind === 'bad' ? 'aibad' : kind === 'good' ? 'aigood' : 'empty'}">${esc(msg)}</div>` : '';
@@ -105,9 +120,21 @@ export function mountCommunity(hooks: CommunityHooks) {
 
   async function refreshAccount() {
     const s = await C.session();
-    el('authSignedOut').hidden = !!s;
-    el('authSignedIn').hidden = !s;
-    el('authTitle').textContent = s ? 'Your member profile' : 'Member account';
+    el('authRecovery').hidden = !recovering;
+    el('authSignedOut').hidden = recovering || !!s;
+    el('authSignedIn').hidden = recovering || !s;
+    el('authTitle').textContent = recovering ? 'Choose a new password'
+      : s ? 'Your member profile' : 'Member account';
+    if (recovering) {
+      el('authRecoveryWho').textContent = s?.user.email ?? 'your account';
+      // No session behind a recovery link means the link is spent — they expire
+      // in an hour and are single-use. Saying so beats letting them type a
+      // password and meet "Auth session missing" on submit.
+      say('authRecoveryStatus', s ? ''
+        : 'That reset link has expired or has already been used. '
+          + 'Close this and ask for a new one.', s ? '' : 'bad');
+      return;
+    }
     if (!s) { profile = null; paintAccount(false); return; }
     el('authWho').textContent = s.user.email ?? '';
     profile = await C.myProfile();
@@ -155,6 +182,35 @@ export function mountCommunity(hooks: CommunityHooks) {
         + 'follow the link we sent, then sign in.', 'good');
       await refreshAccount();
     } catch (e) { say('authStatus', msg(e), 'bad'); }
+  };
+
+  el('authForgot').onclick = async () => {
+    say('authStatus', 'Sending a reset link…');
+    try {
+      await C.requestPasswordReset(input('authEmail').value);
+      // Deliberately the same message whether or not that address has an
+      // account. Saying "no such member" turns this box into a way to find out
+      // who is registered.
+      say('authStatus', 'If that address has an account, a reset link is on its way. '
+        + 'Open it on this device — the link signs you in just long enough to '
+        + 'set a new password.', 'good');
+    } catch (e) { say('authStatus', msg(e), 'bad'); }
+  };
+
+  el('authSetPassword').onclick = async () => {
+    say('authRecoveryStatus', 'Saving…');
+    try {
+      await C.updatePassword(input('authNewPassword').value);
+      recovering = false;
+      input('authNewPassword').value = '';
+      // Drop the recovery token from the address bar. Leaving it there means a
+      // reload replays this screen, and it survives in history and in anything
+      // the member pastes the URL into.
+      history.replaceState(null, '', location.pathname + location.search);
+      await refreshAccount();
+      say('profStatus', 'Password changed. You are signed in.', 'good');
+      hooks.hint('Password changed — you are signed in.');
+    } catch (e) { say('authRecoveryStatus', msg(e), 'bad'); }
   };
 
   el('authSignOut').onclick = async () => {

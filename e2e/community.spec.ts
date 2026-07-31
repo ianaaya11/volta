@@ -84,3 +84,16 @@ test('the publish and gallery dialogs exist but are closed', async ({ page }) =>
     await expect(page.locator(id)).toBeHidden();
   }
 });
+
+test('a recovery link does nothing when the commons is switched off', async ({ page }) => {
+  // The password-reset form is driven by the URL fragment, and the fragment is
+  // the one thing an attacker controls for free. With no backend configured
+  // there is no account to reset, so the form must stay shut rather than
+  // appearing and failing.
+  await page.goto('/#access_token=whatever&type=recovery');
+  await expect(page.locator('#authModal')).toBeHidden();
+  await expect(page.locator('#authRecovery')).toBeHidden();
+  // And the editor is still the editor.
+  await page.click('#runBtn');
+  await expect(page.locator('#runBtn')).toHaveText(/Stop/);
+});

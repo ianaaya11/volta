@@ -406,6 +406,12 @@
   #aiOut{margin-top:14px;font-size:13px;line-height:1.65}
   .aitext{white-space:pre-wrap;color:var(--ink)}
   .aigood{color:var(--good)}
+  /* A button that reads as a link: the action is secondary enough that a real
+     button next to Sign in would compete with it. */
+  .linkbtn{background:none;border:0;padding:0;margin:-2px 0 10px;font:inherit;
+    font-size:12.5px;color:var(--accent);cursor:pointer;text-decoration:underline;
+    text-underline-offset:2px}
+  .linkbtn:hover{color:var(--ink)}
   .aibad{color:var(--bad)}
 
   /* ---- Community -------------------------------------------------------- */

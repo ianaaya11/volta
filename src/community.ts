@@ -90,6 +90,16 @@ export function validateProfile(p: {
   return null;
 }
 
+/** Supabase's own floor is 6; 8 is the floor here. The gap is deliberate — a
+ *  member who is told "at least 8" up front does not discover the rule from a
+ *  server error after typing something they liked. */
+export const PASSWORD_MIN = 8;
+
+export function validatePassword(p: string): string | null {
+  if (p.length < PASSWORD_MIN) return `Password must be at least ${PASSWORD_MIN} characters.`;
+  return null;
+}
+
 export function validateDesign(d: { title: string; description?: string | null }): string | null {
   const t = d.title.trim();
   if (!t || t.length > 80) return 'Title must be 1–80 characters.';
@@ -105,7 +115,48 @@ export async function session(): Promise<Session | null> {
 }
 
 export async function signUp(email: string, password: string) {
+  const bad = validatePassword(password);
+  if (bad) throw new Error(bad);
   const { error } = await (await client()).auth.signUp({ email, password });
+  if (error) throw new Error(error.message);
+}
+
+// ---- Forgotten passwords ---------------------------------------------------
+//  This is a schools tool. Forgotten passwords are not an edge case here, they
+//  are a weekly event, and without this every one of them is a message to a
+//  human who cannot help — nobody can read or reset a Supabase password from
+//  the dashboard.
+
+/** Where a reset link comes back to. The circuit hash is dropped deliberately:
+ *  the link should land on the app, not on whatever document happened to be
+ *  open in the tab that asked for it. */
+export function recoveryRedirect(): string {
+  return location.origin + location.pathname;
+}
+
+export async function requestPasswordReset(email: string) {
+  const trimmed = email.trim();
+  if (!trimmed) throw new Error('Enter your email address first.');
+  const { error } = await (await client()).auth
+    .resetPasswordForEmail(trimmed, { redirectTo: recoveryRedirect() });
+  if (error) throw new Error(error.message);
+}
+
+/** True when this page load came from a reset email.
+ *
+ *  Supabase's implicit flow hands the recovery token back in the URL fragment,
+ *  which is also where a shared circuit lives (`#c=...`). They cannot collide —
+ *  one is a `c=` prefix and the other a token set — but the check is written
+ *  against the token so a future share format cannot accidentally match. */
+export function isRecoveryLink(hash: string = location.hash): boolean {
+  return /(^|[#&])type=recovery(&|$)/.test(hash);
+}
+
+/** Set a new password for whoever the recovery session belongs to. */
+export async function updatePassword(next: string) {
+  const bad = validatePassword(next);
+  if (bad) throw new Error(bad);
+  const { error } = await (await client()).auth.updateUser({ password: next });
   if (error) throw new Error(error.message);
 }
 

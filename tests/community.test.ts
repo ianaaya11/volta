@@ -3,8 +3,8 @@
 // presentation rules that decide what about a member becomes public.
 import { describe, expect, it } from 'vitest';
 import {
-  LICENSE, LICENSE_NAME, HANDLE_RE, byline, configured, flag,
-  validateDesign, validateProfile,
+  LICENSE, LICENSE_NAME, HANDLE_RE, PASSWORD_MIN, byline, configured, flag,
+  isRecoveryLink, validateDesign, validatePassword, validateProfile,
 } from '../src/community';
 
 const ok = { handle: 'ada_k', display_name: 'Ada K.', country: 'GH', school: null, show_school: false };
@@ -64,6 +64,36 @@ describe('design validation', () => {
   it('caps the description', () => {
     expect(validateDesign({ title: 'ok', description: 'x'.repeat(2000) })).toBeNull();
     expect(validateDesign({ title: 'ok', description: 'x'.repeat(2001) })).toMatch(/description/i);
+  });
+});
+
+describe('password rules', () => {
+  it('holds the floor above Supabase\'s own', () => {
+    // Supabase accepts 6. Telling a member "at least 8" before they type is
+    // kinder than a server error after they have chosen something they liked.
+    expect(PASSWORD_MIN).toBeGreaterThanOrEqual(8);
+    expect(validatePassword('x'.repeat(PASSWORD_MIN))).toBeNull();
+    expect(validatePassword('x'.repeat(PASSWORD_MIN - 1))).toMatch(/8 characters/);
+    expect(validatePassword('')).toMatch(/password/i);
+  });
+});
+
+describe('recovery links', () => {
+  it('recognises the fragment a reset email comes back with', () => {
+    expect(isRecoveryLink('#access_token=abc&type=recovery&expires_in=3600')).toBe(true);
+    expect(isRecoveryLink('#type=recovery')).toBe(true);
+    expect(isRecoveryLink('#refresh_token=x&type=recovery')).toBe(true);
+  });
+
+  it('does not mistake a shared circuit for one', () => {
+    // Both live in the fragment. A share link that was ever read as a recovery
+    // link would put a password box in front of someone opening a circuit.
+    expect(isRecoveryLink('#c=N4IgLgngDgpiBcIYFsCGBrABAZgSwDYCmAtAMYD2ARgE4CuA')).toBe(false);
+    expect(isRecoveryLink('')).toBe(false);
+    expect(isRecoveryLink('#')).toBe(false);
+    expect(isRecoveryLink('#type=signup')).toBe(false);
+    // The token name has to be the whole parameter, not a substring of one.
+    expect(isRecoveryLink('#c=xxtype=recoveryxx')).toBe(false);
   });
 });
 
