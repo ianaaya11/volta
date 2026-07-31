@@ -237,9 +237,27 @@ stack is now on **Capacitor 7**: v8 requires Node ≥ 22 (this toolchain is on
 20), and v6 predates the target-SDK level Google Play now requires. Doing that
 upgrade before any native project existed cost no migration at all. The Android
 project scaffolds, `cap sync` embeds the production web build, and Gradle
-produces a 3.9 MB `app-debug.apk` whose manifest reads `com.anaaya.volta`
+produces a 4.1 MB `app-debug.apk` whose manifest reads `com.anaaya.volta`
 at **targetSdk 35** with the real JS bundle inside. Building needs a JDK 21
-specifically — the Android Gradle plugin rejects newer JDKs.
+specifically — the Android Gradle plugin rejects newer JDKs, and the default
+`java` on this machine is 26:
+
+```sh
+JAVA_HOME=/opt/homebrew/opt/openjdk@21 \
+ANDROID_HOME=$HOME/Library/Android/sdk \
+  ./gradlew -p android assembleDebug
+```
+
+Both shells were regenerated when the app was renamed. `android/` and `ios/` are
+gitignored generated output, so the way to change the bundle identifier is to
+delete them and `npx cap add` again rather than to hand-edit the Gradle and
+Xcode files — editing in place leaves the identifier in four places and misses
+the Java package directory. Rebuilt and verified: the APK reports
+`com.anaaya.volta`, and `xcodebuild -sdk iphonesimulator` produces an `App.app`
+with `CFBundleIdentifier = com.anaaya.volta` and the display name Volta. One
+cosmetic leftover: `CFBundleName` is still Capacitor's default `App`, which
+surfaces in a few system screens but never on the home screen — fixing it means
+editing generated files that the next `cap add` discards.
 
 **Android — running on hardware.** Installed and launched on a physical Pixel
 Fold (Android 16): the schematic renders, tools respond to touch, tapping a part
