@@ -313,6 +313,9 @@
     box-shadow:0 0 0 3px var(--accent-soft)}
   #railGroups{flex:1 1 auto;overflow-y:auto;overscroll-behavior:contain;padding:6px 0 16px}
   .railgroup{padding:0 8px}
+  /* The Blocks shelf before anything is on it: an empty grid reads as broken,
+     a sentence reads as an invitation. */
+  .railnote{margin:0;padding:2px 8px 8px;font-size:11px;line-height:1.5;color:var(--faint)}
   .grouphead{display:flex;align-items:center;gap:5px;width:100%;background:none;border:none;
     padding:8px 4px 5px;cursor:pointer;font-family:inherit;font-size:10px;font-weight:600;
     letter-spacing:.07em;text-transform:uppercase;color:var(--faint)}

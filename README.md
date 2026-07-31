@@ -114,6 +114,27 @@ reverts it like any other edit. Asking a question about the circuit on screen
 ("why is this transistor saturated?") just answers in text. The SDK is
 code-split, so the offline app doesn't download it unless you open the panel.
 
+## Blocks
+Select part of a circuit and press **Make a block** to wrap it up and reuse it
+as a single symbol. The terminals are worked out rather than asked for: a node
+that carries a pin of a selected part *and* a pin of an unselected one is, by
+definition, how that piece of circuit talks to the rest of it, so those nodes
+become the block's pins.
+
+Making a block is non-destructive — it defines the block and leaves your circuit
+exactly as it was. Replacing the selection in place would have to decide what
+becomes of every wire that crossed the boundary, and getting that wrong quietly
+rearranges someone's work.
+
+A block is not a new kind of thing to the solver. An instance is expanded at
+netlist time into exactly the devices its definition holds, with its internal
+nodes drawn from the same pool a relay's coil junction already uses. So a block
+cannot behave differently from the circuit it was made of, because it *is* that
+circuit; a block can contain anything the editor can draw, including another
+block; and the nodes inside it stay out of the node readout, which is meant to
+describe the schematic you drew. Definitions travel inside the saved document
+and the share link, so a circuit that uses a block is a circuit anyone can open.
+
 ## The commons — member accounts and shared designs
 
 Optional, and **off unless you configure it**. With no credentials in the build

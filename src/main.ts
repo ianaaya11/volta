@@ -31,7 +31,11 @@ export type PartType = 'R' | 'V' | 'I' | 'C' | 'L' | 'VS' | 'SQ' | 'D'
   // Digital. Every one of these is behavioural — see digital.ts — with
   // high-impedance inputs and driven outputs. LOGIC is the source that feeds
   // them: a switchable level, or a clock when given a frequency.
-  | 'LOGIC' | DigitalType;
+  | 'LOGIC' | DigitalType
+  // A block: a circuit the user built, wrapped up and reused as one symbol.
+  // It needs no engine support at all — see toDevices, which expands an
+  // instance into the devices its definition contains.
+  | 'SUB';
 /** Everything the tool rail can be set to: a part to place, or a mode. */
 type Tool = PartType | 'select' | 'wire' | 'probe' | 'delete';
 type Rot = 0 | 90 | 180 | 270;
@@ -55,6 +59,7 @@ interface Comp {
   k?: number;       // transformer coupling coefficient, 0..1
   // Mechanical state the editor integrates alongside the electrical solve —
   // the solver has no notion of either, so they live on the placed part.
+  sub?: string;     // SUB only: which definition in `subDefs` this instance is
   omega?: number;   // DC motor shaft speed, rad/s
   angle?: number;   // DC motor shaft angle, radians (for the animation only)
 }
@@ -257,16 +262,62 @@ function digitalPins(t:string):[number,number][]{
  *  is built at module load and calls this, which a `const` wouldn't survive. */
 function digitalWidth(t:string):number{ return DIGITAL[t].gate?4:6; }
 function pinsOf(c:Comp):Pt[]{
+  if(c.type==='SUB'){
+    const d=subOf(c);
+    // An instance whose definition has gone (a circuit opened without it) draws
+    // as an empty block rather than throwing. It has no pins, so it contributes
+    // nothing to the netlist and the rest of the schematic still runs.
+    if(!d) return [];
+    return subPinOffsets(d.pins.length).map(([ox,oy])=>{
+      const [rx,ry]=rotOff(ox,oy,rotOf(c)); return {x:c.x+rx,y:c.y+ry}; });
+  }
   const offs=PIN_OFFSETS[c.type];
   if(offs) return offs.map(([ox,oy])=>{ const [rx,ry]=rotOff(ox,oy,rotOf(c)); return {x:c.x+rx,y:c.y+ry}; });
   const [dx,dy]=DIR[rotOf(c)];
   return [{x:c.x,y:c.y},{x:c.x+dx*2,y:c.y+dy*2}];
 }
+// ---------------------------------------------------------------------------
+//  BLOCKS (subcircuits)
+// ---------------------------------------------------------------------------
+//  A block is a circuit saved under a name and dropped into another circuit as
+//  a single symbol. The definition keeps its parts in their own coordinate
+//  space, plus the grid points that became its terminals.
+//
+//  Nothing about this reaches the solver. An instance is expanded in toDevices
+//  into exactly the devices its definition holds, with its internal nodes
+//  allocated from the same pool that a relay's coil junction already uses. That
+//  means a block can contain anything the editor can draw — including another
+//  block — for free, and it means a block cannot behave differently from the
+//  circuit it was made of, because it *is* that circuit.
+interface SubPin { name:string; x:number; y:number }   // x,y in the definition's own space
+interface SubDef { name:string; pins:SubPin[]; comps:Comp[]; wires:Wire[] }
+let subDefs:Record<string,SubDef>={};
+
+const SUB_W=6;                       // block width in grid squares
+/** Where an instance's terminals sit: down the left side, then the right.
+ *  Deterministic, so a saved circuit's wires still land on the right pins. */
+function subPinOffsets(n:number):[number,number][]{
+  const left=Math.ceil(n/2), right=n-left;
+  const col=(k:number,count:number)=> count<=1?0:(2*k-(count-1));
+  const out:[number,number][]=[];
+  for(let i=0;i<left;i++)  out.push([0,col(i,left)]);
+  for(let i=0;i<right;i++) out.push([SUB_W,col(i,right)]);
+  return out;
+}
+function subOf(c:Comp):SubDef|null{ return (c.sub&&subDefs[c.sub])||null; }
+/** Half-height in grid squares. Driven by the busier side's pin count, so a
+ *  two-terminal block is a small box and a ten-terminal one is a tall one. */
+function subHeight(d:SubDef):number{
+  const n=d.pins.length, left=Math.ceil(n/2);
+  return Math.max(1,Math.max(left,n-left)-1);
+}
+
 interface TypeInfo { name:string; unit:string; def:number }
 // PNP and PMOS aren't on the tool rail, but a loaded or shared circuit can
 // contain them and the renderer draws them, so they need entries here too.
 const TYPES:Record<PartType,TypeInfo>={
   R:{name:'Resistor',unit:'Ω',def:1000},
+  SUB:{name:'Block',unit:'',def:0},
   VM:{name:'Voltmeter',unit:'Ω',def:1e8},
   AM:{name:'Ammeter',unit:'Ω',def:0},
   OM:{name:'Ohmmeter',unit:'Ω',def:0},
@@ -388,7 +439,70 @@ interface Netlist {
 // A part that expands into several devices names them `<id>:<suffix>`. That
 // keeps ids unique for the solver while staying recoverable, which is what
 // `pinCurrents` below relies on to animate current through the part.
+/** Expand a block instance into the devices its definition contains.
+ *
+ *  The definition's geometry is resolved exactly the way the top-level
+ *  schematic's is — the same union-find over pins and wire endpoints — and then
+ *  three kinds of internal node get three different fates:
+ *
+ *    a terminal      -> the node the instance is wired to on the outside
+ *    a ground symbol -> node 0, because there is one reference for the whole
+ *                       circuit and a block cannot have a private one
+ *    anything else   -> a fresh node from `alloc`, private to this instance
+ *
+ *  That last line is what lets the same block appear twice without its two
+ *  copies shorting together, and it is why ids are prefixed: two instances of a
+ *  block containing R1 must not both emit a device called R1.
+ *
+ *  Recursive by construction. A block containing a block hits this function
+ *  again through toDevices, with `alloc` threaded through, so nesting needs no
+ *  special case — only the depth guard below, which exists because a definition
+ *  that contains itself would otherwise recurse until the stack gives out. */
+function expandSub(c:Comp,outer:NodeId[],alloc:()=>NodeId,depth:number):Component[]{
+  const d=subOf(c);
+  if(!d||depth>SUB_MAX_DEPTH) return [];
+
+  // --- resolve the definition's own geometry ---
+  const parent=new Map<string,string>();
+  const key=(x:number,y:number)=>x+','+y;
+  const find=(k:string):string=>{ if(!parent.has(k)) parent.set(k,k);
+    while(parent.get(k)!==k){ parent.set(k,parent.get(parent.get(k)!)!); k=parent.get(k)!;} return k; };
+  for(const ic of d.comps) for(const p of pinsOf(ic)) find(key(p.x,p.y));
+  for(const w of d.wires){ find(key(w.x1,w.y1)); find(key(w.x2,w.y2));
+    parent.set(find(key(w.x1,w.y1)),find(key(w.x2,w.y2))); }
+
+  // --- decide what each internal node becomes on the outside ---
+  const mapped=new Map<string,NodeId>();
+  for(const ic of d.comps) if(ic.type==='GND') mapped.set(find(key(ic.x,ic.y)),0);
+  d.pins.forEach((pin,i)=>{
+    const root=find(key(pin.x,pin.y));
+    // A terminal wired to the block's own ground stays ground: the outside
+    // connection joins that node rather than replacing it.
+    if(!mapped.has(root)) mapped.set(root,outer[i]??alloc());
+  });
+  const nodeOf=(x:number,y:number):NodeId=>{
+    const r=find(key(x,y));
+    if(!mapped.has(r)) mapped.set(r,alloc());
+    return mapped.get(r)!;
+  };
+
+  const out:Component[]=[];
+  for(const ic of d.comps){
+    if(ic.type==='GND') continue;
+    const scoped={...ic,id:`${c.id}/${ic.id}`};
+    const ns=pinsOf(ic).map(p=>nodeOf(p.x,p.y));
+    out.push(...(ic.type==='SUB'
+      ? expandSub(scoped,ns,alloc,depth+1)
+      : toDevices(scoped,ns,alloc)));
+  }
+  return out;
+}
+/** A block that contains itself is a drawing, not a circuit. Refuse to unroll
+ *  it forever; the editor also refuses to create one (see makeBlock). */
+const SUB_MAX_DEPTH=8;
+
 function toDevices(c:Comp,nodes:NodeId[],alloc:()=>NodeId):Component[]{
+  if(c.type==='SUB') return expandSub(c,nodes,alloc,0);
   const pair:Pair=[nodes[0],nodes[1]];
   const triple:Triple=[nodes[0],nodes[1],nodes[2]];
   const quad:Quad=[nodes[0],nodes[1],nodes[2],nodes[3]];
@@ -635,7 +749,12 @@ function buildNetlist():Netlist{
   // ground symbol that connects to nothing just to satisfy the Run check.
   // An ohmmeter carries its own reference (see toDevices), so a bare resistor
   // and a meter is a complete, runnable measurement with no ground symbol.
-  const implicitGround=comps.some(c=>isDigital(c.type)||c.type==='MCU'||c.type==='LOGIC'||c.type==='OM');
+  // Looked for inside blocks too: wrapping a counter up as a block must not
+  // make the circuit stop running for want of a ground symbol it never needed.
+  const bringsGround=(c:Comp):boolean=>
+    isDigital(c.type)||c.type==='MCU'||c.type==='LOGIC'||c.type==='OM'
+    || (c.type==='SUB' && !!subOf(c)?.comps.some(bringsGround));
+  const implicitGround=comps.some(bringsGround);
   const hasGround=grounded.size>0||implicitGround;
   const nodeCount=next-1+(hasGround?1:0);
   return {netComps,nodeOf,nodeCount,grounded:hasGround};
@@ -739,6 +858,13 @@ function bodyExtent(c:Comp):Pt[]{
   if(isDigital(c.type)){
     const [dx,dy]=DIR[rotOf(c)], w=digitalWidth(c.type);
     return [{x:c.x+dx*w,y:c.y+dy*w}];
+  }
+  if(c.type==='SUB'){
+    const d=subOf(c); const h=(d?subHeight(d):1)+1;
+    const [dx,dy]=DIR[rotOf(c)];
+    // Both far corners, so Fit frames the whole body however it is rotated.
+    return [{x:c.x+dx*SUB_W-dy*h,y:c.y+dy*SUB_W+dx*h},
+            {x:c.x+dx*SUB_W+dy*h,y:c.y+dy*SUB_W-dx*h}];
   }
   // These two draw a pad above their single pin.
   if(c.type==='MCU'||c.type==='LOGIC') return [{x:c.x,y:c.y-1}];
@@ -1382,10 +1508,64 @@ function drawDigital(c:Comp,ps:Pt[],col:(x:number,y:number)=>string){
   ctx.textAlign='left';
 }
 
+/** A block: a labelled box with its terminals named on the inside edge.
+ *  Deliberately plain — it is the one symbol on the schematic that does not
+ *  stand for a known device, so it should look like a container rather than
+ *  imitate an IC. */
+function drawSub(c:Comp,ps:Pt[],col:(x:number,y:number)=>string){
+  const d=subOf(c);
+  // A little past the outermost pin, so the terminals sit on the body rather
+  // than on its corners.
+  const h=(d?subHeight(d):1)*GRID+16;
+  const w=SUB_W*GRID;
+  const [ux,uy]=DIR[rotOf(c)];
+  const ax=gx(c.x), ay=gy(c.y);
+  const cxp=ax+ux*w/2, cyp=ay+uy*w/2;
+  const halfW=w/2-GRID, halfH=h;
+
+  // Leads from each pin in to the body edge.
+  ctx.lineWidth=2.4;
+  const offs=d?subPinOffsets(d.pins.length):[];
+  ps.forEach((p,i)=>{
+    const [ox,oy]=offs[i];
+    const along=(ox===0?-1:1)*halfW;
+    const across=oy*GRID;
+    const e={x:cxp+ux*along-uy*across, y:cyp+uy*along+ux*across};
+    ctx.strokeStyle=col(p.x,p.y);
+    ctx.beginPath(); ctx.moveTo(gx(p.x),gy(p.y)); ctx.lineTo(e.x,e.y); ctx.stroke();
+  });
+
+  ctx.save();
+  ctx.translate(cxp,cyp); ctx.rotate(Math.atan2(uy,ux));
+  ctx.strokeStyle=T.ink; ctx.fillStyle=T.body; ctx.lineWidth=2;
+  ctx.beginPath();
+  if(ctx.roundRect) ctx.roundRect(-halfW,-halfH,halfW*2,halfH*2,6);
+  else ctx.rect(-halfW,-halfH,halfW*2,halfH*2);
+  ctx.fill(); ctx.stroke();
+
+  // Text upright whatever the rotation: a name read sideways is not read.
+  ctx.rotate(-Math.atan2(uy,ux));
+  ctx.fillStyle=T.ink; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font='600 12px ui-monospace, monospace';
+  ctx.fillText(d?d.name:'missing', 0, 0);
+  ctx.fillStyle=T.label; ctx.font='9px ui-monospace, monospace';
+  d?.pins.forEach((pin,i)=>{
+    const [ox,oy]=offs[i];
+    const along=(ox===0?-1:1)*halfW, across=oy*GRID;
+    // Rotate the anchor into screen space, then place the label just inside.
+    const px=ux*along-uy*across, py=uy*along+ux*across;
+    const inward=ox===0?1:-1;
+    ctx.textAlign = (ux*inward>0) ? 'left' : (ux*inward<0) ? 'right' : 'center';
+    ctx.fillText(pin.name, px+ux*inward*6, py+uy*inward*6 + (uy===0?0:0));
+  });
+  ctx.restore();
+}
+
 function drawComponent(c:Comp,nodeColor:NodeColor){
   const ps=pinsOf(c);
   ctx.lineWidth=2.4; ctx.lineJoin='round'; ctx.lineCap='round';
   const col=(x:number,y:number):string=> ((lastResult&&nodeColor)? nodeColor(x,y):null)??T.ink;
+  if(c.type==='SUB'){ drawSub(c,ps,col); return; }
   if(c.type==='GND'){
     const x=gx(c.x),y=gy(c.y);
     ctx.strokeStyle=col(c.x,c.y); ctx.beginPath();
@@ -1838,7 +2018,7 @@ function drawGhost(type:PartType,x:number,y:number){
 // ===========================================================================
 const PLACE_TYPES:PartType[]=['R','POT','V','VS','SQ','I','C','CP','L','XF','D','LED','LAMP','VM','AM','OM','WM',
   'SW','PB','PBNC','RLY','MOT','QN','QP','MN','MP','OA','E','G','F','H','GND','MCU',
-  'LOGIC',...(Object.keys(DIGITAL) as DigitalType[])];
+  'LOGIC','SUB',...(Object.keys(DIGITAL) as DigitalType[])];
 const isPlaceType=(t:Tool):t is PartType=>(PLACE_TYPES as string[]).includes(t);
 let mouse:{px:number;py:number;gx:number|null;gy:number|null}={px:0,py:0,gx:null,gy:null};
 let wireStart:Pt|null=null;
@@ -1962,6 +2142,95 @@ function selectAll(){
     +'<span class="kbd">Del</span> to remove them.');
 }
 function clearMulti(){ if(multi.length){ multi=[]; renderInspector(); } }
+
+// ---- Making a block -------------------------------------------------------
+/** Wrap the current selection up as a reusable block.
+ *
+ *  Deliberately non-destructive: it defines the block and leaves the circuit
+ *  exactly as it is. Replacing the selection in place would have to decide what
+ *  becomes of every wire that crossed the boundary, and getting that wrong
+ *  quietly rearranges somebody's circuit. Defining it and letting them place
+ *  instances where they want is both simpler and safer, and it is how a person
+ *  builds a library anyway: draw the thing once, then use it elsewhere.
+ *
+ *  The terminals are worked out rather than asked for. A node that carries a
+ *  pin of a selected part AND a pin of an unselected one is, by definition, how
+ *  this piece of circuit talks to the rest of it — so those nodes, and only
+ *  those, become the block's pins.
+ */
+function makeBlock(){
+  if(multi.length<1){ flashHint('Select the parts you want to wrap up first.'); return; }
+  const chosen=new Set(multi.map(c=>c.id));
+  const inside=comps.filter(c=>chosen.has(c.id));
+  const outside=comps.filter(c=>!chosen.has(c.id));
+
+  // Same union-find as buildNetlist: geometry decides what is one node.
+  const parent=new Map<string,string>();
+  const key=(x:number,y:number)=>x+','+y;
+  const find=(k:string):string=>{ if(!parent.has(k)) parent.set(k,k);
+    while(parent.get(k)!==k){ parent.set(k,parent.get(parent.get(k)!)!); k=parent.get(k)!;} return k; };
+  for(const c of comps) for(const p of pinsOf(c)) find(key(p.x,p.y));
+  for(const w of wires){ find(key(w.x1,w.y1)); find(key(w.x2,w.y2));
+    parent.set(find(key(w.x1,w.y1)),find(key(w.x2,w.y2))); }
+
+  // Every grid point each internal node covers, so the block can be rewired
+  // from the node structure rather than from whichever wires happened to be
+  // selected — that is what keeps two parts joined inside the block when the
+  // wire between them ran outside the selection.
+  const points=new Map<string,Pt[]>();
+  const note=(p:Pt)=>{ const r=find(key(p.x,p.y)); (points.get(r)??points.set(r,[]).get(r)!).push(p); };
+  for(const c of inside) for(const p of pinsOf(c)) note(p);
+
+  const innerRoots=new Set([...points.keys()]);
+  const outerRoots=new Set<string>();
+  for(const c of outside) for(const p of pinsOf(c)) outerRoots.add(find(key(p.x,p.y)));
+
+  const boundary=[...innerRoots].filter(r=>outerRoots.has(r));
+  if(!boundary.length){
+    flashHint('That selection does not touch the rest of the circuit, so the block '
+      + 'would have no terminals. Include the parts where it connects.');
+    return;
+  }
+
+  const name=(prompt('Name this block', 'Block')||'').trim();
+  if(!name) return;
+
+  // Normalise to the origin so an instance's internals do not carry the
+  // coordinates they happened to be drawn at.
+  const all=inside.flatMap(c=>[...pinsOf(c),{x:c.x,y:c.y}]);
+  const minX=Math.min(...all.map(p=>p.x)), minY=Math.min(...all.map(p=>p.y));
+  const sh=(p:Pt):Pt=>({x:p.x-minX,y:p.y-minY});
+
+  const def:SubDef={
+    name: name.slice(0,24),
+    pins: boundary.map((r,i)=>{ const p=sh(points.get(r)![0]);
+      return {name:`P${i+1}`,x:p.x,y:p.y}; }),
+    comps: inside.map(c=>({...c,x:c.x-minX,y:c.y-minY})),
+    // Copy the wires that live entirely on internal nodes, then join every
+    // point of each node into a star. The stars are what guarantee electrical
+    // connectivity; the copied wires are kept because a block may later be
+    // opened for editing and its original shape is worth not throwing away.
+    wires: [
+      ...wires.filter(w=>innerRoots.has(find(key(w.x1,w.y1)))&&innerRoots.has(find(key(w.x2,w.y2))))
+             .map(w=>({x1:w.x1-minX,y1:w.y1-minY,x2:w.x2-minX,y2:w.y2-minY})),
+      ...[...points.entries()].flatMap(([,ps])=>{
+        const a=sh(ps[0]);
+        return ps.slice(1).map(q=>{ const b=sh(q); return {x1:a.x,y1:a.y,x2:b.x,y2:b.y}; });
+      }),
+    ],
+  };
+
+  // A fresh key every time, so making a block can never redefine one that
+  // existing instances were drawn against.
+  const k=`sub${Date.now().toString(36)}${Math.floor(Math.random()*1e4).toString(36)}`;
+  subDefs[k]=def;
+  renderBlockRail();
+  pendingSub=k;
+  commit();
+  flashHint(`<b>${def.name}</b> is on the <b>Blocks</b> shelf with `
+    + `${def.pins.length} terminal${def.pins.length===1?'':'s'}. Your circuit is unchanged — `
+    + 'click the shelf entry to place a copy.');
+}
 
 /** Remove the multi-selection, and any wire left dangling by its removal. */
 function deleteMulti(){
@@ -2273,6 +2542,12 @@ stage.addEventListener('pointerdown',e=>{
     if(tool==='RLY') nc.on=false;
     if(tool==='MOT'){ nc.omega=0; nc.angle=0; }
     if(tool==='LOGIC') nc.on=false;
+    if(tool==='SUB'){
+      if(!pendingSub||!subDefs[pendingSub]){
+        flashHint('Pick a block from the <b>Blocks</b> shelf first.'); return;
+      }
+      nc.sub=pendingSub; delete nc.value;
+    }
     comps.push(nc);
     refreshMeta(); commit(); draw(); return;
   }
@@ -2635,9 +2910,11 @@ function renderInspector(){
         Drag any of them to move the whole selection — the wires follow and stay square.
         Shift-click a part to add or remove it.</div>
       <hr><div class="inspectoract">
+        <button class="btn primary" id="multiBlock">Make a block</button>
         <button class="btn danger" id="multiDel"><svg class="ic" viewBox="0 0 24 24"><use href="#i-trash"/></svg>Delete ${multi.length}</button>
         <button class="btn" id="multiNone">Deselect</button>
       </div>`;
+    document.getElementById('multiBlock')?.addEventListener('click',makeBlock);
     document.getElementById('multiDel')?.addEventListener('click',deleteMulti);
     document.getElementById('multiNone')?.addEventListener('click',()=>{ clearMulti(); draw(); });
     renderReadout(); return;
@@ -3080,6 +3357,9 @@ function flashHint(msg:string){ const h=el('hint'); h.innerHTML=msg; h.style.bor
 interface RailItem { t:Tool; label:string; full?:string }
 interface RailGroup { name:string; items:RailItem[] }
 const RAIL_GROUPS:RailGroup[]=[
+  // Filled at runtime from subDefs — see renderBlockRail. Declared here so it
+  // keeps its place in the rail order and its collapsed state like any other.
+  {name:'Blocks',items:[]},
   {name:'Tools',items:[
     {t:'select',label:'Select'},
     {t:'wire',label:'Wire',full:'Wire / connect pins'},
@@ -3198,6 +3478,44 @@ function buildRail(){
     sec.appendChild(grid);
     host.appendChild(sec);
   }
+  renderBlockRail();
+  updateRail();
+}
+
+/** Which definition the next placed block will be an instance of. The tool rail
+ *  can only say "SUB"; this says which one. */
+let pendingSub:string|null=null;
+
+/** Redraw the Blocks group from the definitions currently loaded. Called on
+ *  every change to subDefs — creating one, or opening a circuit that carries
+ *  some. */
+function renderBlockRail(){
+  const sec=document.querySelector<HTMLElement>('.railgroup[data-g="Blocks"]');
+  if(!sec) return;
+  const grid=sec.querySelector<HTMLElement>('.grid');
+  if(!grid) return;
+  const keys=Object.keys(subDefs);
+  // Nothing built yet: say how to build one rather than showing an empty shelf.
+  sec.classList.toggle('empty',keys.length===0);
+  grid.innerHTML='';
+  if(!keys.length){
+    const p=document.createElement('p');
+    p.className='railnote';
+    p.textContent='Select part of a circuit and choose "Make a block" to reuse it here.';
+    grid.appendChild(p);
+    return;
+  }
+  for(const k of keys){
+    const d=subDefs[k];
+    const b=document.createElement('button');
+    b.className='tool'; b.type='button'; b.dataset.t='SUB'; b.dataset.sub=k;
+    b.title=`${d.name} — ${d.pins.length} pin${d.pins.length===1?'':'s'}, `
+      + `${d.comps.length} part${d.comps.length===1?'':'s'}`;
+    b.dataset.search=`${d.name} block subcircuit`.toLowerCase();
+    b.innerHTML=miniSymbol('SUB')+`<span>${d.name}</span>`;
+    b.onclick=()=>{ pendingSub=k; setTool('SUB'); };
+    grid.appendChild(b);
+  }
   updateRail();
 }
 
@@ -3227,6 +3545,7 @@ function miniSymbol(t:Tool){
     case 'select': return s('<path d="M5 3l6 15 2-6 6-2z"/>');
     case 'wire': return s('<path d="M3 16h6a3 3 0 003-3 3 3 0 013-3h6"/>');
     case 'R': return s('<path d="M2 12h3l1.5-4 3 8 3-8 3 8 1.5-4H21"/>');
+    case 'SUB': return s('<rect x="6" y="5" width="12" height="14" rx="2"/><path d="M2 9h4M2 15h4M18 9h4M18 15h4"/>');
     case 'V': return s('<circle cx="12" cy="12" r="7"/><path d="M12 8v8M9 12h6"/>');
     case 'VS': return s('<circle cx="12" cy="12" r="7"/><path d="M8 12a2 2 0 014 0 2 2 0 004 0"/>');
     case 'SQ': return s('<circle cx="12" cy="12" r="7"/><path d="M7 14v-4h4v4h4v-4"/>');
@@ -3284,7 +3603,12 @@ function setTool(t:Tool){ tool=t; wireStart=null; wireExit=null; wireBox=null; u
   el('hint').innerHTML=hints[t]??`Click the grid to place a <b>${isPlaceType(t)?TYPES[t].name:t}</b>. Press <span class="kbd">R</span> to rotate.`;
   draw();
 }
-function updateRail(){ document.querySelectorAll<HTMLElement>('.tool').forEach(b=>b.classList.toggle('active',b.dataset.t===tool)); }
+function updateRail(){
+  // Every block shares the SUB tool, so which one is armed decides which tile
+  // lights up — otherwise picking one block highlights the whole shelf.
+  document.querySelectorAll<HTMLElement>('.tool').forEach(b=>b.classList.toggle('active',
+    b.dataset.t===tool && (b.dataset.t!=='SUB'||b.dataset.sub===pendingSub)));
+}
 
 // ---- Example circuits -----------------------------------------------------
 const GALLERY=[
@@ -3488,14 +3812,18 @@ function buildGallery(){
 // ===========================================================================
 // A circuit is fully described by its parts, wires and probes — nothing else
 // needs to be stored. Runtime state (the solver, animation) is rebuilt on load.
-interface SavedModel { v:number; comps:Comp[]; wires:Wire[]; probes?:Probe[]; sketch?:string }
+interface SavedModel { v:number; comps:Comp[]; wires:Wire[]; probes?:Probe[]; sketch?:string;
+  /** Block definitions travel with the document. A circuit that uses a block
+   *  and does not carry it is a circuit nobody else can open. */
+  subs?:Record<string,SubDef> }
 function serializeModel():SavedModel{
   return { v:1,
     comps: comps.map(c=>({...c})),
     wires: wires.map(w=>({...w})),
     probes: scopeProbes.map(p=>({x:p.x,y:p.y,color:p.color})),
     // The firmware is part of the design: save, open and share carry it too.
-    ...(sketch.trim()?{sketch}:{}) };
+    ...(sketch.trim()?{sketch}:{}),
+    ...(Object.keys(subDefs).length?{subs:JSON.parse(JSON.stringify(subDefs))}:{}) };
 }
 function applyModel(m:SavedModel){
   if(!m||!Array.isArray(m.comps)||!Array.isArray(m.wires)) throw new Error('not a Spark circuit');
@@ -3504,6 +3832,12 @@ function applyModel(m:SavedModel){
   wires=m.wires.map(w=>({...w}));
   scopeProbes=(m.probes||[]).map((p,i)=>({x:p.x,y:p.y,color:p.color||SCOPE_COLORS[i%SCOPE_COLORS.length]}));
   sketch=typeof m.sketch==='string'?m.sketch:'';
+  // Merged, not replaced. Opening a circuit that uses a block should not throw
+  // away the blocks already defined in this session — and a document that
+  // carries a definition is authoritative for that name, because its instances
+  // were drawn against it.
+  subDefs={...subDefs,...(m.subs&&typeof m.subs==='object'?m.subs:{})};
+  renderBlockRail();
   // rebuild the id counter so new parts never collide with loaded ones
   let mx=0; for(const c of comps){ const n=parseInt(String(c.id).replace(/\D/g,''),10); if(n>mx) mx=n; }
   uid=mx+1;
@@ -3736,7 +4070,10 @@ function loadRC(){
 }
 
 el('runBtn').onclick=()=>{ running?stopSim():startSim(); };
-el('clearBtn').onclick=()=>{ stopSim(); comps=[];wires=[];lastResult=null;selected=null; scopeProbes=[]; scopeBuf=null; bodeData=null; panelMode='scope'; refreshMeta(); commit(); renderInspector(); draw(); };
+// `multi` holds references to parts, so clearing the document without clearing
+// it leaves the inspector offering to delete two components that no longer
+// exist — and "Make a block" offering to wrap them up.
+el('clearBtn').onclick=()=>{ stopSim(); comps=[];wires=[];lastResult=null;selected=null; multi=[]; scopeProbes=[]; scopeBuf=null; bodeData=null; panelMode='scope'; refreshMeta(); commit(); renderInspector(); draw(); };
 el('bodeBtn').onclick=runBode;
 el('resetBtn').onclick=resetSim;
 el('fitBtn').onclick=fitView;
