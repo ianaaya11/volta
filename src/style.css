@@ -22,7 +22,10 @@
   header{grid-column:1/4;display:flex;align-items:center;gap:14px;
     padding:env(safe-area-inset-top,0px) calc(16px + env(safe-area-inset-right,0px)) 0 calc(16px + env(safe-area-inset-left,0px));
     background:var(--panel);border-bottom:1px solid var(--line)}
-  header .title{font-weight:700;letter-spacing:.5px;color:var(--accent)}
+  header .title{font-weight:700;letter-spacing:.5px;color:var(--accent);white-space:nowrap}
+  /* The toolbar has outgrown the wordmark on narrower desktops — drop the
+     branding before the controls start wrapping or getting cut off. */
+  @media (max-width:1500px){ header .title{display:none} }
   header .title b{color:var(--ink)}
   header .sep{flex:1}
   .btn{background:var(--panel2);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:7px 12px;cursor:pointer;font-size:13px;display:inline-flex;align-items:center;gap:6px}
@@ -63,6 +66,20 @@
   table.probes td:last-child{text-align:right;color:var(--accent2)}
   .kbd{font-family:ui-monospace,monospace;background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:0 5px;font-size:11px}
   .btn.active-toggle{border-color:var(--accent);color:var(--accent)}
+  /* ---- AI assistant sheet ------------------------------------------------ */
+  #aiModal{position:fixed;inset:0;background:rgba(6,9,14,.6);z-index:50;
+    display:flex;align-items:center;justify-content:center;padding:20px}
+  #aiModal[hidden]{display:none}
+  #aiModal .sheet{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    padding:18px;width:min(560px,100%);max-height:86vh;overflow-y:auto}
+  #aiModal h3{margin:0 0 12px;font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted)}
+  #aiModal textarea{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:6px;
+    color:var(--ink);padding:8px;font-size:13px;font-family:inherit;resize:vertical}
+  #aiModal textarea:focus{outline:none;border-color:var(--accent)}
+  #aiOut{margin-top:12px;font-size:13px;line-height:1.6}
+  .aitext{white-space:pre-wrap;color:var(--ink)}
+  .aigood{color:var(--good)}
+  .aibad{color:var(--bad)}
   /* ---- Show the math panel ---------------------------------------------- */
   .mathnote{font-size:11px;color:var(--muted);line-height:1.5;margin:10px 0 6px}
   /* Equations wrap rather than scroll: a term hidden off the right edge is a

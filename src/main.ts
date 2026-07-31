@@ -1,6 +1,11 @@
 import { Circuit } from './engine';
 import type { Component, NodeId, Pair, Solution, SolveTrace, Triple } from './engine';
 import { fmt, parseVal } from './format';
+// The assistant module pulls in the Anthropic SDK, which is several times the
+// size of the whole app. It is imported dynamically at the point of use so the
+// offline PWA doesn't pay for it on every load — only `import type` here, which
+// is erased at compile time.
+import type { AiCircuit } from './ai';
 import './style.css';
 
 //  PART 2 — SCHEMATIC MODEL + EDITOR
@@ -1538,6 +1543,84 @@ el('rotateBtn').onclick=()=>{ ghostRot=turn(ghostRot); if(selected){selected.rot
 el('saveBtn').onclick=saveFile;
 el('openBtn').onclick=openFile;
 el('shareBtn').onclick=shareURL;
+
+// ===========================================================================
+//  AI CIRCUIT ASSISTANT — UI wiring
+// ===========================================================================
+// A generated circuit goes through applyModel + commit like any other edit, so
+// ⌘Z undoes the assistant exactly the way it undoes a hand-placed part. That
+// matters more than it sounds: it's what makes trying a suggestion cheap.
+function applyAiCircuit(c:AiCircuit){
+  let n=1;
+  const comps:Comp[]=c.parts.map(p=>{
+    if(!(p.type in TYPES)) throw new Error(`Unknown part type "${p.type}".`);
+    const comp:Comp={id:p.type+(n++),type:p.type as PartType,x:p.x,y:p.y,rot:p.rot,value:p.value};
+    if(p.type==='VS'||p.type==='SQ'){
+      comp.amp=p.amp??1; comp.freq=p.freq??1000; comp.off=p.off??0;
+      if(p.type==='SQ') comp.duty=p.duty??0.5;
+    }
+    return comp;
+  });
+  applyModel({v:1,comps,wires:c.wires.map(w=>({...w})),probes:[]});
+  commit();
+  fitView();
+}
+
+// Key storage lives here rather than in ai.ts so that checking whether a key
+// exists doesn't drag the SDK chunk in.
+const AI_KEY='zuri.anthropic.key';
+const loadKey=()=>localStorage.getItem(AI_KEY)??'';
+const saveKey=(k:string)=>localStorage.setItem(AI_KEY,k.trim());
+const clearKey=()=>localStorage.removeItem(AI_KEY);
+
+const aiModal=el('aiModal');
+const aiOut=()=>el('aiOut');
+function aiRefreshMode(){
+  const has=!!loadKey();
+  el('aiKeySetup').hidden=has;
+  el('aiChat').hidden=!has;
+}
+function openAi(){
+  aiModal.hidden=false; aiRefreshMode();
+  (document.getElementById(loadKey()?'aiPrompt':'aiKeyInput') as HTMLElement|null)?.focus();
+}
+async function runAi(){
+  const prompt=(el('aiPrompt') as HTMLTextAreaElement).value.trim();
+  if(!prompt) return;
+  const btn=el('aiSend') as HTMLButtonElement;
+  btn.disabled=true; aiOut().innerHTML='<div class="empty">Thinking…</div>';
+  try{
+    const {askAssistant}=await import('./ai');     // loads the SDK chunk on first use
+    const reply=await askAssistant({key:loadKey(),prompt,circuit:serializeModel()});
+    if(reply.kind==='circuit'){
+      applyAiCircuit(reply.circuit);
+      aiOut().innerHTML=`<div class="aigood">Built it — press <b>Run</b> to simulate.
+        ⌘Z undoes this like any other edit.</div>
+        <div class="empty">${escapeHtml(reply.circuit.notes)}</div>`;
+    } else {
+      aiOut().innerHTML=`<div class="aitext">${escapeHtml(reply.text)}</div>`;
+    }
+  }catch(e){
+    // Surface the real failure — a wrong key, a rate limit and a malformed
+    // circuit need completely different responses from the user.
+    aiOut().innerHTML=`<div class="aibad">${escapeHtml(e instanceof Error?e.message:String(e))}</div>`;
+  }finally{ btn.disabled=false; }
+}
+const escapeHtml=(s:string)=>s.replace(/[&<>"]/g,c=>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c] as string));
+
+el('aiBtn').onclick=openAi;
+el('aiClose').onclick=()=>{ aiModal.hidden=true; };
+aiModal.onclick=e=>{ if(e.target===aiModal) aiModal.hidden=true; };
+el('aiKeySave').onclick=()=>{
+  const v=(el('aiKeyInput') as HTMLInputElement).value.trim();
+  if(v){ saveKey(v); (el('aiKeyInput') as HTMLInputElement).value=''; aiRefreshMode(); }
+};
+el('aiForget').onclick=()=>{ clearKey(); aiOut().innerHTML=''; aiRefreshMode(); };
+el('aiSend').onclick=runAi;
+el('aiPrompt').addEventListener('keydown',e=>{
+  if((e as KeyboardEvent).key==='Enter'&&((e as KeyboardEvent).metaKey||(e as KeyboardEvent).ctrlKey)) runAi();
+});
 
 // ---- boot ----
 buildRail(); buildGallery(); setTool('select'); renderInspector();

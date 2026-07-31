@@ -17,6 +17,8 @@ spirit of EveryCircuit, but open and built on a from-scratch SPICE-style engine.
 - **Show the math** — press **∑ Math** to watch the solver work: the KCL
   equation at each node, the MNA matrix it actually inverts, the solution
   vector, and how Newton-Raphson converged — live, as the circuit runs.
+- **AI circuit assistant** — press **✨ Ask** to build, explain, or debug
+  circuits in plain language. Bring your own Anthropic API key (see below).
 - **AC / Bode analysis** — complex-valued sweep with magnitude & phase plots.
 - **Save / open / share** — circuits serialize to JSON and to shareable URLs.
 - **Touch-ready** — pointer-based input and a phone layout, so the same build
@@ -66,6 +68,23 @@ npm run typecheck  # tsc --noEmit, strict
 npm run build      # production build -> dist/
 npm run preview    # serve the production build
 ```
+
+## AI assistant
+
+Press **✨ Ask** and paste an [Anthropic API key](https://console.anthropic.com/).
+The app calls the Claude API directly from the browser, so it stays a static
+PWA with no backend and nothing to deploy or pay for per user.
+
+> **The key lives in this browser's `localStorage`,** which means any script
+> running on the page could read it. That's an acceptable trade for a personal
+> or self-hosted tool; it is *not* appropriate for a public deployment. If you
+> host this for other people, move the call behind a small server-side proxy
+> holding one key, and drop `dangerouslyAllowBrowser` from `src/ai.ts`.
+
+Asking for a circuit replaces the canvas, and lands in the undo stack — ⌘Z
+reverts it like any other edit. Asking a question about the circuit on screen
+("why is this transistor saturated?") just answers in text. The SDK is
+code-split, so the offline app doesn't download it unless you open the panel.
 
 ## Ship to each platform
 

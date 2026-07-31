@@ -242,6 +242,46 @@ test.describe('show the math', () => {
   });
 });
 
+test.describe('AI assistant', () => {
+  // The network call needs a real API key, so these cover the parts that don't:
+  // the key-setup state machine, and that the SDK is not in the initial bundle.
+  test('asks for a key first, then shows the prompt box', async ({ page }) => {
+    await page.goto('/');
+    await page.evaluate(() => localStorage.removeItem('zuri.anthropic.key'));
+    await page.click('#aiBtn');
+
+    await expect(page.locator('#aiKeySetup')).toBeVisible();
+    await expect(page.locator('#aiChat')).toBeHidden();
+    // The storage trade-off is stated where the key is entered, not buried.
+    await expect(page.locator('#aiKeySetup')).toContainText('local storage');
+
+    await page.fill('#aiKeyInput', 'sk-ant-not-a-real-key');
+    await page.click('#aiKeySave');
+    await expect(page.locator('#aiChat')).toBeVisible();
+    await expect(page.locator('#aiKeySetup')).toBeHidden();
+
+    await page.click('#aiForget');
+    await expect(page.locator('#aiKeySetup')).toBeVisible();
+  });
+
+  test('closes on the backdrop and the close button', async ({ page }) => {
+    await page.goto('/');
+    await page.click('#aiBtn');
+    await expect(page.locator('#aiModal')).toBeVisible();
+    await page.click('#aiClose');
+    await expect(page.locator('#aiModal')).toBeHidden();
+  });
+
+  test('does not ship the Anthropic SDK in the initial bundle', async ({ page }) => {
+    const scripts: string[] = [];
+    page.on('request', r => { if (r.resourceType() === 'script') scripts.push(r.url()); });
+    await page.goto('/');
+    await expect(page.locator('#nodeCount')).toHaveText(/nodes/);
+    // The assistant chunk is code-split; loading the app must not fetch it.
+    expect(scripts.some(u => /\/ai-[A-Za-z0-9_-]+\.js$/.test(u))).toBe(false);
+  });
+});
+
 test.describe('square-wave source', () => {
   test('is on the rail and carries a duty cycle', async ({ page }) => {
     await page.goto('/');

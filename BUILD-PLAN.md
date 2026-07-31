@@ -325,6 +325,29 @@ stamps values like 7e-71, which are numerically zero and would otherwise imply
 a precision that isn't there), and the inspector widens to 400px in math mode
 because a matrix squeezed into 280px becomes a scrollbar.
 
+**AI circuit assistant ✅.** Build, explain and debug circuits from plain
+language. The user supplies their own Anthropic key, and the call goes directly
+from the browser to the API — which keeps the app a static PWA with no backend
+and no per-user cost. The trade-off is stated in the UI and the README: a key in
+`localStorage` is readable by anything on the page, so this suits a personal or
+self-hosted tool, not a public deployment (that wants a server-side proxy).
+
+Circuits come back through a **strict tool schema**, so the arguments are
+guaranteed to match the shape; what remains is semantic validation, and that is
+where the tests are. Model output is untrusted input: a circuit with an unknown
+part type, a non-numeric coordinate, or no ground is rejected with a message
+rather than being fed to the solver — a groundless circuit has no 0 V reference
+and would simulate as nonsense. Generated circuits are applied through the same
+`applyModel` + `commit` path as any edit, so ⌘Z undoes the assistant, which is
+what makes trying a suggestion cheap.
+
+The system prompt spells out the grid geometry — pin offsets per rotation, the
+three-terminal pin maps, a worked example — because a model that gets pin
+positions subtly wrong produces a circuit that *looks* right and simulates as
+disconnected junk. The SDK is code-split and imported at point of use: it is
+three times the size of the app, and the offline PWA shouldn't download it
+unless the panel is opened.
+
 ## Phase 7 — the rest
 
 With the fundamentals solid, invest in the things the incumbents don't have. A
