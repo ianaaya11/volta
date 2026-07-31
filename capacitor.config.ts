@@ -7,7 +7,7 @@ const config: CapacitorConfig = {
   appId: 'com.anaaya.volta',
   appName: 'Volta',
   webDir: 'dist',
-  backgroundColor: '#0c111a',
+  backgroundColor: '#f7f9fc',
   plugins: {
     // Android 15 (targetSdk 35) forces edge-to-edge, so the webview draws under
     // the status bar and the gesture pill. CSS env(safe-area-inset-*) does NOT
@@ -15,7 +15,7 @@ const config: CapacitorConfig = {
     // returns 0 for the status bar — so the insets have to be applied natively.
     // This plugin pads the webview by the real system-bar insets and paints the
     // bar area with the app's background.
-    EdgeToEdge: { backgroundColor: '#0c111a' },
+    EdgeToEdge: { backgroundColor: '#f7f9fc' },
   },
 };
 

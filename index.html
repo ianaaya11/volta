@@ -3,7 +3,10 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<meta name="theme-color" content="#0c111a" />
+<!-- Two, so the browser chrome and the splash follow the theme rather than
+     staying on the dark navy the app used before it had a light mode. -->
+<meta name="theme-color" content="#f7f9fc" media="(prefers-color-scheme: light)" />
+<meta name="theme-color" content="#1b1f27" media="(prefers-color-scheme: dark)" />
 <link rel="icon" href="./icon.svg" type="image/svg+xml" />
 <link rel="apple-touch-icon" href="./icon.svg" />
 <title>Volta — Live Circuit Simulator</title>

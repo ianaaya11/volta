@@ -1,0 +1,74 @@
+# Build Volta and publish it to GitHub Pages.
+#
+# The commons credentials are injected here rather than committed. The anon key
+# is public by design — it ships in the JavaScript either way — but a key in the
+# repository is a key that has to be rewritten out of history when it rotates,
+# so it lives in Settings → Secrets and variables → Actions.
+#
+# With the secrets unset the workflow still succeeds and deploys a working
+# offline editor with the community layer dead-code-eliminated. That is a
+# supported configuration, so a missing secret must not be a broken deploy.
+#
+# One-time setup:
+#   1. Settings → Pages → Source: GitHub Actions
+#   2. Settings → Secrets and variables → Actions → New repository secret:
+#        VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY
+#   3. Supabase → Authentication → URL Configuration: add the Pages URL to
+#      Redirect URLs, or password-reset links will bounce.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Let a running deploy finish rather than cancelling it — a half-published site
+# is worse than a slightly stale one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+
+      # Tests before deploy, not after. The unit suite pins itself to the
+      # unconfigured build, so it is unaffected by the secrets below.
+      - run: npm run typecheck
+      - run: npm test
+
+      - run: npm run build
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+
+      # Pages will not serve a path starting with an underscore unless told the
+      # site is not Jekyll. Vite does not emit one today, but this costs nothing
+      # and the failure mode is a silently missing asset.
+      - run: touch dist/.nojekyll
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

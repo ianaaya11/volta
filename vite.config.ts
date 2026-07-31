@@ -13,8 +13,11 @@ export default defineConfig({
         name: 'Volta — Live Circuit Simulator',
         short_name: 'Volta',
         description: 'Design and simulate analog circuits with real-time animation, a scope, and Bode analysis.',
-        theme_color: '#0c111a',
-        background_color: '#0c111a',
+        // A manifest gets one colour, and the app's default theme is light.
+        // These paint the splash screen an installed app shows before any of
+        // its own CSS has loaded; the old navy flashed dark and then went white.
+        theme_color: '#f7f9fc',
+        background_color: '#f7f9fc',
         display: 'standalone',
         orientation: 'any',
         icons: [

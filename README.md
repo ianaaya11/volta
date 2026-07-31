@@ -159,6 +159,24 @@ grants as well as policies — perfect policies with no grant just return
 browser talks to the database directly and anything enforced only in client
 code is merely a suggestion.
 
+### Deploying it
+`.github/workflows/deploy.yml` builds and publishes to GitHub Pages on every
+push to `main`. Three one-time steps:
+
+1. **Settings → Pages → Source: GitHub Actions.**
+2. **Settings → Secrets and variables → Actions**: add `VITE_SUPABASE_URL` and
+   `VITE_SUPABASE_ANON_KEY`. With them unset the workflow still succeeds and
+   deploys a working offline editor with the community layer eliminated — a
+   missing secret must not be a broken deploy.
+3. **Supabase → Authentication → URL Configuration**: add the Pages URL to
+   **Redirect URLs**, or password-reset links bounce.
+
+The build uses `base: './'`, so it works from a repository subpath, from a
+custom domain, from `file://` and inside the native shells without
+reconfiguration. Verified by serving `dist/` from a subdirectory: the app boots,
+the service worker registers with the right scope, and pulling the network still
+leaves a working editor.
+
 ### Email delivery — do this before inviting anyone
 Supabase's built-in mailer is for development only: **two messages an hour**,
 and on a free project it delivers **only to your own team members' addresses**.
