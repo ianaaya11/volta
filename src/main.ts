@@ -39,6 +39,28 @@ interface Pt { x: number; y: number }
 /** Maps a grid point to the colour of the node it sits on (null when idle). */
 type NodeColor = ((x: number, y: number) => string | null) | null;
 
+// ---- Canvas palette --------------------------------------------------------
+// Every colour the canvas draws with lives here rather than inline, so the look
+// can change in one place. The CSS variables in style.css carry the same
+// palette for the DOM chrome; the two are kept deliberately in step.
+const T={
+  gridDot:'#c3ccd8',      // minor grid — must read without shouting
+  gridLine:'#dde3ec',     // major gridlines every 5 units
+  wire:'#55627a',
+  ink:'#2b3440',          // component bodies and leads
+  label:'#7a879b',        // value labels and axes
+  accent:'#1f6feb',
+  junction:'#55627a',
+  current:'#e0952a',      // moving current dots
+  panelBg:'rgba(252,253,255,0.96)',
+  panelLine:'#ccd5e2',
+  panelInk:'#2b3440',
+  plotGrid:'#e6ebf3',
+  zeroLine:'#aab6c8',
+  selV:'#2b3440', selI:'#e0952a',
+  mcuOn:'#2ea05a', mcuOff:'#eef2f7', mcuOnInk:'#ffffff',
+};
+
 const GRID=26;               // pixels per grid unit
 /** Non-null element lookup — every id here is declared in index.html. */
 const el=(id:string):HTMLElement=>{
@@ -324,11 +346,20 @@ function fitView(){
 
 // Voltage -> color (blue low, grey mid, red high) scaled to present range.
 let vRange={min:-1,max:1};
+// Voltage -> colour, tuned for a light canvas: cool blue at the low end,
+// warm red at the high end, and a neutral slate in the middle so an unenergised
+// net doesn't shout. Saturation carries the signal; lightness stays dark enough
+// to read against white.
 function voltColor(v:number):string{
   const {min,max}=vRange; const mid=(min+max)/2; const half=Math.max(1e-6,(max-min)/2);
   const t=Math.max(-1,Math.min(1,(v-mid)/half));
-  if(t>=0){ const r=Math.round(90+165*t), g=Math.round(120-40*t), b=Math.round(130-90*t); return `rgb(${r},${g},${b})`; }
-  const r=Math.round(90+90*t), g=Math.round(120+30*t), b=Math.round(130+120*(-t)); return `rgb(${Math.max(40,r)},${g},${Math.min(255,b)})`;
+  if(t>=0){ // neutral slate -> red
+    const r=Math.round(85+125*t), g=Math.round(98-40*t), b=Math.round(122-70*t);
+    return `rgb(${r},${g},${b})`;
+  }
+  const k=-t;  // neutral slate -> blue
+  const r=Math.round(85-50*k), g=Math.round(98+8*k), b=Math.round(122+95*k);
+  return `rgb(${r},${g},${b})`;
 }
 
 let animPhase=0;
@@ -343,12 +374,28 @@ function draw(){
 
   // grid dots, over the visible world rectangle only. Below ~8px of on-screen
   // spacing they stop reading as a grid and just haze the canvas, so drop them.
-  if(GRID*view.scale>=8){
+  // Ruled lines rather than dots: they give the eye something to align parts
+  // against, which is what makes a schematic grid useful rather than decorative.
+  // Every 5th line is drawn stronger so distance is countable at a glance.
+  if(GRID*view.scale>=7){
     const tl=toWorld(0,0), br=toWorld(W,H);
-    ctx.fillStyle='#20293a';
-    const d=1/view.scale;                      // keep dots ~1 screen pixel
-    const x0=Math.floor(tl.x/GRID)*GRID, y0=Math.floor(tl.y/GRID)*GRID;
-    for(let x=x0;x<br.x;x+=GRID) for(let y=y0;y<br.y;y+=GRID) ctx.fillRect(x-d/2,y-d/2,d,d);
+    const px=1/view.scale;                     // one screen pixel in world units
+    const x0=Math.floor(tl.x/GRID), y0=Math.floor(tl.y/GRID);
+    const x1=Math.ceil(br.x/GRID), y1=Math.ceil(br.y/GRID);
+    for(const major of [false,true]){
+      ctx.beginPath();
+      ctx.strokeStyle=major?T.gridDot:T.gridLine;
+      ctx.lineWidth=(major?1:1)*px;
+      for(let i=x0;i<=x1;i++){
+        if((Math.abs(i)%5===0)!==major) continue;
+        const x=i*GRID; ctx.moveTo(x,tl.y); ctx.lineTo(x,br.y);
+      }
+      for(let j=y0;j<=y1;j++){
+        if((Math.abs(j)%5===0)!==major) continue;
+        const y=j*GRID; ctx.moveTo(tl.x,y); ctx.lineTo(br.x,y);
+      }
+      ctx.stroke();
+    }
   }
 
   // node color lookup if running
@@ -362,8 +409,8 @@ function draw(){
   // wires
   const wc = running? solveWireCurrents(lastResult) : new Map<number,number>();
   wires.forEach((w,wi)=>{
-    const col = lastResult? nodeColor(w.x1,w.y1) : '#6b7c96';
-    ctx.strokeStyle=col||'#6b7c96'; ctx.lineWidth=3; ctx.lineCap='round';
+    const col = lastResult? nodeColor(w.x1,w.y1) : T.wire;
+    ctx.strokeStyle=col||T.wire; ctx.lineWidth=3; ctx.lineCap='round';
     ctx.beginPath(); ctx.moveTo(gx(w.x1),gy(w.y1)); ctx.lineTo(gx(w.x2),gy(w.y2)); ctx.stroke();
     if(running){ drawFlow(gx(w.x1),gy(w.y1),gx(w.x2),gy(w.y2), wc.get(wi)||0); }
   });
@@ -381,7 +428,7 @@ function draw(){
   }
 
   // pin junction dots
-  ctx.fillStyle='#9fb0c8';
+  ctx.fillStyle=T.junction;
   const pinCount=new Map<string,number>();
   const addPin=(x:number,y:number)=>pinCount.set(x+','+y,(pinCount.get(x+','+y)||0)+1);
   for(const c of comps) for(const p of pinsOf(c)) addPin(p.x,p.y);
@@ -390,7 +437,7 @@ function draw(){
     ctx.beginPath(); ctx.arc(gx(x),gy(y),3.5,0,7); ctx.fill(); } }
 
   // wire drawing preview
-  if(tool==='wire'&&wireStart){ ctx.strokeStyle='#4dabf7'; ctx.setLineDash([5,4]); ctx.lineWidth=2;
+  if(tool==='wire'&&wireStart){ ctx.strokeStyle=T.accent; ctx.setLineDash([5,4]); ctx.lineWidth=2;
     const mw=toWorld(mouse.px,mouse.py);
     ctx.beginPath(); ctx.moveTo(gx(wireStart.x),gy(wireStart.y)); ctx.lineTo(mw.x,mw.y); ctx.stroke(); ctx.setLineDash([]); }
   // ghost for placing
@@ -398,7 +445,7 @@ function draw(){
 
   // selection halo
   if(selected){ const ps=pinsOf(selected);
-    ctx.strokeStyle='#4dabf7'; ctx.setLineDash([4,3]); ctx.lineWidth=1.5;
+    ctx.strokeStyle=T.accent; ctx.setLineDash([4,3]); ctx.lineWidth=1.5;
     const xs=ps.map(p=>gx(p.x)), ys=ps.map(p=>gy(p.y));
     const minx=Math.min(...xs)-14,maxx=Math.max(...xs)+14,miny=Math.min(...ys)-14,maxy=Math.max(...ys)+14;
     ctx.strokeRect(minx,miny,maxx-minx,maxy-miny); ctx.setLineDash([]); }
@@ -409,7 +456,7 @@ function draw(){
   ctx.setTransform(dpr,0,0,dpr,0,0);
   if(panelMode==='bode') drawBode(); else drawScope();
   if(view.scale!==1){
-    ctx.fillStyle='#6b7c96'; ctx.font='10px ui-monospace,monospace'; ctx.textAlign='right';
+    ctx.fillStyle=T.label; ctx.font='10px ui-monospace,monospace'; ctx.textAlign='right';
     ctx.fillText(Math.round(view.scale*100)+'%', W-12, 18); ctx.textAlign='left';
   }
 }
@@ -422,7 +469,7 @@ function draw(){
 interface Channel { label:string; color:string; data:number[]; unit:string }
 // Deliberately outside SCOPE_COLORS: the selected part's voltage shares a plot
 // with the probe traces, so it must not collide with any of them.
-const SEL_V_COLOR='#e6edf3', SEL_I_COLOR='#ffd86b';
+const SEL_V_COLOR=T.selV, SEL_I_COLOR=T.current;
 
 function scopeChannels():Channel[]{
   const chs:Channel[]=[];
@@ -445,10 +492,10 @@ function plotChannels(chs:Channel[], t:number[], x:number, y:number, w:number, h
   const pad=(mx-mn)*0.1; mn-=pad; mx+=pad;
   const t0=t[0], t1=t[t.length-1], dt=(t1-t0)||1;
   const X=(tv:number)=>x+(tv-t0)/dt*w, Y=(v:number)=>y+h-(v-mn)/(mx-mn)*h;
-  ctx.strokeStyle='#1c2636'; ctx.lineWidth=1;
+  ctx.strokeStyle=T.plotGrid; ctx.lineWidth=1;
   for(let i=0;i<=2;i++){ const yy=y+h*i/2; ctx.beginPath(); ctx.moveTo(x,yy); ctx.lineTo(x+w,yy); ctx.stroke(); }
-  if(mn<0&&mx>0){ ctx.strokeStyle='#3a4a63'; ctx.beginPath(); ctx.moveTo(x,Y(0)); ctx.lineTo(x+w,Y(0)); ctx.stroke(); }
-  ctx.fillStyle='#6b7c96'; ctx.font='9px ui-monospace,monospace'; ctx.textAlign='right';
+  if(mn<0&&mx>0){ ctx.strokeStyle=T.zeroLine; ctx.beginPath(); ctx.moveTo(x,Y(0)); ctx.lineTo(x+w,Y(0)); ctx.stroke(); }
+  ctx.fillStyle=T.label; ctx.font='9px ui-monospace,monospace'; ctx.textAlign='right';
   ctx.fillText(fmt(mx,unit), x-5, y+8); ctx.fillText(fmt(mn,unit), x-5, y+h);
   for(const c of chs){
     if(c.data.length<2) continue;
@@ -472,9 +519,9 @@ function drawScope(){
   const volts=chs.filter(c=>c.unit==='V'), amps=chs.filter(c=>c.unit==='A');
   const twoRow=volts.length>0&&amps.length>0;
   const pad=10, ph=twoRow?208:170; const px=pad, py=H-ph-pad, pw=W-2*pad;
-  ctx.fillStyle='rgba(12,17,26,0.93)'; ctx.strokeStyle='#2a3547'; ctx.lineWidth=1;
+  ctx.fillStyle=T.panelBg; ctx.strokeStyle=T.panelLine; ctx.lineWidth=1;
   ctx.fillRect(px,py,pw,ph); ctx.strokeRect(px,py,pw,ph);
-  ctx.fillStyle='#c7d3e3'; ctx.font='11px ui-monospace,monospace'; ctx.textAlign='left';
+  ctx.fillStyle=T.ink; ctx.font='11px ui-monospace,monospace'; ctx.textAlign='left';
   ctx.fillText('OSCILLOSCOPE', px+12, py+16);
 
   const plotX=px+58, plotY=py+26, plotW=pw-200, plotH=ph-46;
@@ -482,17 +529,17 @@ function drawScope(){
   const lx=plotX+plotW+18; let ly=plotY+8;
   for(const c of chs){
     ctx.fillStyle=c.color; ctx.fillRect(lx,ly-8,11,11);
-    ctx.fillStyle='#c7d3e3'; ctx.font='10px ui-monospace,monospace'; ctx.textAlign='left';
+    ctx.fillStyle=T.ink; ctx.font='10px ui-monospace,monospace'; ctx.textAlign='left';
     const last=c.data.length?c.data[c.data.length-1]:null;
     ctx.fillText(c.label+(last!=null?`  ${fmt(last,c.unit)}`:''), lx+17, ly+1); ly+=19;
   }
   if(!chs.length){
-    ctx.fillStyle='#6b7c96'; ctx.font='11px ui-monospace,monospace'; ctx.textAlign='center';
+    ctx.fillStyle=T.label; ctx.font='11px ui-monospace,monospace'; ctx.textAlign='center';
     ctx.fillText('tap a component to scope its voltage & current', plotX+plotW/2, plotY+plotH/2);
     ctx.textAlign='left'; return;
   }
   if(!scopeBuf||scopeBuf.t.length<2){
-    ctx.fillStyle='#6b7c96'; ctx.font='11px ui-monospace,monospace'; ctx.textAlign='center';
+    ctx.fillStyle=T.label; ctx.font='11px ui-monospace,monospace'; ctx.textAlign='center';
     ctx.fillText(running?'sampling…':'press Run to capture waveforms', plotX+plotW/2, plotY+plotH/2);
     ctx.textAlign='left'; return;
   }
@@ -505,7 +552,7 @@ function drawScope(){
     plotChannels(chs, t, plotX, plotY, plotW, plotH, chs[0].unit);
   }
   const dt=(t[t.length-1]-t[0])||1;
-  ctx.fillStyle='#6b7c96'; ctx.font='9px ui-monospace,monospace'; ctx.textAlign='center';
+  ctx.fillStyle=T.label; ctx.font='9px ui-monospace,monospace'; ctx.textAlign='center';
   ctx.fillText(fmt(dt,'s')+' window', plotX+plotW/2, py+ph-6);
   ctx.textAlign='left';
 }
@@ -514,11 +561,11 @@ function drawScope(){
 function drawBode(){
   const W=cv.width/devicePixelRatio, H=cv.height/devicePixelRatio;
   const pad=10, ph=200; const px=pad, py=H-ph-pad, pw=W-2*pad;
-  ctx.fillStyle='rgba(12,17,26,0.94)'; ctx.strokeStyle='#2a3547'; ctx.lineWidth=1;
+  ctx.fillStyle=T.panelBg; ctx.strokeStyle=T.panelLine; ctx.lineWidth=1;
   ctx.fillRect(px,py,pw,ph); ctx.strokeRect(px,py,pw,ph);
-  ctx.fillStyle='#c7d3e3'; ctx.font='11px ui-monospace,monospace'; ctx.textAlign='left';
+  ctx.fillStyle=T.ink; ctx.font='11px ui-monospace,monospace'; ctx.textAlign='left';
   ctx.fillText('BODE · frequency response', px+12, py+16);
-  if(!bodeData){ ctx.fillStyle='#6b7c96'; ctx.fillText('place a probe on the output, then press Bode', px+180, py+16); return; }
+  if(!bodeData){ ctx.fillStyle=T.label; ctx.fillText('place a probe on the output, then press Bode', px+180, py+16); return; }
   const f=bodeData.freqs, f0=f[0], f1=f[f.length-1], lg=Math.log10;
   const plotX=px+54, plotW=pw-210;
   const magY=py+28, magH=(ph-52)*0.55, phY=magY+magH+16, phH=(ph-52)*0.45;
@@ -531,13 +578,13 @@ function drawBode(){
   if(pmx-pmn<10){ pmx+=5; pmn-=5; }
   const Yp=(d:number)=>phY+phH-(d-pmn)/(pmx-pmn)*phH;
   // decade gridlines + labels
-  ctx.strokeStyle='#1c2636'; ctx.fillStyle='#6b7c96'; ctx.font='9px ui-monospace,monospace'; ctx.textAlign='center';
+  ctx.strokeStyle=T.plotGrid; ctx.fillStyle=T.label; ctx.font='9px ui-monospace,monospace'; ctx.textAlign='center';
   for(let d=Math.ceil(lg(f0)); d<=Math.floor(lg(f1)); d++){ const fx=Xf(Math.pow(10,d));
     ctx.beginPath(); ctx.moveTo(fx,magY); ctx.lineTo(fx,phY+phH); ctx.stroke();
     ctx.fillText(fmt(Math.pow(10,d),'Hz'), fx, phY+phH+12); }
-  if(mn<0&&mx>0){ ctx.strokeStyle='#3a4a63'; ctx.beginPath(); ctx.moveTo(plotX,Ym(0)); ctx.lineTo(plotX+plotW,Ym(0)); ctx.stroke(); }
-  ctx.strokeStyle='#26324a'; ctx.beginPath(); ctx.moveTo(plotX,phY); ctx.lineTo(plotX+plotW,phY); ctx.stroke(); // phase panel top divider
-  ctx.fillStyle='#6b7c96'; ctx.textAlign='right';
+  if(mn<0&&mx>0){ ctx.strokeStyle=T.zeroLine; ctx.beginPath(); ctx.moveTo(plotX,Ym(0)); ctx.lineTo(plotX+plotW,Ym(0)); ctx.stroke(); }
+  ctx.strokeStyle=T.plotGrid; ctx.beginPath(); ctx.moveTo(plotX,phY); ctx.lineTo(plotX+plotW,phY); ctx.stroke(); // phase panel top divider
+  ctx.fillStyle=T.label; ctx.textAlign='right';
   ctx.fillText(mx.toFixed(0)+'dB', plotX-4, magY+8); ctx.fillText(mn.toFixed(0)+'dB', plotX-4, magY+magH);
   ctx.fillText(pmx.toFixed(0)+'°', plotX-4, phY+8); ctx.fillText(pmn.toFixed(0)+'°', plotX-4, phY+phH);
   bodeData.curves.forEach(c=>{
@@ -548,8 +595,8 @@ function drawBode(){
   });
   const lx=plotX+plotW+18; let ly=magY+8;
   bodeData.curves.forEach(c=>{ ctx.fillStyle=c.color; ctx.fillRect(lx,ly-8,11,11);
-    ctx.fillStyle='#c7d3e3'; ctx.textAlign='left'; ctx.font='10px ui-monospace,monospace'; ctx.fillText(c.label,lx+17,ly+1); ly+=18; });
-  ctx.fillStyle='#6b7c96'; ctx.font='9px ui-monospace,monospace'; ctx.textAlign='left';
+    ctx.fillStyle=T.ink; ctx.textAlign='left'; ctx.font='10px ui-monospace,monospace'; ctx.fillText(c.label,lx+17,ly+1); ly+=18; });
+  ctx.fillStyle=T.label; ctx.font='9px ui-monospace,monospace'; ctx.textAlign='left';
   ctx.fillText('solid = gain (dB)', lx, ly+8); ctx.fillText('dashed = phase (°)', lx, ly+20);
 }
 
@@ -561,7 +608,7 @@ function drawFlow(x1:number,y1:number,x2:number,y2:number,cur:number){
   const dir=Math.sign(cur);
   const speed=Math.min(1, 0.15+Math.log10(1+Math.abs(cur)*1000)/4); // visual only
   const spacing=16; const n=Math.max(1,Math.floor(len/spacing));
-  ctx.fillStyle='#ffd86b';
+  ctx.fillStyle=T.current;
   for(let i=0;i<n;i++){
     let f=((i/n)+ (animPhase*speed*dir))%1; if(f<0) f+=1;
     const px=x1+ux*len*f, py=y1+uy*len*f;
@@ -572,7 +619,7 @@ function drawFlow(x1:number,y1:number,x2:number,y2:number,cur:number){
 function drawComponent(c:Comp,nodeColor:NodeColor){
   const ps=pinsOf(c);
   ctx.lineWidth=2.4; ctx.lineJoin='round'; ctx.lineCap='round';
-  const col=(x:number,y:number):string=> ((lastResult&&nodeColor)? nodeColor(x,y):null)??'#c7d3e3';
+  const col=(x:number,y:number):string=> ((lastResult&&nodeColor)? nodeColor(x,y):null)??T.ink;
   if(c.type==='GND'){
     const x=gx(c.x),y=gy(c.y);
     ctx.strokeStyle=col(c.x,c.y); ctx.beginPath();
@@ -587,10 +634,10 @@ function drawComponent(c:Comp,nodeColor:NodeColor){
     const live=running&&out;
     ctx.strokeStyle=col(c.x,c.y);
     ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x,y-9); ctx.stroke();
-    ctx.fillStyle=live?(mcuOut.get(p)?'#3fb950':'#1c2636'):'#1c2636';
-    ctx.strokeStyle='#c7d3e3'; ctx.lineWidth=2;
+    ctx.fillStyle=live?(mcuOut.get(p)?T.mcuOn:T.plotGrid):T.plotGrid;
+    ctx.strokeStyle=T.ink; ctx.lineWidth=2;
     ctx.beginPath(); ctx.roundRect(x-17,y-27,34,18,4); ctx.fill(); ctx.stroke();
-    ctx.fillStyle=live&&mcuOut.get(p)?'#06210e':'#c7d3e3';
+    ctx.fillStyle=live&&mcuOut.get(p)?T.mcuOnInk:T.ink;
     ctx.font='10px ui-monospace,monospace'; ctx.textAlign='center';
     ctx.fillText('D'+p, x, y-14);
     ctx.textAlign='left';
@@ -606,13 +653,13 @@ function drawComponent(c:Comp,nodeColor:NodeColor){
     const cJoin={x:barC.x+px*5,y:barC.y+py*5}, eJoin={x:barC.x-px*5,y:barC.y-py*5};
     ctx.strokeStyle=col(ps[1].x,ps[1].y); // base lead
     ctx.beginPath(); ctx.moveTo(Bp.x,Bp.y); ctx.lineTo(barC.x-ax*0,barC.y-ay*0); ctx.stroke();
-    ctx.strokeStyle='#c7d3e3'; ctx.beginPath(); ctx.moveTo(barTop.x,barTop.y); ctx.lineTo(barBot.x,barBot.y); ctx.stroke(); // bar
+    ctx.strokeStyle=T.ink; ctx.beginPath(); ctx.moveTo(barTop.x,barTop.y); ctx.lineTo(barBot.x,barBot.y); ctx.stroke(); // bar
     ctx.strokeStyle=col(ps[0].x,ps[0].y); ctx.beginPath(); ctx.moveTo(cJoin.x,cJoin.y); ctx.lineTo(Cp.x,Cp.y); ctx.stroke(); // collector
     ctx.strokeStyle=col(ps[2].x,ps[2].y); ctx.beginPath(); ctx.moveTo(eJoin.x,eJoin.y); ctx.lineTo(Ep.x,Ep.y); ctx.stroke(); // emitter
     // emitter arrow (NPN points toward emitter pin; PNP toward the bar)
     let ex=Ep.x-eJoin.x, ey=Ep.y-eJoin.y; const el=Math.hypot(ex,ey)||1; ex/=el; ey/=el;
     const npn=(c.type==='QN'); const tip=npn?{x:Ep.x*0.45+eJoin.x*0.55,y:Ep.y*0.45+eJoin.y*0.55}:eJoin;
-    const adir=npn?1:-1; ctx.fillStyle='#c7d3e3';
+    const adir=npn?1:-1; ctx.fillStyle=T.ink;
     ctx.beginPath(); ctx.moveTo(tip.x+ex*adir*4,tip.y+ey*adir*4);
     ctx.lineTo(tip.x-ex*adir*4+px*3,tip.y-ey*adir*4+py*3);
     ctx.lineTo(tip.x-ex*adir*4-px*3,tip.y-ey*adir*4-py*3); ctx.closePath(); ctx.fill();
@@ -620,7 +667,7 @@ function drawComponent(c:Comp,nodeColor:NodeColor){
       const t=lastResult.terminals[c.id];
       drawFlow(Cp.x,Cp.y,barC.x,barC.y,-t.Ic);
       drawFlow(barC.x,barC.y,Ep.x,Ep.y,-t.Ie); }
-    ctx.fillStyle='#8b98a9'; ctx.font='10px ui-monospace,monospace'; ctx.textAlign='center';
+    ctx.fillStyle=T.label; ctx.font='10px ui-monospace,monospace'; ctx.textAlign='center';
     ctx.fillText(npn?'NPN':'PNP', barC.x, barC.y-14); ctx.textAlign='left';
     return;
   }
@@ -633,20 +680,20 @@ function drawComponent(c:Comp,nodeColor:NodeColor){
     const chanC={x:gateC.x+ax*4, y:gateC.y+ay*4};                 // channel bar center (past a gap)
     ctx.strokeStyle=col(ps[1].x,ps[1].y);                         // gate lead (no channel contact)
     ctx.beginPath(); ctx.moveTo(Gp.x,Gp.y); ctx.lineTo(gateC.x,gateC.y); ctx.stroke();
-    ctx.strokeStyle='#c7d3e3';
+    ctx.strokeStyle=T.ink;
     ctx.beginPath(); ctx.moveTo(gateC.x+px*9,gateC.y+py*9); ctx.lineTo(gateC.x-px*9,gateC.y-py*9); ctx.stroke(); // gate plate
     ctx.beginPath(); ctx.moveTo(chanC.x+px*9,chanC.y+py*9); ctx.lineTo(chanC.x-px*9,chanC.y-py*9); ctx.stroke(); // channel
     ctx.strokeStyle=col(ps[0].x,ps[0].y); ctx.beginPath(); ctx.moveTo(chanC.x+px*9,chanC.y+py*9); ctx.lineTo(Dp.x,Dp.y); ctx.stroke(); // drain
     ctx.strokeStyle=col(ps[2].x,ps[2].y); ctx.beginPath(); ctx.moveTo(chanC.x-px*9,chanC.y-py*9); ctx.lineTo(Sp.x,Sp.y); ctx.stroke(); // source
     // bulk/source arrow (NMOS points toward channel, PMOS away)
     const nmos=(c.type==='MN'); const dir=nmos?1:-1; const abase={x:chanC.x-px*9,y:chanC.y-py*9};
-    ctx.fillStyle='#c7d3e3'; ctx.beginPath();
+    ctx.fillStyle=T.ink; ctx.beginPath();
     ctx.moveTo(abase.x+ax*dir*4, abase.y+ay*dir*4);
     ctx.lineTo(abase.x-ax*dir*4+px*3, abase.y-ay*dir*4+py*3);
     ctx.lineTo(abase.x-ax*dir*4-px*3, abase.y-ay*dir*4-py*3); ctx.closePath(); ctx.fill();
     if(running&&lastResult&&lastResult.terminals&&lastResult.terminals[c.id]){
       const t=lastResult.terminals[c.id]; drawFlow(Dp.x,Dp.y,chanC.x,chanC.y,-t.Ic); drawFlow(chanC.x,chanC.y,Sp.x,Sp.y,-t.Ie); }
-    ctx.fillStyle='#8b98a9'; ctx.font='10px ui-monospace,monospace'; ctx.textAlign='center';
+    ctx.fillStyle=T.label; ctx.font='10px ui-monospace,monospace'; ctx.textAlign='center';
     ctx.fillText(nmos?'NMOS':'PMOS', chanC.x, chanC.y-14); ctx.textAlign='left';
     return;
   }
@@ -661,10 +708,10 @@ function drawComponent(c:Comp,nodeColor:NodeColor){
     ctx.strokeStyle=col(ps[1].x,ps[1].y); ctx.beginPath(); ctx.moveTo(Pp.x,Pp.y); ctx.lineTo(backC.x+px*7,backC.y+py*7); ctx.stroke();
     ctx.strokeStyle=col(ps[2].x,ps[2].y); ctx.beginPath(); ctx.moveTo(Mp.x,Mp.y); ctx.lineTo(backC.x-px*7,backC.y-py*7); ctx.stroke();
     ctx.strokeStyle=col(ps[0].x,ps[0].y); ctx.beginPath(); ctx.moveTo(tip.x,tip.y); ctx.lineTo(Op.x,Op.y); ctx.stroke();
-    ctx.strokeStyle='#c7d3e3'; ctx.beginPath(); ctx.moveTo(bTop.x,bTop.y); ctx.lineTo(bBot.x,bBot.y);
+    ctx.strokeStyle=T.ink; ctx.beginPath(); ctx.moveTo(bTop.x,bTop.y); ctx.lineTo(bBot.x,bBot.y);
     ctx.lineTo(tip.x,tip.y); ctx.closePath(); ctx.stroke(); // triangle body
     // +/- markers near the two inputs
-    ctx.fillStyle='#8b98a9'; ctx.font='9px ui-monospace,monospace'; ctx.textAlign='center';
+    ctx.fillStyle=T.label; ctx.font='9px ui-monospace,monospace'; ctx.textAlign='center';
     ctx.fillText('+', backC.x+px*7+ax*6, backC.y+py*7+ay*6+3);
     ctx.fillText('−', backC.x-px*7+ax*6, backC.y-py*7+ay*6+3);
     if(running&&lastResult&&lastResult.terminals&&lastResult.terminals[c.id]){
@@ -682,7 +729,7 @@ function drawComponent(c:Comp,nodeColor:NodeColor){
   ctx.beginPath(); ctx.moveTo(ax,ay); ctx.lineTo(mx-ux*13,my-uy*13); ctx.stroke();
   ctx.strokeStyle=col(B.x,B.y);
   ctx.beginPath(); ctx.moveTo(bx,by); ctx.lineTo(mx+ux*13,my+uy*13); ctx.stroke();
-  ctx.strokeStyle='#c7d3e3'; ctx.fillStyle='#c7d3e3';
+  ctx.strokeStyle=T.ink; ctx.fillStyle=T.ink;
   const P=(d:number,o:number):Pt=>({x:mx+ux*d+nx*o, y:my+uy*d+ny*o});
   if(c.type==='R'){
     ctx.beginPath(); let first=true;
@@ -717,7 +764,7 @@ function drawComponent(c:Comp,nodeColor:NodeColor){
     ctx.strokeStyle=col(A.x,A.y); ctx.beginPath(); ctx.moveTo(mx-ux*13,my-uy*13); ctx.lineTo(mx-ux*3,my-uy*3); ctx.stroke();
     ctx.strokeStyle=col(B.x,B.y); ctx.beginPath(); ctx.moveTo(mx+ux*13,my+uy*13); ctx.lineTo(mx+ux*3,my+uy*3); ctx.stroke();
   } else if(c.type==='L'){
-    ctx.strokeStyle='#c7d3e3'; ctx.beginPath();
+    ctx.strokeStyle=T.ink; ctx.beginPath();
     for(let i=0;i<4;i++){ const d=-12+i*8; const c0=P(d+4,0);
       ctx.moveTo(P(d,0).x,P(d,0).y);
       ctx.arc(c0.x,c0.y,4,Math.atan2(uy,ux)+Math.PI,Math.atan2(uy,ux),false); } ctx.stroke();
@@ -732,7 +779,7 @@ function drawComponent(c:Comp,nodeColor:NodeColor){
   // up for a horizontal part and sideways for a vertical one. A centred label
   // is only right in the first case — on a vertical part it would straddle the
   // symbol — so side-anchored labels are aligned away from the body instead.
-  ctx.fillStyle='#8b98a9'; ctx.font='10px ui-monospace,monospace';
+  ctx.fillStyle=T.label; ctx.font='10px ui-monospace,monospace';
   const lp=P(0,-18);
   let valTxt = c.type==='D'?'':fmt(c.value??TYPES[c.type].def,TYPES[c.type].unit);
   if(c.type==='VS'||c.type==='SQ') valTxt = fmt(c.amp??0,'V')+' '+fmt(c.freq??0,'Hz');
@@ -932,7 +979,7 @@ interface BodeData { freqs:number[]; curves:BodeCurve[] }
 let scopeProbes:Probe[]=[];       // grid points to plot
 let scopeBuf:ScopeBuf|null=null;
 let simNet:Netlist|null=null;     // netlist captured at Run (for probe node lookup)
-const SCOPE_COLORS=['#4dabf7','#ffd43b','#ff8787','#69db7c','#da77f2','#ffa94d'];
+const SCOPE_COLORS=[T.accent,'#ffd43b','#ff8787','#69db7c','#da77f2','#ffa94d'];
 const SCOPE_MAX=1400;
 function resetScope(){
   scopeBuf={t:[],series:scopeProbes.map(()=>[] as number[]),selV:[],selI:[],selId:selected?selected.id:null};

@@ -1,7 +1,11 @@
+  /* Light palette. Kept deliberately in step with the canvas palette (`T` in
+     main.ts) — the schematic and the chrome around it must read as one surface,
+     and a light canvas with dark chrome looks like two apps stapled together. */
   :root{
-    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --line:#2a3444;
-    --ink:#e6edf3; --muted:#8b98a9; --accent:#4dabf7; --accent2:#f7b84d;
-    --good:#3fb950; --bad:#f85149; --wire:#5a6b82;
+    --bg:#f7f9fc; --panel:#ffffff; --panel2:#eef2f8; --line:#d5dde8;
+    --ink:#1f2733; --muted:#68758a; --accent:#1f6feb; --accent2:#b3701b;
+    --good:#1a7f45; --bad:#c0392b; --wire:#55627a;
+    --shadow:0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.10);
   }
   *{box-sizing:border-box}
   /* overscroll-behavior stops pull-to-refresh and rubber-banding from firing
@@ -28,10 +32,10 @@
   @media (max-width:1500px){ header .title{display:none} }
   header .title b{color:var(--ink)}
   header .sep{flex:1}
-  .btn{background:var(--panel2);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:7px 12px;cursor:pointer;font-size:13px;display:inline-flex;align-items:center;gap:6px}
-  .btn:hover{border-color:var(--accent)}
-  .btn.primary{background:var(--good);border-color:var(--good);color:#06210e;font-weight:600}
-  .btn.primary.stop{background:var(--bad);border-color:var(--bad);color:#2a0606}
+  .btn{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:7px 12px;cursor:pointer;font-size:13px;display:inline-flex;align-items:center;gap:6px;box-shadow:var(--shadow)}
+  .btn:hover{border-color:var(--accent);color:var(--accent)}
+  .btn.primary{background:var(--good);border-color:var(--good);color:#fff;font-weight:600}
+  .btn.primary.stop{background:var(--bad);border-color:var(--bad);color:#fff}
   .btn.ghost{background:transparent}
   /* Tool rail */
   #rail{grid-row:2;background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 0;overflow-y:auto}
@@ -45,7 +49,7 @@
      the part, and the pointermove stream is cancelled mid-drag. */
   #stage{grid-row:2;position:relative;overflow:hidden;background:var(--bg);touch-action:none;-webkit-user-select:none;user-select:none}
   canvas{display:block;position:absolute;top:0;left:0;touch-action:none}
-  #hint{position:absolute;left:12px;bottom:12px;background:rgba(22,27,34,.9);border:1px solid var(--line);border-radius:8px;padding:6px 10px;font-size:12px;color:var(--muted);pointer-events:none}
+  #hint{position:absolute;left:12px;bottom:12px;background:rgba(255,255,255,.94);border:1px solid var(--line);border-radius:8px;padding:6px 10px;font-size:12px;color:var(--muted);pointer-events:none}
   /* Inspector */
   #inspector{grid-row:2;background:var(--panel);border-left:1px solid var(--line);padding:14px;overflow-y:auto}
   #inspector h3{margin:0 0 10px;font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted)}
@@ -63,11 +67,11 @@
   .swatch{width:22px;height:10px;border-radius:3px}
   table.probes{width:100%;font-size:12px;border-collapse:collapse}
   table.probes td{padding:3px 2px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
-  table.probes td:last-child{text-align:right;color:var(--accent2)}
+  table.probes td:last-child{text-align:right;color:var(--accent2);font-weight:500}
   .kbd{font-family:ui-monospace,monospace;background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:0 5px;font-size:11px}
   .btn.active-toggle{border-color:var(--accent);color:var(--accent)}
   /* ---- AI assistant sheet ------------------------------------------------ */
-  #aiModal,#codeModal{position:fixed;inset:0;background:rgba(6,9,14,.6);z-index:50;
+  #aiModal,#codeModal{position:fixed;inset:0;background:rgba(16,24,40,.35);z-index:50;
     display:flex;align-items:center;justify-content:center;padding:20px}
   #aiModal[hidden],#codeModal[hidden]{display:none}
   #aiModal .sheet,#codeModal .sheet{background:var(--panel);border:1px solid var(--line);
@@ -98,7 +102,7 @@
   table.mna{border-collapse:collapse;font-family:ui-monospace,monospace;font-size:10px}
   table.mna th{color:var(--accent);font-weight:500;padding:3px 6px;text-align:right;white-space:nowrap}
   table.mna td{padding:3px 6px;text-align:right;color:var(--ink);white-space:nowrap;font-variant-numeric:tabular-nums}
-  table.mna td.z{color:#39424f}
+  table.mna td.z{color:#b3bccb}
   table.mna .rhs{border-left:1px solid var(--line);color:var(--accent2)}
 
   /* ---- Phone / narrow layout ------------------------------------------- */
