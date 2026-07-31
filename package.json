@@ -17,7 +17,9 @@
     "tauri": "tauri"
   },
   "devDependencies": {
-    "@capacitor/cli": "^6.1.2",
+    "@capacitor/android": "^7.6.8",
+    "@capacitor/cli": "^7.6.8",
+    "@capacitor/ios": "^7.6.8",
     "@playwright/test": "^1.62.1",
     "@tauri-apps/cli": "^2.0.0",
     "typescript": "^5.5.4",
@@ -26,6 +28,6 @@
     "vitest": "^2.0.5"
   },
   "dependencies": {
-    "@capacitor/core": "^6.1.2"
+    "@capacitor/core": "^7.6.8"
   }
 }
