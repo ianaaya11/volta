@@ -1,0 +1,199 @@
+# Spark — concrete build plan
+
+A phased plan to grow the working prototype into a cross-platform, full-analog
+circuit simulator in the spirit of EveryCircuit. It is written to be executed in
+order: each phase produces something runnable and verified before the next
+begins. **Phase 1 is already done** — the transistor described below is
+implemented, verified, and in the app today.
+
+## Guiding principles (don't break these)
+
+The prototype earns its extensibility from three rules, and the plan depends on
+keeping them. First, **the engine is a pure module** with no knowledge of the
+DOM — it takes a netlist and returns voltages and currents, nothing else. Every
+new device is added here and only here. Second, **every device is verified in
+isolation** in Node against a known answer before it is wired into the UI; that
+is how the diode (0.69V) and the transistor (β=100, Vc=4.09V) were validated,
+and it is non-negotiable for each new part. Third, **nonlinear parts converge
+through Newton-Raphson with junction limiting** (`pnjlim`) — the machinery is
+already in place, so new semiconductors reuse it rather than reinventing it.
+
+## Phase table
+
+| Phase | Goal | Key work | Verification | Status |
+|---|---|---|---|---|
+| 0 | Foundation | MNA engine (R, V, I, C, L, D), schematic editor, animation, node detection | 6 solver tests + browser smoke | ✅ done |
+| 1 | First transistor | NPN/PNP BJT (Ebers-Moll) + 3-terminal support + `pnjlim` | 6 BJT tests + UI amp example (Vc=4.09V) | ✅ done |
+| 2 | Core semiconductors | MOSFET (square-law), ideal op-amp — controlled sources still TODO | Bias-point + gain tests per device | ✅ done |
+| 3 | Instrumentation | Oscilloscope (probe nodes, live multi-trace) + sine source to drive it | Frequency-response test + UI capture | ✅ done |
+| 4 | Analyses | AC small-signal sweep + Bode plot (magnitude & phase) | RC/RLC transfer-function checks | ✅ done |
+| 5 | Persistence & sharing | Save/load circuits as JSON, shareable URLs, named example gallery | Round-trip serialize tests | ✅ done |
+| 6 | Cross-platform packaging | TypeScript port, Capacitor (iOS/Android), Tauri (desktop), PWA offline | Per-platform launch + touch tests | next |
+| 7 | Differentiators | "Show the math" learning mode, MCU co-sim, AI circuit assistant | Feature-specific | |
+
+## Phase 1 — what was just delivered (reference implementation)
+
+The NPN transistor is the template every future device follows. It shows the
+full pattern end to end: an **Ebers-Moll transport model** computes collector and
+base currents from the two junction voltages; its **3×3 Jacobian** is stamped
+into the matrix each Newton iteration; **`pnjlim` voltage limiting** keeps the
+exponential from diverging (without it, Vbe ran away to 2.4V — the first attempt
+failed exactly this way, which is the canonical SPICE convergence trap); and the
+editor gained **generic 3-terminal support** (pin geometry, rotation, netlist
+mapping, symbol drawing, per-terminal current animation). PNP is included as a
+sign-mirror of the same equations. Verified operating point: β=100, Vbe=0.71V,
+Vc=4.09V in active region, and correct saturation (Vce=0.12V) when driven hard.
+Use this as the reference when adding the MOSFET.
+
+## Phase 2 — the rest of the active devices ✅ (delivered)
+
+**Done:** the MOSFET and the ideal op-amp are both implemented, verified, and in
+the app, each with its own worked example in the Load-example cycle.
+
+The **MOSFET** uses the square-law model (cutoff / triode / saturation, with
+`Id = ½·k·(Vgs−Vth)²` in saturation), stamped through the same Newton-Raphson
+path as the BJT — simpler, in fact, because the gate draws no DC current, so no
+`pnjlim` is needed. It reuses the transistor's 3-terminal machinery entirely;
+only the model equations and the symbol differ. NMOS and PMOS share one code
+path via a polarity sign. Verified against a common-source bias point (Vg=2V,
+Vd=3V, Id=1mA exactly) plus direct region checks (cutoff/triode/saturation) and
+a PMOS mirror — 9 checks.
+
+The **ideal op-amp** is a high-gain voltage-controlled voltage source with its
+own MNA branch current (a pure linear stamp, no iteration). It "just works" for
+the standard configs: verified at non-inverting gain 2 and 5, inverting gain −1,
+with the virtual-short and virtual-ground behaviors confirmed — 5 checks. This
+is the part that unlocks active filters, comparators, and oscillators.
+
+**Still TODO in this phase if you want it:** the four **controlled sources**
+(VCVS, VCCS, CCVS, CCCS). They're pure linear stamps — cheap to add — and unlock
+a lot of textbook circuits, but they're lower priority than moving on to
+instrumentation, so they're deferred rather than done.
+
+## Phase 3 — instrumentation ✅ (delivered)
+
+**Done:** the oscilloscope and a sine source to drive it are both in the app,
+with a worked example that pre-places two probes on an RC low-pass.
+
+The scope reused the fact that the engine already computes the full solution
+every frame. A **probe tool** lets you click any node or wire to scope it; each
+probe keeps a ring buffer of `(t, v)`; the panel autoscales vertically, shows a
+zero line and a time-window readout, and prints each probe's live value in the
+legend. Multiple traces overlay in distinct colors. This is what turns "the dots
+move" into "I can see the waveform" — the single most-requested capability in
+every competitor review.
+
+Driving it required a **time-varying source**, so the engine gained a notion of
+absolute simulation time (`step()` now accumulates `t`) and a **sine source**
+(`offset + amp·sin(2πf·t)`). Verified the whole path against theory: an RC
+low-pass driven across frequency gives 0.994 of input at low frequency, exactly
+0.704 (−3dB) at its cutoff, and 0.099 a decade above — the textbook response, and
+visibly a lagging, shrunken output on the scope.
+
+**Deferred from this phase:** a numeric multimeter panel and a DC sweep. Both
+ride on the same plumbing and are small, but they're lower value than the AC
+analysis in Phase 4, so they're not done yet.
+
+## Phase 4 — real analyses ✅ (delivered)
+
+**Done:** AC small-signal analysis with a **Bode plot** (magnitude and phase),
+driven by a **Bode** button in the header and plotted for whichever nodes you've
+probed.
+
+AC was the one genuinely new solver in the roadmap. It computes the DC operating
+point, linearizes every nonlinear device around it (the diode, BJT, and MOSFET
+contribute their small-signal conductances; the op-amp is already linear), then
+builds and solves the **complex** system `(G + jωC)·v = i` at each point of a
+log-spaced frequency sweep. That required a complete complex-number layer — a
+`{re, im}` arithmetic set and a complex Gauss-Jordan solver (`csolve`) — living
+alongside the real solver. The stimulus source is driven with a unit phasor, so
+each node's phasor *is* the transfer function to it; the UI converts that to dB
+and degrees and draws magnitude (solid) over phase (dashed) with decade
+gridlines.
+
+Verified against closed-form theory: an RC low-pass reads −2.91 dB and −44.3° at
+its cutoff (theory −3.01 dB, −45°) and rolls off at −20 dB/decade; a series RLC
+peaks at unity gain (−0.05 dB) at 1596 Hz against a theoretical resonance of
+1592 Hz. A pre-probed RLC bandpass example ships in the Load-example cycle — press
+**Bode** to see the resonant peak.
+
+**Deferred:** a numeric multimeter and an explicit DC-sweep plot. Both are small
+and ride on existing plumbing, but they're lower value than persistence.
+
+## Phase 5 — persistence and sharing ✅ (delivered)
+
+**Done:** save, open, share, and a named example gallery are all in the header.
+
+As predicted, this was the cheapest phase — the entire document really is just
+the `comps`, `wires`, and probe arrays, so serialization is a one-liner.
+**Save** downloads a `spark-circuit.json`; **Open** reads one back (with a
+`uid`-reconciliation step so newly-placed parts never collide with loaded ids);
+**Share** encodes the circuit into the URL hash as UTF-8-safe base64 and copies
+the link to the clipboard; and on boot the app restores a shared circuit from the
+hash if one is present, otherwise loads the default example. The old cycling
+"Load example" button became a proper **gallery dropdown** listing all six
+circuits by name. Verified by round-trip: build → serialize → clear → restore
+preserves every part, wire, and probe exactly, the URL encode/decode is bit-exact,
+and a restored circuit still runs both the scope and the Bode plot.
+
+This is also where cloud sync would attach if you later want the EveryCircuit-style
+community gallery.
+
+## Phase 6 — cross-platform packaging
+
+This is where "cross-platform" gets real, and the plan deliberately puts it
+*after* the engine matures so you're packaging something worth shipping. The
+recommended stack, lowest-friction first:
+
+Port the codebase to **TypeScript** (the engine is self-contained math, so this
+is mechanical and buys you type safety on the physics). Keep the web app as the
+single source of truth, rendering to canvas. Then wrap the *same* app: **Capacitor**
+produces native iOS and Android apps from the web build with touch input, and
+**Tauri** (lighter than Electron) produces Windows/macOS/Linux desktop builds.
+Make the web version a **PWA** so it works offline — directly answering the "web
+needs a connection" complaint that dogs EveryCircuit and Falstad. One codebase,
+one engine, every platform. If native-grade touch performance ever becomes the
+bottleneck, **Flutter** is the fallback — the engine ports to Dart cleanly
+because it's pure computation — but don't start there; the web-first path ships
+far sooner.
+
+## Phase 7 — where you actually differentiate
+
+With the fundamentals solid, invest in the things the incumbents don't have. A
+**"show the math" learning mode** — exposing the live nodal equations, the MNA
+matrix, and the step-by-step solve as the circuit runs — turns the engine's
+internals into the product's teaching advantage, and the annotated code already
+exists to build it. **Microcontroller co-simulation** (run real Arduino/MCU code
+against the live analog sim) fills a hole EveryCircuit leaves entirely open. And
+an **AI circuit assistant** that builds, explains, and debugs circuits from plain
+language is something none of them ship — and something you're unusually well
+positioned to add.
+
+## Testing strategy (applies to every phase)
+
+Keep the two-layer discipline that's already working: a **Node test file per
+device** that checks its numbers against a known answer (hand calculation or
+textbook), and a **headless-browser smoke test** that loads the app, runs a
+representative circuit, and confirms the on-screen values match. Every new device
+adds one of each before it's considered done. This is why the current engine is
+trustworthy — **46 automated checks pass today** (6 solver, 6 BJT, 9 MOSFET, 5
+op-amp, 4 sine/frequency-response, 6 AC/Bode, 10 formatter), plus headless-browser
+captures of the scope, the Bode plot, and every worked example — and it's the
+cheapest insurance you have as complexity grows.
+
+## Suggested immediate next step
+
+Phases 0–5 are done: a verified analog engine (diode, BJT, MOSFET, op-amp), DC,
+transient with a live oscilloscope, AC with a Bode plot, and full
+save/open/share persistence. The app is now a genuinely usable single-file tool.
+
+The next move is the big one toward shipping to real users: **Phase 6 —
+cross-platform packaging**. Port the single HTML file to a **TypeScript** project
+(the engine is self-contained math, so this is mechanical and buys type safety),
+keep the web app as the source of truth, then wrap the same build with
+**Capacitor** for native iOS/Android and **Tauri** for desktop, and make the web
+version an installable **offline PWA**. One engine, one UI, every platform —
+directly delivering the cross-platform goal you set at the start. Note that this
+phase is a build-tooling and project-restructure step rather than an in-app
+feature, so it's better done in a real repository than in the single-file
+prototype; the prototype is the reference the port copies from.

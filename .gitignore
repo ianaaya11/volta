@@ -1,0 +1,21 @@
+node_modules/
+dist/
+dist-ssr/
+*.local
+.DS_Store
+
+# Vite / PWA
+dev-dist/
+
+# Capacitor (generated native projects)
+/ios/
+/android/
+
+# Tauri build output
+/src-tauri/target/
+/src-tauri/gen/
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea/

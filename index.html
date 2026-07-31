@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#0c111a" />
+<title>Zuri — Live Circuit Simulator</title>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="title">⚡ <b>Zuri</b> · live circuit simulator</div>
+    <span class="pill" id="nodeCount">0 nodes</span>
+    <div class="sep"></div>
+    <select class="btn ghost" id="gallery" title="Load an example circuit"></select>
+    <button class="btn ghost" id="saveBtn" title="Save circuit as a .json file">💾 Save</button>
+    <button class="btn ghost" id="openBtn" title="Open a saved .json circuit">📂 Open</button>
+    <button class="btn ghost" id="shareBtn" title="Copy a shareable link to this circuit">🔗 Share</button>
+    <button class="btn ghost" id="clearBtn">Clear</button>
+    <button class="btn" id="rotateBtn" title="Rotate selected (R)">⟳ Rotate</button>
+    <button class="btn" id="bodeBtn" title="AC frequency sweep of probed nodes">📈 Bode</button>
+    <button class="btn primary" id="runBtn">▶ Run</button>
+  </header>
+
+  <div id="rail"></div>
+
+  <div id="stage">
+    <canvas id="cv"></canvas>
+    <div id="hint">Pick a part on the left, click the grid to place it. Choose <b>Wire</b> to connect pins.</div>
+  </div>
+
+  <aside id="inspector">
+    <div id="inspectorBody"></div>
+  </aside>
+</div>
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>
