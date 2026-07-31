@@ -587,15 +587,25 @@ function hitComponent(gxu:number,gyu:number):Comp|null{
   return best;
 }
 
-stage.addEventListener('mousemove',e=>{
+// Input is handled through POINTER events, not mouse events, so one code path
+// serves mouse, touch and pen alike — which is what makes the same build usable
+// inside the iOS/Android shells. Touch never synthesizes the mousemove stream a
+// drag needs, so a mouse-only editor can place parts on a phone but not move
+// them. `touch-action:none` on the stage (see style.css) stops the browser from
+// claiming the same gesture for scroll/zoom, and pointer capture keeps a drag
+// tracking even when the finger leaves the canvas.
+stage.addEventListener('pointermove',e=>{
   const r=cv.getBoundingClientRect(); mouse.px=e.clientX-r.left; mouse.py=e.clientY-r.top;
   const g=toGrid(mouse.px,mouse.py); mouse.gx=g.x; mouse.gy=g.y;
   if(dragging){ dragging.c.x=g.x-dragging.dx; dragging.c.y=g.y-dragging.dy; }
   draw();
 });
-stage.addEventListener('mousedown',e=>{
+stage.addEventListener('pointerdown',e=>{
   const r=cv.getBoundingClientRect(); const px=e.clientX-r.left, py=e.clientY-r.top;
   const g=toGrid(px,py);
+  // A finger reports no position until it touches down, so seed the hover state
+  // here — otherwise the first tap of a placement has no ghost to place.
+  mouse.px=px; mouse.py=py; mouse.gx=g.x; mouse.gy=g.y;
   if(isPlaceType(tool)){
     const nc:Comp={id:tool+(uid++),type:tool,x:g.x,y:g.y,rot:ghostRot,value:TYPES[tool].def};
     if(tool==='VS'){ nc.amp=5; nc.freq=1000; nc.off=0; }
@@ -604,7 +614,13 @@ stage.addEventListener('mousedown',e=>{
   }
   if(tool==='wire'){
     if(!wireStart){ wireStart={x:g.x,y:g.y}; }
-    else { if(g.x!==wireStart.x||g.y!==wireStart.y){ wires.push({x1:wireStart.x,y1:wireStart.y,x2:g.x,y2:g.y}); }
+    else if(g.x===wireStart.x&&g.y===wireStart.y){
+      // Tapping the run's own start point ends it. Double-click does the same
+      // on desktop, but a double-tap on touch is the browser's zoom gesture,
+      // so touch needs a way out that isn't a double-tap.
+      wireStart=null;
+    }
+    else { wires.push({x1:wireStart.x,y1:wireStart.y,x2:g.x,y2:g.y});
       wireStart={x:g.x,y:g.y}; refreshMeta(); }
     draw(); return;
   }
@@ -625,10 +641,16 @@ stage.addEventListener('mousedown',e=>{
   // select tool
   const c=hitComponent(g.x,g.y);
   selected=c; renderInspector();
-  if(c){ dragging={c,dx:g.x-c.x,dy:g.y-c.y}; }
+  if(c){
+    dragging={c,dx:g.x-c.x,dy:g.y-c.y};
+    // Keep receiving moves even if the pointer slides off the canvas mid-drag.
+    try{ stage.setPointerCapture(e.pointerId); }catch{ /* capture is best-effort */ }
+  }
   draw();
 });
-window.addEventListener('mouseup',()=>{ if(dragging){ refreshMeta(); dragging=null; } });
+const endDrag=()=>{ if(dragging){ refreshMeta(); dragging=null; } };
+window.addEventListener('pointerup',endDrag);
+window.addEventListener('pointercancel',endDrag);
 stage.addEventListener('dblclick',()=>{ if(wireStart){ wireStart=null; draw(); } });
 const turn=(r:Rot):Rot=>((r+90)%360) as Rot;
 window.addEventListener('keydown',e=>{

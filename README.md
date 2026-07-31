@@ -11,6 +11,8 @@ spirit of EveryCircuit, but open and built on a from-scratch SPICE-style engine.
 - **Oscilloscope** — probe any node and see its waveform live, multi-trace.
 - **AC / Bode analysis** — complex-valued sweep with magnitude & phase plots.
 - **Save / open / share** — circuits serialize to JSON and to shareable URLs.
+- **Touch-ready** — pointer-based input and a phone layout, so the same build
+  works with a finger as well as a mouse.
 - **One engine, every platform** — web (PWA), iOS/Android (Capacitor), desktop (Tauri).
 
 ## Architecture
@@ -28,7 +30,8 @@ index.html    # Vite entry / markup.
 tests/        # one file per device, verified against closed-form theory:
   solver  diode  bjt  mosfet  opamp  transient  ac  format
 e2e/
-  app.spec.ts # browser smoke tests against the production build (Playwright).
+  app.spec.ts   # browser smoke tests against the production build (Playwright).
+  touch.spec.ts # the same build driven by touch, at a phone viewport.
 ```
 
 `engine.ts` takes a plain netlist (`{ id, type, nodes, value, ... }[]`) and
@@ -87,9 +90,10 @@ divider and series/parallel networks, RC and RL time constants, diode drop and
 rectification, BJT β with active/saturation/cutoff regions and the PNP mirror,
 MOSFET region equations plus a common-source bias point and the PMOS mirror,
 op-amp gains with the virtual short and virtual ground, RC −3dB point and
-−20 dB/decade rolloff, RLC resonance, and SI formatting round-trips. On top of that, **9 Playwright specs**
+−20 dB/decade rolloff, RLC resonance, and SI formatting round-trips. On top of that, **14 Playwright specs**
 load the production build in a real browser and confirm the on-screen readouts
-match the engine. Roadmap and phase history live in `BUILD-PLAN.md`.
+match the engine — 9 on a desktop viewport and 5 driving the same build by touch
+at a phone viewport. Roadmap and phase history live in `BUILD-PLAN.md`.
 
 > The e2e suite drives your installed Google Chrome (`channel: 'chrome'`). If
 > you'd rather use Playwright's own browser, run `npx playwright install chromium`

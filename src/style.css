@@ -4,8 +4,12 @@
     --good:#3fb950; --bad:#f85149; --wire:#5a6b82;
   }
   *{box-sizing:border-box}
-  html,body{margin:0;height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--ink);overflow:hidden}
-  #app{display:grid;grid-template-columns:64px 1fr 280px;grid-template-rows:48px 1fr;height:100vh}
+  /* overscroll-behavior stops pull-to-refresh and rubber-banding from firing
+     when a drag runs past the edge of the schematic on a phone. */
+  html,body{margin:0;height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--ink);overflow:hidden;overscroll-behavior:none}
+  /* 100dvh tracks the dynamic viewport, so mobile browser chrome sliding in and
+     out doesn't crop the canvas the way a fixed 100vh does. */
+  #app{display:grid;grid-template-columns:64px 1fr 280px;grid-template-rows:48px 1fr;height:100vh;height:100dvh}
   header{grid-column:1/4;display:flex;align-items:center;gap:14px;padding:0 16px;background:var(--panel);border-bottom:1px solid var(--line)}
   header .title{font-weight:700;letter-spacing:.5px;color:var(--accent)}
   header .title b{color:var(--ink)}
@@ -22,8 +26,11 @@
   .tool:hover{background:var(--panel2);color:var(--ink)}
   .tool.active{background:var(--panel2);color:var(--accent);border-color:var(--accent)}
   /* Canvas */
-  #stage{grid-row:2;position:relative;overflow:hidden;background:var(--bg)}
-  canvas{display:block;position:absolute;top:0;left:0}
+  /* touch-action:none hands every gesture over the schematic to the editor.
+     Without it a drag on a phone scrolls or zooms the page instead of moving
+     the part, and the pointermove stream is cancelled mid-drag. */
+  #stage{grid-row:2;position:relative;overflow:hidden;background:var(--bg);touch-action:none;-webkit-user-select:none;user-select:none}
+  canvas{display:block;position:absolute;top:0;left:0;touch-action:none}
   #hint{position:absolute;left:12px;bottom:12px;background:rgba(22,27,34,.9);border:1px solid var(--line);border-radius:8px;padding:6px 10px;font-size:12px;color:var(--muted);pointer-events:none}
   /* Inspector */
   #inspector{grid-row:2;background:var(--panel);border-left:1px solid var(--line);padding:14px;overflow-y:auto}
@@ -35,7 +42,7 @@
   .readout{font-size:13px;line-height:1.7;color:var(--ink)}
   .readout .k{color:var(--muted)}
   .readout .v{float:right;font-variant-numeric:tabular-nums}
-  .pill{display:inline-block;font-size:11px;padding:2px 8px;border-radius:20px;background:var(--panel2);border:1px solid var(--line);color:var(--muted)}
+  .pill{display:inline-block;white-space:nowrap;font-size:11px;padding:2px 8px;border-radius:20px;background:var(--panel2);border:1px solid var(--line);color:var(--muted)}
   .empty{color:var(--muted);font-size:13px;line-height:1.6}
   hr{border:none;border-top:1px solid var(--line);margin:14px 0}
   .swatch-row{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);margin:4px 0}
@@ -44,3 +51,32 @@
   table.probes td{padding:3px 2px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
   table.probes td:last-child{text-align:right;color:var(--accent2)}
   .kbd{font-family:ui-monospace,monospace;background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:0 5px;font-size:11px}
+
+  /* ---- Phone / narrow layout ------------------------------------------- */
+  /* The three-column desktop layout has a 64px rail and a 280px inspector at
+     fixed widths. On a 412px-wide phone that leaves 68px for the schematic —
+     the canvas the whole app exists to show. Below 760px the columns unstack
+     into rows: the tool rail becomes a horizontally scrolling strip, the
+     inspector becomes a panel along the bottom, and the canvas gets the full
+     width in between. This is what makes the Capacitor iOS/Android builds
+     worth shipping. */
+  @media (max-width:760px){
+    #app{grid-template-columns:1fr;grid-template-rows:48px 58px 1fr 36vh}
+    header{grid-column:1;gap:8px;padding:0 10px;overflow-x:auto;overflow-y:hidden}
+    /* Ten controls can't fit 412px, so the header scrolls — but the primary
+       actions must never be the ones off-screen. Order pulls them to the front
+       and the wordmark gives up its space (the app icon carries branding on a
+       phone anyway). */
+    header .title{display:none}
+    header .sep{flex:0 0 4px}
+    header .btn,header select{flex:0 0 auto}
+    #runBtn{order:-3}
+    #bodeBtn{order:-2}
+    #nodeCount{order:-1}
+    #rail{grid-row:2;grid-column:1;flex-direction:row;align-items:center;
+      border-right:none;border-bottom:1px solid var(--line);
+      padding:6px 8px;overflow-x:auto;overflow-y:hidden}
+    .tool{flex:0 0 auto}
+    #stage{grid-row:3;grid-column:1}
+    #inspector{grid-row:4;grid-column:1;border-left:none;border-top:1px solid var(--line);padding:12px}
+  }

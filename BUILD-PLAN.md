@@ -204,10 +204,29 @@ count, and that Share round-trips a circuit through the URL and still solves to
 4.09 V after a reload. They drive the system Chrome via `channel: 'chrome'`
 rather than a Playwright-managed download.
 
-**Remaining in this phase.** Actual per-platform launches — a Tauri desktop
-window, and iOS/Android via Capacitor — are still unverified, because each needs
-a toolchain (Rust, Xcode, Android Studio) and a device or simulator to be
-meaningful. The web/PWA target is done and verified.
+**Touch works, and the phone layout exists.** The editor listened only for mouse
+events, which is fatal on a phone: touch never synthesizes the `mousemove`
+stream a drag needs, so parts could be placed but never moved. Input now runs
+through **pointer events**, one path for mouse, touch and pen, with pointer
+capture so a drag survives leaving the canvas, `touch-action:none` so the
+browser can't claim the gesture for scrolling, and `overscroll-behavior:none` so
+a drag past the edge doesn't trigger pull-to-refresh. Tapping a wire run's own
+start point now ends it, because the desktop gesture for that is a double-click
+and a double-tap is the browser's zoom.
+
+Writing those tests exposed something larger: the three-column desktop layout
+has a fixed 64px rail and 280px inspector, which on a 412px phone left the
+schematic **68 pixels wide** — the app was unusable on the exact platforms this
+phase exists to reach. Below 760px the columns now unstack into rows (rail as a
+scrolling strip, inspector along the bottom, canvas full-width), the header
+orders Run and Bode first so the primary action is never the thing scrolled
+off-screen, and `100dvh` keeps mobile browser chrome from cropping the canvas.
+
+**Remaining in this phase.** Only the native launches — a Tauri desktop window
+and iOS/Android via Capacitor. Each needs a toolchain (Rust ~1.5 GB, Xcode
+~15 GB, Android Studio ~10 GB) plus a device or simulator to mean anything.
+Neither the toolchains nor the disk space were available here. The web/PWA
+target is done and verified, on desktop and phone viewports alike.
 
 ## Phase 7 — where you actually differentiate
 
@@ -231,8 +250,10 @@ adds one of each before it's considered done. This is why the current engine is
 trustworthy — **52 automated checks pass in the repo today** (6 solver, 4 diode,
 7 BJT, 10 MOSFET, 5 op-amp, 4 sine/transient, 6 AC/Bode, 10 formatter), run with
 `npm test` — and it's the cheapest insurance you have as complexity grows. The
-second layer is back too: **9 headless-browser specs** (`npm run test:e2e`) load
-the production build and confirm the on-screen numbers match the engine's.
+second layer is back too: **14 headless-browser specs** (`npm run test:e2e`) load
+the production build and confirm the on-screen numbers match the engine's — 9 on
+a desktop viewport, 5 more in a touch-capable phone context covering tap-to-place,
+touch-drag, tap-to-tap wiring, and the canvas actually getting the screen.
 
 ## Suggested immediate next step
 

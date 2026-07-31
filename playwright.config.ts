@@ -1,4 +1,4 @@
-import { defineConfig } from '@playwright/test';
+import { defineConfig, devices } from '@playwright/test';
 
 // The smoke suite runs against the PRODUCTION build, not the dev server, so
 // what it exercises is what actually ships — bundled, minified, service worker
@@ -13,6 +13,17 @@ export default defineConfig({
     channel: 'chrome',
     trace: 'off',
   },
+  projects: [
+    { name: 'desktop', testIgnore: /touch\.spec\.ts/ },
+    // The mobile shells (Capacitor iOS/Android) render this same build with a
+    // finger as the only input device, so the touch suite runs under a real
+    // touch-capable, mobile-viewport context.
+    {
+      name: 'mobile',
+      testMatch: /touch\.spec\.ts/,
+      use: { ...devices['Pixel 7'], channel: 'chrome' },
+    },
+  ],
   webServer: {
     command: 'npm run build && npm run preview -- --port 4173 --strictPort',
     url: 'http://localhost:4173',
