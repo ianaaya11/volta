@@ -269,6 +269,32 @@ it permanently. (2) On iOS the header still crowds the Dynamic Island slightly �
 `env(safe-area-inset-top)` is not taking full effect inside Capacitor's
 WKWebView. Cosmetic, but unfinished.
 
+## Editor affordances added after Phase 6
+
+Three gaps surfaced from actually using the app, all now closed.
+
+**The scope was invisible unless you placed a probe.** `drawScope` returned
+early on an empty probe list, so pressing Run on any example animated the
+current dots but drew no waveform at all — you had to know the Probe tool
+existed first. Selecting a component now plots its **voltage across and current
+through** on separate autoscaled axes, which is the EveryCircuit behaviour and
+the reason the app exists. Manual probes still work and share the voltage plot.
+
+**There was no way to restart a run.** The only reset was Clear, which deletes
+the circuit. **Reset** now drops the solver state, waveforms and Bode sweep and
+returns to t=0 while leaving the schematic alone.
+
+**Undo/redo.** History is a stack of whole-document snapshots — the same JSON
+Save and Share already produce. The document is only parts, wires and probes, so
+snapshotting per edit is far simpler than inverse operations, and any future
+edit becomes undoable with no extra bookkeeping. ⌘Z / ⇧⌘Z, 100 levels.
+
+**A square/pulse source** joins the sine, with an adjustable duty cycle. It maps
+onto the engine's existing `VS` device, so the solver gained one wave shape
+rather than a new device. Verified in both physical regimes: it averages to its
+DC level through an RC whose time constant dwarfs the period, and follows the
+edges to both rails when it doesn't.
+
 ## Phase 7 — where you actually differentiate
 
 With the fundamentals solid, invest in the things the incumbents don't have. A

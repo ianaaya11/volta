@@ -23,7 +23,7 @@ test('boots with the default example, no console errors', async ({ page }) => {
 
   await page.goto('/');
   await expect(page.locator('#nodeCount')).toHaveText(/[1-9]\d* nodes/);
-  await expect(page.locator('#rail .tool')).toHaveCount(15);
+  await expect(page.locator('#rail .tool')).toHaveCount(16);
   expect(errors).toEqual([]);
 });
 

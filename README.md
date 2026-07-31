@@ -6,9 +6,12 @@ spirit of EveryCircuit, but open and built on a from-scratch SPICE-style engine.
 
 - **Real-time animation** — currents animate along wires, node colors track voltage.
 - **Full analog engine** — Modified Nodal Analysis with Newton-Raphson for
-  nonlinear devices: resistor, capacitor, inductor, DC & sine sources, diode,
-  BJT (NPN/PNP), MOSFET (NMOS/PMOS), and an ideal op-amp.
-- **Oscilloscope** — probe any node and see its waveform live, multi-trace.
+  nonlinear devices: resistor, capacitor, inductor, DC / sine / square sources,
+  diode, BJT (NPN/PNP), MOSFET (NMOS/PMOS), and an ideal op-amp.
+- **Oscilloscope** — tap any component to plot its voltage and current live, on
+  separate axes. Probes can also be placed by hand to compare several nodes.
+- **Undo / redo** — every edit is reversible (⌘Z / ⇧⌘Z), and **Reset** restarts
+  the simulation from t=0 without touching the schematic.
 - **AC / Bode analysis** — complex-valued sweep with magnitude & phase plots.
 - **Save / open / share** — circuits serialize to JSON and to shareable URLs.
 - **Touch-ready** — pointer-based input and a phone layout, so the same build

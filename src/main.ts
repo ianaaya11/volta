@@ -7,7 +7,7 @@ import './style.css';
 // ===========================================================================
 
 /** Every part the editor can hold. 'GND' is a marker, not an engine device. */
-export type PartType = 'R' | 'V' | 'I' | 'C' | 'L' | 'VS' | 'D'
+export type PartType = 'R' | 'V' | 'I' | 'C' | 'L' | 'VS' | 'SQ' | 'D'
   | 'QN' | 'QP' | 'MN' | 'MP' | 'OA' | 'GND';
 /** Everything the tool rail can be set to: a part to place, or a mode. */
 type Tool = PartType | 'select' | 'wire' | 'probe' | 'delete';
@@ -21,9 +21,10 @@ interface Comp {
   y: number;
   rot?: Rot;        // absent on ground, which has no orientation
   value?: number;   // absent on parts with no editable value (GND, D, transistors)
-  amp?: number;     // sine source only
+  amp?: number;     // wave sources (VS sine / SQ square) only
   freq?: number;
   off?: number;
+  duty?: number;    // square source only: fraction of the period spent high
 }
 interface Wire { x1: number; y1: number; x2: number; y2: number }
 interface Probe { x: number; y: number; color: string }
@@ -88,6 +89,7 @@ const TYPES:Record<PartType,TypeInfo>={
   C:{name:'Capacitor',unit:'F',def:1e-6},
   L:{name:'Inductor',unit:'H',def:1e-3},
   VS:{name:'Sine source',unit:'V',def:5},
+  SQ:{name:'Square source',unit:'V',def:5},
   D:{name:'Diode',unit:'',def:0},
   QN:{name:'NPN transistor',unit:'',def:0},
   QP:{name:'PNP transistor',unit:'',def:0},
@@ -124,8 +126,13 @@ function toDevice(c:Comp,nodes:NodeId[]):Component|null{
     case 'L': return {id:c.id,type:'L',nodes:pair,value};
     case 'I': return {id:c.id,type:'I',nodes:pair,value};
     case 'V': return {id:c.id,type:'V',nodes:pair,value};
+    // Both wave sources map onto the engine's single 'VS' device; only the
+    // wave shape differs, so the editor keeps them as separate parts (distinct
+    // symbols and rail entries) while the solver sees one model.
     case 'VS': return {id:c.id,type:'VS',nodes:pair,wave:'SIN',value,
       amp:c.amp??0,freq:c.freq??0,off:c.off??0};
+    case 'SQ': return {id:c.id,type:'VS',nodes:pair,wave:'SQR',value,
+      amp:c.amp??0,freq:c.freq??0,off:c.off??0,duty:c.duty??0.5};
     case 'D': return {id:c.id,type:'D',nodes:pair};
     case 'QN': return {id:c.id,type:'QN',nodes:triple};
     case 'QP': return {id:c.id,type:'QP',nodes:triple};
@@ -315,44 +322,98 @@ function draw(){
 }
 
 // ---- Oscilloscope panel ----------------------------------------------------
+// The scope plots two kinds of trace: node voltages from manually-placed
+// probes, and — the common case — the voltage across and current through
+// whichever component is selected. Selecting a part is enough to see its
+// waveform; you don't have to know about the probe tool first.
+interface Channel { label:string; color:string; data:number[]; unit:string }
+// Deliberately outside SCOPE_COLORS: the selected part's voltage shares a plot
+// with the probe traces, so it must not collide with any of them.
+const SEL_V_COLOR='#e6edf3', SEL_I_COLOR='#ffd86b';
+
+function scopeChannels():Channel[]{
+  const chs:Channel[]=[];
+  const buf=scopeBuf;
+  scopeProbes.forEach((p,i)=>chs.push({
+    label:`probe ${i+1}`, color:p.color, data:buf?buf.series[i]:[], unit:'V' }));
+  if(selected&&selected.type!=='GND'){
+    chs.push({label:`${selected.id} V`, color:SEL_V_COLOR, data:buf?buf.selV:[], unit:'V'});
+    chs.push({label:`${selected.id} I`, color:SEL_I_COLOR, data:buf?buf.selI:[], unit:'A'});
+  }
+  return chs;
+}
+
+// Draw one set of same-unit traces into a rectangle, autoscaled to their range.
+function plotChannels(chs:Channel[], t:number[], x:number, y:number, w:number, h:number, unit:string){
+  let mn=Infinity,mx=-Infinity;
+  for(const c of chs) for(const v of c.data){ if(v<mn)mn=v; if(v>mx)mx=v; }
+  if(!isFinite(mn)){ mn=-1; mx=1; }
+  if(mn===mx){ mn-=Math.abs(mn)*0.5+1e-9; mx+=Math.abs(mx)*0.5+1e-9; }
+  const pad=(mx-mn)*0.1; mn-=pad; mx+=pad;
+  const t0=t[0], t1=t[t.length-1], dt=(t1-t0)||1;
+  const X=(tv:number)=>x+(tv-t0)/dt*w, Y=(v:number)=>y+h-(v-mn)/(mx-mn)*h;
+  ctx.strokeStyle='#1c2636'; ctx.lineWidth=1;
+  for(let i=0;i<=2;i++){ const yy=y+h*i/2; ctx.beginPath(); ctx.moveTo(x,yy); ctx.lineTo(x+w,yy); ctx.stroke(); }
+  if(mn<0&&mx>0){ ctx.strokeStyle='#3a4a63'; ctx.beginPath(); ctx.moveTo(x,Y(0)); ctx.lineTo(x+w,Y(0)); ctx.stroke(); }
+  ctx.fillStyle='#6b7c96'; ctx.font='9px ui-monospace,monospace'; ctx.textAlign='right';
+  ctx.fillText(fmt(mx,unit), x-5, y+8); ctx.fillText(fmt(mn,unit), x-5, y+h);
+  for(const c of chs){
+    if(c.data.length<2) continue;
+    // A trace can be shorter than the time axis (a newly-selected part starts
+    // sampling mid-window), so align it to the most recent samples.
+    const off=t.length-c.data.length;
+    ctx.strokeStyle=c.color; ctx.lineWidth=1.5; ctx.beginPath();
+    for(let k=0;k<c.data.length;k++){
+      const xx=X(t[k+off]??t[t.length-1]), yy=Y(c.data[k]);
+      k===0?ctx.moveTo(xx,yy):ctx.lineTo(xx,yy);
+    }
+    ctx.stroke();
+  }
+  ctx.textAlign='left';
+}
+
 function drawScope(){
-  if(!scopeProbes.length) return;
+  const chs=scopeChannels();
+  if(!chs.length&&!running) return;
   const W=cv.width/devicePixelRatio, H=cv.height/devicePixelRatio;
-  const pad=10, ph=170; const px=pad, py=H-ph-pad, pw=W-2*pad;
+  const volts=chs.filter(c=>c.unit==='V'), amps=chs.filter(c=>c.unit==='A');
+  const twoRow=volts.length>0&&amps.length>0;
+  const pad=10, ph=twoRow?208:170; const px=pad, py=H-ph-pad, pw=W-2*pad;
   ctx.fillStyle='rgba(12,17,26,0.93)'; ctx.strokeStyle='#2a3547'; ctx.lineWidth=1;
   ctx.fillRect(px,py,pw,ph); ctx.strokeRect(px,py,pw,ph);
   ctx.fillStyle='#c7d3e3'; ctx.font='11px ui-monospace,monospace'; ctx.textAlign='left';
   ctx.fillText('OSCILLOSCOPE', px+12, py+16);
+
   const plotX=px+58, plotY=py+26, plotW=pw-200, plotH=ph-46;
-  // legend (always shown)
+  // legend, with each trace's live value
   const lx=plotX+plotW+18; let ly=plotY+8;
-  scopeProbes.forEach((p,i)=>{ ctx.fillStyle=p.color; ctx.fillRect(lx,ly-8,11,11);
+  for(const c of chs){
+    ctx.fillStyle=c.color; ctx.fillRect(lx,ly-8,11,11);
     ctx.fillStyle='#c7d3e3'; ctx.font='10px ui-monospace,monospace'; ctx.textAlign='left';
-    const s=scopeBuf&&scopeBuf.series[i]; const last=s&&s.length?s[s.length-1]:null;
-    ctx.fillText(`probe ${i+1}`+(last!=null?`  ${fmt(last,'V')}`:''), lx+17, ly+1); ly+=19; });
+    const last=c.data.length?c.data[c.data.length-1]:null;
+    ctx.fillText(c.label+(last!=null?`  ${fmt(last,c.unit)}`:''), lx+17, ly+1); ly+=19;
+  }
+  if(!chs.length){
+    ctx.fillStyle='#6b7c96'; ctx.font='11px ui-monospace,monospace'; ctx.textAlign='center';
+    ctx.fillText('tap a component to scope its voltage & current', plotX+plotW/2, plotY+plotH/2);
+    ctx.textAlign='left'; return;
+  }
   if(!scopeBuf||scopeBuf.t.length<2){
     ctx.fillStyle='#6b7c96'; ctx.font='11px ui-monospace,monospace'; ctx.textAlign='center';
     ctx.fillText(running?'sampling…':'press Run to capture waveforms', plotX+plotW/2, plotY+plotH/2);
     ctx.textAlign='left'; return;
   }
-  // vertical autoscale across every series
-  const buf=scopeBuf;
-  let mn=Infinity,mx=-Infinity;
-  for(const s of buf.series) for(const v of s){ if(v<mn)mn=v; if(v>mx)mx=v; }
-  if(mn===mx){ mn-=1; mx+=1; } const vp=(mx-mn)*0.1; mn-=vp; mx+=vp;
-  const t0=buf.t[0], t1=buf.t[buf.t.length-1], dt=(t1-t0)||1;
-  const X=(t:number)=>plotX+(t-t0)/dt*plotW, Y=(v:number)=>plotY+plotH-(v-mn)/(mx-mn)*plotH;
-  // horizontal gridlines
-  ctx.strokeStyle='#1c2636'; ctx.lineWidth=1;
-  for(let i=0;i<=4;i++){ const yy=plotY+plotH*i/4; ctx.beginPath(); ctx.moveTo(plotX,yy); ctx.lineTo(plotX+plotW,yy); ctx.stroke(); }
-  if(mn<0&&mx>0){ ctx.strokeStyle='#3a4a63'; ctx.beginPath(); ctx.moveTo(plotX,Y(0)); ctx.lineTo(plotX+plotW,Y(0)); ctx.stroke(); }
-  // axis labels
-  ctx.fillStyle='#6b7c96'; ctx.font='9px ui-monospace,monospace';
-  ctx.textAlign='right'; ctx.fillText(fmt(mx,'V'), plotX-5, plotY+8); ctx.fillText(fmt(mn,'V'), plotX-5, plotY+plotH);
-  ctx.textAlign='center'; ctx.fillText(fmt(dt,'s')+' window', plotX+plotW/2, plotY+plotH+15);
-  // traces
-  buf.series.forEach((s,i)=>{ ctx.strokeStyle=scopeProbes[i].color; ctx.lineWidth=1.5; ctx.beginPath();
-    for(let k=0;k<s.length;k++){ const xx=X(buf.t[k]), yy=Y(s[k]); k===0?ctx.moveTo(xx,yy):ctx.lineTo(xx,yy); } ctx.stroke(); });
+  const t=scopeBuf.t;
+  if(twoRow){
+    const gap=14, rowH=(plotH-gap)/2;
+    plotChannels(volts, t, plotX, plotY, plotW, rowH, 'V');
+    plotChannels(amps, t, plotX, plotY+rowH+gap, plotW, rowH, 'A');
+  } else {
+    plotChannels(chs, t, plotX, plotY, plotW, plotH, chs[0].unit);
+  }
+  const dt=(t[t.length-1]-t[0])||1;
+  ctx.fillStyle='#6b7c96'; ctx.font='9px ui-monospace,monospace'; ctx.textAlign='center';
+  ctx.fillText(fmt(dt,'s')+' window', plotX+plotW/2, py+ph-6);
   ctx.textAlign='left';
 }
 
@@ -530,6 +591,12 @@ function drawComponent(c:Comp,nodeColor:NodeColor){
     ctx.beginPath();
     for(let i=0;i<=20;i++){ const d=-8+16*i/20; const o=5*Math.sin(i/20*Math.PI*2); const p=P(d,o);
       i===0?ctx.moveTo(p.x,p.y):ctx.lineTo(p.x,p.y); } ctx.stroke();
+  } else if(c.type==='SQ'){
+    // Same circle as the sine source, with a square pulse inside instead.
+    ctx.beginPath(); ctx.arc(mx,my,12,0,7); ctx.stroke();
+    const s1=P(-8,0),s2=P(-8,-5),s3=P(0,-5),s4=P(0,5),s5=P(8,5),s6=P(8,0);
+    ctx.beginPath(); ctx.moveTo(s1.x,s1.y); ctx.lineTo(s2.x,s2.y); ctx.lineTo(s3.x,s3.y);
+    ctx.lineTo(s4.x,s4.y); ctx.lineTo(s5.x,s5.y); ctx.lineTo(s6.x,s6.y); ctx.stroke();
   } else if(c.type==='I'){
     ctx.beginPath(); ctx.arc(mx,my,12,0,7); ctx.stroke();
     const a1=P(-6,0),a2=P(6,0); ctx.beginPath(); ctx.moveTo(a1.x,a1.y); ctx.lineTo(a2.x,a2.y);
@@ -557,7 +624,7 @@ function drawComponent(c:Comp,nodeColor:NodeColor){
   ctx.fillStyle='#8b98a9'; ctx.font='10px ui-monospace,monospace'; ctx.textAlign='center';
   const lp=P(0,-16);
   let valTxt = c.type==='D'?'':fmt(c.value??TYPES[c.type].def,TYPES[c.type].unit);
-  if(c.type==='VS') valTxt = fmt(c.amp??0,'V')+' '+fmt(c.freq??0,'Hz');
+  if(c.type==='VS'||c.type==='SQ') valTxt = fmt(c.amp??0,'V')+' '+fmt(c.freq??0,'Hz');
   ctx.fillText(valTxt, lp.x, lp.y);
   ctx.textAlign='left';
 }
@@ -571,12 +638,12 @@ function drawGhost(type:PartType,x:number,y:number){
 // ===========================================================================
 //  PART 5 — INTERACTION
 // ===========================================================================
-const PLACE_TYPES:PartType[]=['R','V','VS','I','C','L','D','QN','MN','OA','GND'];
+const PLACE_TYPES:PartType[]=['R','V','VS','SQ','I','C','L','D','QN','MN','OA','GND'];
 const isPlaceType=(t:Tool):t is PartType=>(PLACE_TYPES as string[]).includes(t);
 let mouse:{px:number;py:number;gx:number|null;gy:number|null}={px:0,py:0,gx:null,gy:null};
 let wireStart:Pt|null=null;
 let ghostRot:Rot=0;
-let dragging:{c:Comp;dx:number;dy:number}|null=null;
+let dragging:{c:Comp;dx:number;dy:number;x0:number;y0:number}|null=null;
 
 function hitComponent(gxu:number,gyu:number):Comp|null{
   // nearest component whose centroid is close
@@ -609,8 +676,9 @@ stage.addEventListener('pointerdown',e=>{
   if(isPlaceType(tool)){
     const nc:Comp={id:tool+(uid++),type:tool,x:g.x,y:g.y,rot:ghostRot,value:TYPES[tool].def};
     if(tool==='VS'){ nc.amp=5; nc.freq=1000; nc.off=0; }
+    if(tool==='SQ'){ nc.amp=5; nc.freq=1000; nc.off=0; nc.duty=0.5; }
     comps.push(nc);
-    refreshMeta(); draw(); return;
+    refreshMeta(); commit(); draw(); return;
   }
   if(tool==='wire'){
     if(!wireStart){ wireStart={x:g.x,y:g.y}; }
@@ -621,14 +689,14 @@ stage.addEventListener('pointerdown',e=>{
       wireStart=null;
     }
     else { wires.push({x1:wireStart.x,y1:wireStart.y,x2:g.x,y2:g.y});
-      wireStart={x:g.x,y:g.y}; refreshMeta(); }
+      wireStart={x:g.x,y:g.y}; refreshMeta(); commit(); }
     draw(); return;
   }
   if(tool==='probe'){
     const ex=scopeProbes.findIndex(p=>p.x===g.x&&p.y===g.y);
     if(ex>=0) scopeProbes.splice(ex,1);
     else scopeProbes.push({x:g.x,y:g.y,color:SCOPE_COLORS[scopeProbes.length%SCOPE_COLORS.length]});
-    resetScope(); draw(); return;
+    resetScope(); commit(); draw(); return;
   }
   if(tool==='delete'){
     const c=hitComponent(g.x,g.y); if(c){ comps=comps.filter(k=>k!==c); if(selected===c)selected=null; }
@@ -636,27 +704,35 @@ stage.addEventListener('pointerdown',e=>{
       let bi=-1,bd=0.5; wires.forEach((w,i)=>{ const d=distToSeg(g.x,g.y,w); if(d<bd){bd=d;bi=i;} });
       if(bi>=0) wires.splice(bi,1);
     }
-    refreshMeta(); renderInspector(); draw(); return;
+    refreshMeta(); commit(); renderInspector(); draw(); return;
   }
   // select tool
   const c=hitComponent(g.x,g.y);
   selected=c; renderInspector();
   if(c){
-    dragging={c,dx:g.x-c.x,dy:g.y-c.y};
+    dragging={c,dx:g.x-c.x,dy:g.y-c.y,x0:c.x,y0:c.y};
     // Keep receiving moves even if the pointer slides off the canvas mid-drag.
     try{ stage.setPointerCapture(e.pointerId); }catch{ /* capture is best-effort */ }
   }
   draw();
 });
-const endDrag=()=>{ if(dragging){ refreshMeta(); dragging=null; } };
+const endDrag=()=>{
+  if(!dragging) return;
+  const moved=dragging.c.x!==dragging.x0||dragging.c.y!==dragging.y0;
+  dragging=null; refreshMeta();
+  if(moved) commit();   // a drag that ends where it began isn't an edit
+};
 window.addEventListener('pointerup',endDrag);
 window.addEventListener('pointercancel',endDrag);
 stage.addEventListener('dblclick',()=>{ if(wireStart){ wireStart=null; draw(); } });
 const turn=(r:Rot):Rot=>((r+90)%360) as Rot;
 window.addEventListener('keydown',e=>{
-  if(e.key==='r'||e.key==='R'){ ghostRot=turn(ghostRot); if(selected){ selected.rot=turn(rotOf(selected)); refreshMeta(); } draw(); }
+  const meta=e.metaKey||e.ctrlKey;
+  if(meta&&(e.key==='z'||e.key==='Z')){ e.preventDefault(); e.shiftKey?redo():undo(); return; }
+  if(meta&&(e.key==='y'||e.key==='Y')){ e.preventDefault(); redo(); return; }
+  if(e.key==='r'||e.key==='R'){ ghostRot=turn(ghostRot); if(selected){ selected.rot=turn(rotOf(selected)); refreshMeta(); commit(); } draw(); }
   if(e.key==='Escape'){ wireStart=null; selected=null; setTool('select'); renderInspector(); draw(); }
-  if((e.key==='Delete'||e.key==='Backspace')&&selected){ comps=comps.filter(k=>k!==selected); selected=null; refreshMeta(); renderInspector(); draw(); }
+  if((e.key==='Delete'||e.key==='Backspace')&&selected){ comps=comps.filter(k=>k!==selected); selected=null; refreshMeta(); commit(); renderInspector(); draw(); }
 });
 function distToSeg(x:number,y:number,w:Wire){
   const x1=w.x1,y1=w.y1,x2=w.x2,y2=w.y2; const dx=x2-x1,dy=y2-y1;
@@ -669,7 +745,9 @@ function distToSeg(x:number,y:number,w:Wire){
 // ===========================================================================
 let circuit:Circuit|null=null, simTime=0, simH=1e-5, rafId:number|null=null;
 // ---- Oscilloscope state ----
-interface ScopeBuf { t:number[]; series:number[][] }
+// t and series[] run the full window; selV/selI restart whenever the selection
+// changes, so they can be shorter and are drawn aligned to the newest samples.
+interface ScopeBuf { t:number[]; series:number[][]; selV:number[]; selI:number[]; selId:string|null }
 interface BodeCurve { color:string; label:string; mag:number[]; phase:number[] }
 interface BodeData { freqs:number[]; curves:BodeCurve[] }
 let scopeProbes:Probe[]=[];       // grid points to plot
@@ -677,7 +755,9 @@ let scopeBuf:ScopeBuf|null=null;
 let simNet:Netlist|null=null;     // netlist captured at Run (for probe node lookup)
 const SCOPE_COLORS=['#4dabf7','#ffd43b','#ff8787','#69db7c','#da77f2','#ffa94d'];
 const SCOPE_MAX=1400;
-function resetScope(){ scopeBuf={t:[],series:scopeProbes.map(()=>[] as number[])}; }
+function resetScope(){
+  scopeBuf={t:[],series:scopeProbes.map(()=>[] as number[]),selV:[],selI:[],selId:selected?selected.id:null};
+}
 let panelMode:'scope'|'bode'='scope';   // transient panel or AC sweep panel
 let bodeData:BodeData|null=null;
 function refreshMeta(){
@@ -701,6 +781,17 @@ function stopSim(){
   el('runBtn').textContent='▶ Run';
   el('runBtn').classList.remove('stop');
   draw();
+}
+// Restart from t=0 without touching the schematic: throws away the solver
+// state, the captured waveforms and the Bode sweep, so the next Run starts
+// from rest. (Clear, by contrast, deletes the circuit itself.)
+function resetSim(){
+  stopSim();
+  circuit=null; simNet=null; simTime=0; lastResult=null; bodeData=null;
+  panelMode='scope'; resetScope();
+  vRange={min:-1,max:1};
+  renderInspector(); draw();
+  flashHint('Simulation reset to <b>t = 0</b>. Press <b>Run</b> to start again.');
 }
 function runBode(){
   const net=buildNetlist();
@@ -737,11 +828,22 @@ function loop(){
   for(let k=0;k<8;k++){ lastResult=circuit.step(simH); simTime+=simH; }
   // sample the scope once per frame
   const net=simNet, buf=scopeBuf, res=lastResult;
-  if(scopeProbes.length&&net&&buf&&res){
+  if(net&&buf&&res){
     buf.t.push(simTime);
     scopeProbes.forEach((p,i)=>{ const nd=net.nodeOf(p.x,p.y);
       buf.series[i].push(res.nodeVoltage[nd]??0); });
-    if(buf.t.length>SCOPE_MAX){ buf.t.shift(); buf.series.forEach(s=>s.shift()); }
+    // The selected component's own voltage and current. Changing selection
+    // starts a fresh trace rather than splicing two parts' data together.
+    const selId=selected&&selected.type!=='GND'?selected.id:null;
+    if(selId!==buf.selId){ buf.selV.length=0; buf.selI.length=0; buf.selId=selId; }
+    if(selId){
+      buf.selV.push(res.voltageAcross[selId]??0);
+      buf.selI.push(res.current[selId]??0);
+    }
+    if(buf.t.length>SCOPE_MAX){
+      buf.t.shift(); buf.series.forEach(s=>s.shift());
+      if(buf.selV.length>SCOPE_MAX){ buf.selV.shift(); buf.selI.shift(); }
+    }
   }
   updateVRange(); animPhase=(animPhase+0.02)%1;
   draw(); renderReadout();
@@ -775,15 +877,19 @@ function renderInspector(){
   const sel=selected;                       // narrowed for the closures below
   const t=TYPES[sel.type];
   let html=`<h3>${t.name}</h3>`;
-  const noValue:PartType[]=['GND','D','QN','QP','MN','MP','OA','VS'];
+  const noValue:PartType[]=['GND','D','QN','QP','MN','MP','OA','VS','SQ'];
   if(!noValue.includes(sel.type)){
     html+=`<div class="field"><label>Value (${t.unit}) — e.g. 4.7k, 100n, 12</label>
       <input id="valInput" value="${fmt(sel.value??t.def,'').trim()}"/></div>`;
   }
-  if(sel.type==='VS'){
+  if(sel.type==='VS'||sel.type==='SQ'){
     html+=`<div class="field"><label>Amplitude (V)</label><input id="ampInput" value="${fmt(sel.amp??0,'').trim()}"/></div>
       <div class="field"><label>Frequency (Hz)</label><input id="freqInput" value="${fmt(sel.freq??0,'').trim()}"/></div>
       <div class="field"><label>DC offset (V)</label><input id="offInput" value="${fmt(sel.off||0,'').trim()}"/></div>`;
+    if(sel.type==='SQ'){
+      html+=`<div class="field"><label>Duty cycle (0–1) — 0.5 is a symmetric square</label>
+        <input id="dutyInput" value="${sel.duty??0.5}"/></div>`;
+    }
   }
   if(sel.type==='QN'||sel.type==='QP'){
     html+=`<div class="field"><label>Terminals</label><div class="empty">Base = single-pin side; collector = upper pin, emitter = lower pin (arrow). β≈100.</div></div>`;
@@ -799,15 +905,16 @@ function renderInspector(){
   html+=`<button class="btn" onclick="deleteSel()">🗑 Delete</button>`;
   body.innerHTML=html;
   const vi=document.getElementById('valInput') as HTMLInputElement|null;
-  if(vi){ vi.addEventListener('change',()=>{ const v=parseVal(vi.value); if(!isNaN(v)&&v>0){ sel.value=v; if(circuit&&running){ syncValues(); } draw(); } });
+  if(vi){ vi.addEventListener('change',()=>{ const v=parseVal(vi.value); if(!isNaN(v)&&v>0){ sel.value=v; commit(); if(circuit&&running){ syncValues(); } draw(); } });
     vi.addEventListener('keydown',e=>{ if(e.key==='Enter') vi.blur(); }); }
   const bindNum=(id:string,set:(v:number)=>void)=>{
     const inp=document.getElementById(id) as HTMLInputElement|null; if(!inp) return;
-    inp.addEventListener('change',()=>{ const v=parseVal(inp.value); if(!isNaN(v)){ set(v); if(circuit&&running) syncSine(); draw(); } });
+    inp.addEventListener('change',()=>{ const v=parseVal(inp.value); if(!isNaN(v)){ set(v); commit(); if(circuit&&running) syncSine(); draw(); } });
     inp.addEventListener('keydown',ev=>{ if(ev.key==='Enter') inp.blur(); }); };
   bindNum('ampInput',v=>sel.amp=v);
   bindNum('freqInput',v=>sel.freq=v);
   bindNum('offInput',v=>sel.off=v);
+  bindNum('dutyInput',v=>sel.duty=Math.max(0.01,Math.min(0.99,v)));
   renderReadout();
 }
 function syncValues(){ // push edited values into live sim without restarting
@@ -823,7 +930,7 @@ function syncSine(){ // push edited sine params into the live sim
   for(const c of circuit.components){
     if(c.type!=='VS') continue;
     const s=comps.find(k=>k.id===c.id);
-    if(s&&s.type==='VS'){ c.amp=s.amp; c.freq=s.freq; c.off=s.off; }
+    if(s&&(s.type==='VS'||s.type==='SQ')){ c.amp=s.amp; c.freq=s.freq; c.off=s.off; c.duty=s.duty; }
   }
 }
 function renderReadout(){
@@ -850,8 +957,8 @@ function renderReadout(){
 declare global {
   interface Window { rotateSel:()=>void; deleteSel:()=>void }
 }
-window.rotateSel=()=>{ if(selected){ selected.rot=turn(rotOf(selected)); refreshMeta(); draw(); } };
-window.deleteSel=()=>{ if(selected){ comps=comps.filter(k=>k!==selected); selected=null; refreshMeta(); renderInspector(); draw(); } };
+window.rotateSel=()=>{ if(selected){ selected.rot=turn(rotOf(selected)); refreshMeta(); commit(); draw(); } };
+window.deleteSel=()=>{ if(selected){ comps=comps.filter(k=>k!==selected); selected=null; refreshMeta(); commit(); renderInspector(); draw(); } };
 
 function flashHint(msg:string){ const h=el('hint'); h.innerHTML=msg; h.style.borderColor='var(--accent2)';
   setTimeout(()=>{h.style.borderColor='';},2500); }
@@ -864,6 +971,7 @@ const RAIL:{t:Tool;label:string;icon?:string}[]=[
   {t:'R',label:'Resistor'},
   {t:'V',label:'Source'},
   {t:'VS',label:'Sine'},
+  {t:'SQ',label:'Square'},
   {t:'I',label:'Current'},
   {t:'C',label:'Cap'},
   {t:'L',label:'Inductor'},
@@ -893,6 +1001,7 @@ function miniSymbol(t:Tool){
     case 'R': return s('<path d="M2 12h3l1.5-4 3 8 3-8 3 8 1.5-4H21"/>');
     case 'V': return s('<circle cx="12" cy="12" r="7"/><path d="M12 8v8M9 12h6"/>');
     case 'VS': return s('<circle cx="12" cy="12" r="7"/><path d="M8 12a2 2 0 014 0 2 2 0 004 0"/>');
+    case 'SQ': return s('<circle cx="12" cy="12" r="7"/><path d="M7 14v-4h4v4h4v-4"/>');
     case 'probe': return s('<path d="M3 21l7-7M9 11l4 4M11 9l6-6 3 3-6 6z"/>');
     case 'I': return s('<circle cx="12" cy="12" r="7"/><path d="M12 8v8M9 11l3-3 3 3"/>');
     case 'C': return s('<path d="M2 12h8M14 12h8M10 6v12M14 6v12"/>');
@@ -920,6 +1029,7 @@ function updateRail(){ document.querySelectorAll<HTMLElement>('.tool').forEach(b
 const GALLERY=[
   {name:'RC low-pass (transient)', fn:loadRC},
   {name:'Sine → RC low-pass (scope)', fn:loadSine},
+  {name:'Square wave → RC integrator', fn:loadSquare},
   {name:'RLC bandpass (Bode)', fn:loadRLC},
   {name:'BJT common-emitter amp', fn:loadAmp},
   {name:'NMOS common-source amp', fn:loadMos},
@@ -928,7 +1038,7 @@ const GALLERY=[
 function buildGallery(){
   const sel=el('gallery') as HTMLSelectElement;
   sel.innerHTML='<option value="">Examples ▾</option>'+GALLERY.map((g,i)=>`<option value="${i}">${g.name}</option>`).join('');
-  sel.onchange=()=>{ const i=sel.value; if(i!==''){ GALLERY[+i].fn(); } sel.value=''; };
+  sel.onchange=()=>{ const i=sel.value; if(i!==''){ GALLERY[+i].fn(); commit(); } sel.value=''; };
 }
 
 // ===========================================================================
@@ -955,6 +1065,44 @@ function applyModel(m:SavedModel){
   lastResult=null; selected=null; bodeData=null; panelMode='scope'; resetScope();
   refreshMeta(); renderInspector(); draw();
 }
+// ---- Undo / redo -----------------------------------------------------------
+// History is a stack of whole-document snapshots (the same JSON that Save and
+// Share produce). The document is small — parts, wires and probes — so cloning
+// it per edit is far simpler than tracking inverse operations, and it means any
+// future edit is automatically undoable without extra bookkeeping.
+const HISTORY_LIMIT=100;
+const undoStack:string[]=[];
+const redoStack:string[]=[];
+let historyPrev=''; // the document as of the last commit
+const snapshot=()=>JSON.stringify(serializeModel());
+
+/** Call after any change to the document to make it undoable. */
+function commit(){
+  undoStack.push(historyPrev);
+  if(undoStack.length>HISTORY_LIMIT) undoStack.shift();
+  redoStack.length=0;
+  historyPrev=snapshot();
+  updateHistoryButtons();
+}
+function updateHistoryButtons(){
+  (el('undoBtn') as HTMLButtonElement).disabled=undoStack.length===0;
+  (el('redoBtn') as HTMLButtonElement).disabled=redoStack.length===0;
+}
+function undo(){
+  if(!undoStack.length) return;
+  redoStack.push(snapshot());
+  const prev=undoStack.pop()!;
+  applyModel(JSON.parse(prev));
+  historyPrev=prev; updateHistoryButtons();
+}
+function redo(){
+  if(!redoStack.length) return;
+  undoStack.push(snapshot());
+  const next=redoStack.pop()!;
+  applyModel(JSON.parse(next));
+  historyPrev=next; updateHistoryButtons();
+}
+
 function saveFile(){
   const blob=new Blob([JSON.stringify(serializeModel(),null,2)],{type:'application/json'});
   const url=URL.createObjectURL(blob);
@@ -965,7 +1113,7 @@ function saveFile(){
 function openFile(){
   const inp=document.createElement('input'); inp.type='file'; inp.accept='.json,application/json';
   inp.onchange=()=>{ const f=inp.files?.[0]; if(!f) return; const r=new FileReader();
-    r.onload=()=>{ try{ applyModel(JSON.parse(String(r.result))); flashHint('Loaded <b>'+f.name+'</b>.'); }
+    r.onload=()=>{ try{ applyModel(JSON.parse(String(r.result))); commit(); flashHint('Loaded <b>'+f.name+'</b>.'); }
       catch(e){ flashHint('Could not open that file — '+(e instanceof Error?e.message:String(e))); } };
     r.readAsText(f); };
   inp.click();
@@ -1005,6 +1153,24 @@ function loadRLC(){
   resetScope();
   selected=null; refreshMeta(); renderInspector(); draw();
   flashHint('Series RLC bandpass. Press <b>Bode</b> for the resonant peak near 1.6kHz — or <b>Run</b> to see it in time.');
+}
+
+// A 0→5V square wave into an RC whose time constant is a few periods long, so
+// the capacitor can't follow the edges and integrates them into the classic
+// exponential ramp. Probes on the input and output show both at once.
+function loadSquare(){
+  comps=[]; wires=[]; uid=1; scopeProbes=[];
+  comps.push({id:'SQ'+(uid++),type:'SQ',x:4,y:6,rot:90,value:5,amp:2.5,freq:500,off:2.5,duty:0.5});
+  wires.push({x1:4,y1:8,x2:4,y2:10}); comps.push({id:'GND'+(uid++),type:'GND',x:4,y:10});
+  wires.push({x1:4,y1:6,x2:6,y2:6});
+  comps.push({id:'R'+(uid++),type:'R',x:6,y:6,rot:0,value:4700});   // input(6,6)->output(8,6)
+  comps.push({id:'C'+(uid++),type:'C',x:8,y:6,rot:90,value:2.2e-7});// tau ≈ 1ms vs 2ms period
+  wires.push({x1:8,y1:8,x2:8,y2:10}); comps.push({id:'GND'+(uid++),type:'GND',x:8,y:10});
+  scopeProbes.push({x:4,y:6,color:SCOPE_COLORS[0]});  // square input
+  scopeProbes.push({x:8,y:6,color:SCOPE_COLORS[1]});  // integrated output
+  resetScope();
+  selected=null; refreshMeta(); renderInspector(); draw();
+  flashHint('Square wave into an RC integrator — press <b>Run</b>. Blue is the square input, yellow the exponential ramp.');
 }
 
 // Sine source into an RC low-pass (fc≈800Hz), driven at the cutoff. Two scope
@@ -1107,9 +1273,12 @@ function loadRC(){
 }
 
 el('runBtn').onclick=()=>{ running?stopSim():startSim(); };
-el('clearBtn').onclick=()=>{ stopSim(); comps=[];wires=[];lastResult=null;selected=null; scopeProbes=[]; scopeBuf=null; bodeData=null; panelMode='scope'; refreshMeta(); renderInspector(); draw(); };
+el('clearBtn').onclick=()=>{ stopSim(); comps=[];wires=[];lastResult=null;selected=null; scopeProbes=[]; scopeBuf=null; bodeData=null; panelMode='scope'; refreshMeta(); commit(); renderInspector(); draw(); };
 el('bodeBtn').onclick=runBode;
-el('rotateBtn').onclick=()=>{ ghostRot=turn(ghostRot); if(selected){selected.rot=turn(rotOf(selected)); refreshMeta();} draw(); };
+el('resetBtn').onclick=resetSim;
+el('undoBtn').onclick=undo;
+el('redoBtn').onclick=redo;
+el('rotateBtn').onclick=()=>{ ghostRot=turn(ghostRot); if(selected){selected.rot=turn(rotOf(selected)); refreshMeta(); commit();} draw(); };
 el('saveBtn').onclick=saveFile;
 el('openBtn').onclick=openFile;
 el('shareBtn').onclick=shareURL;
@@ -1119,3 +1288,6 @@ buildRail(); buildGallery(); setTool('select'); renderInspector();
 view.ox=40; view.oy=40;
 resize();
 if(!loadFromHash()) loadRC();   // restore a shared circuit, else the default example
+// The circuit we boot with is the baseline: undo can't rewind past it.
+historyPrev=snapshot();
+updateHistoryButtons();

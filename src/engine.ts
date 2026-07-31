@@ -38,9 +38,12 @@ export interface Capacitor extends Part { type: 'C'; nodes: Pair; value: number 
 export interface Inductor extends Part { type: 'L'; nodes: Pair; value: number }        // henries
 export interface CurrentSource extends Part { type: 'I'; nodes: Pair; value: number }   // amps
 export interface DCSource extends Part { type: 'V'; nodes: Pair; value: number; wave?: 'DC' }
-export interface SineSource extends Part {
-  type: 'VS'; nodes: Pair; wave: 'SIN';
+/** A time-varying source: sine, or square/pulse with an adjustable duty cycle. */
+export interface WaveSource extends Part {
+  type: 'VS'; nodes: Pair; wave: 'SIN' | 'SQR';
   value?: number; amp?: number; freq?: number; off?: number; phase?: number;
+  /** Square wave only: fraction of each period spent high. Defaults to 0.5. */
+  duty?: number;
 }
 export interface Diode extends Part { type: 'D'; nodes: Pair }
 export interface Bjt extends Part { type: 'QN' | 'QP'; nodes: Triple; Is?: number; bf?: number; br?: number }
@@ -48,7 +51,7 @@ export interface Mosfet extends Part { type: 'MN' | 'MP'; nodes: Triple; vth?: n
 export interface OpAmp extends Part { type: 'OA'; nodes: Triple; gain?: number }
 
 /** Anything with an MNA branch-current unknown of its own. */
-export type VoltageSource = DCSource | SineSource;
+export type VoltageSource = DCSource | WaveSource;
 export type Component =
   | Resistor | Capacitor | Inductor | CurrentSource
   | VoltageSource | Diode | Bjt | Mosfet | OpAmp;
@@ -115,10 +118,23 @@ export function mos1(vgs: number, vds: number, vth: number, k: number, lam: numb
   };
 }
 
-// Instantaneous value of an independent source at time t. A DC source returns
-// its constant value; a SIN source returns offset + amp·sin(2πf·t + phase).
+// Instantaneous value of an independent source at time t.
+//   DC  : its constant value.
+//   SIN : offset + amp·sin(2πf·t + phase).
+//   SQR : offset ± amp, switching at the duty-cycle point of each period. The
+//         phase is expressed in radians like the sine's, so the two sources
+//         stay interchangeable; here it just shifts where in the cycle t=0
+//         falls. Amplitude is peak (not peak-to-peak), so a 5 V square swings
+//         between +5 and −5 and a unipolar 0/5 V pulse is off=2.5, amp=2.5.
 export function srcVal(c: VoltageSource, t: number): number {
   if (c.wave === 'SIN') return (c.off || 0) + (c.amp || 0) * Math.sin(2 * Math.PI * (c.freq || 0) * (t || 0) + (c.phase || 0));
+  if (c.wave === 'SQR') {
+    const cycles = (c.freq || 0) * (t || 0) + (c.phase || 0) / (2 * Math.PI);
+    let frac = cycles % 1;
+    if (frac < 0) frac += 1;                       // keep t<0 well defined
+    const duty = c.duty ?? 0.5;
+    return (c.off || 0) + (c.amp || 0) * (frac < duty ? 1 : -1);
+  }
   return c.value ?? 0;
 }
 

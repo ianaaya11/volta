@@ -14,6 +14,8 @@
     <div class="title">⚡ <b>Zuri</b> · live circuit simulator</div>
     <span class="pill" id="nodeCount">0 nodes</span>
     <div class="sep"></div>
+    <button class="btn ghost" id="undoBtn" title="Undo (⌘Z)" disabled>↶</button>
+    <button class="btn ghost" id="redoBtn" title="Redo (⇧⌘Z)" disabled>↷</button>
     <select class="btn ghost" id="gallery" title="Load an example circuit"></select>
     <button class="btn ghost" id="saveBtn" title="Save circuit as a .json file">💾 Save</button>
     <button class="btn ghost" id="openBtn" title="Open a saved .json circuit">📂 Open</button>
@@ -21,6 +23,7 @@
     <button class="btn ghost" id="clearBtn">Clear</button>
     <button class="btn" id="rotateBtn" title="Rotate selected (R)">⟳ Rotate</button>
     <button class="btn" id="bodeBtn" title="AC frequency sweep of probed nodes">📈 Bode</button>
+    <button class="btn" id="resetBtn" title="Restart the simulation from t=0 (keeps the circuit)">↺ Reset</button>
     <button class="btn primary" id="runBtn">▶ Run</button>
   </header>
 
