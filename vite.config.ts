@@ -8,10 +8,10 @@ export default defineConfig({
   plugins: [
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['icon.svg'],
+      includeAssets: ['icon.svg', 'about-photo.webp'],
       manifest: {
-        name: 'Zuri — Live Circuit Simulator',
-        short_name: 'Zuri',
+        name: 'Volta — Live Circuit Simulator',
+        short_name: 'Volta',
         description: 'Design and simulate analog circuits with real-time animation, a scope, and Bode analysis.',
         theme_color: '#0c111a',
         background_color: '#0c111a',
@@ -22,8 +22,10 @@ export default defineConfig({
         ],
       },
       workbox: {
-        // The whole app is static and offline-first once cached.
-        globPatterns: ['**/*.{js,css,html,svg,png,ico}'],
+        // The whole app is static and offline-first once cached. jpg is here
+        // for the About page's portrait: About is the landing page, so leaving
+        // it out means an offline first visit lands on a broken avatar.
+        globPatterns: ['**/*.{js,css,html,svg,png,jpg,webp,ico}'],
       },
     }),
   ],

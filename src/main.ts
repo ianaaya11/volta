@@ -9,6 +9,7 @@ import type { AiCircuit } from './ai';
 import { Mcu, checkSketch, type McuHost } from './mcu';
 import { DIGITAL, initialState, isDigital, LOGIC_HIGH, LOGIC_INPUT_Z, SINK_OFF,
   type DigitalState, type DigitalType } from './digital';
+import * as community from './community';
 import './style.css';
 
 //  PART 2 — SCHEMATIC MODEL + EDITOR
@@ -23,6 +24,10 @@ export type PartType = 'R' | 'V' | 'I' | 'C' | 'L' | 'VS' | 'SQ' | 'D'
   | 'E' | 'G' | 'F' | 'H' | 'XF'
   // Electromechanical: state the editor integrates, driving ordinary devices.
   | 'RLY' | 'MOT'
+  // Meters. Neither needs a new stamp: an ammeter is a 0 V source, whose
+  // branch current the solver already reports, and a voltmeter is a very large
+  // resistor. See toDevices.
+  | 'VM' | 'AM' | 'OM' | 'WM'
   // Digital. Every one of these is behavioural — see digital.ts — with
   // high-impedance inputs and driven outputs. LOGIC is the source that feeds
   // them: a switchable level, or a clock when given a frequency.
@@ -54,20 +59,31 @@ interface Comp {
   angle?: number;   // DC motor shaft angle, radians (for the animation only)
 }
 interface Wire { x1: number; y1: number; x2: number; y2: number }
-interface Probe { x: number; y: number; color: string }
+interface Probe {
+  x: number; y: number; color: string;
+  /** Node id resolved at Run. A probe carried along by a drag lands on new
+   *  coordinates that the RUNNING netlist — captured once at Run — knows
+   *  nothing about, so looking it up by position again returns a stranger node
+   *  and the trace flatlines. Pinning the id keeps the trace on its net. */
+  node?: NodeId;
+}
 interface Pt { x: number; y: number }
 /** Maps a grid point to the colour of the node it sits on (null when idle). */
 type NodeColor = ((x: number, y: number) => string | null) | null;
 
 // ---- Canvas palette --------------------------------------------------------
 // Every colour the canvas draws with lives here rather than inline, so the look
-// can change in one place. The CSS variables in style.css carry the same
-// palette for the DOM chrome; the two are kept deliberately in step.
+// changes in one place. The values below are only a fallback: the real source
+// of truth is the `--cv-*` custom properties in style.css, which syncPalette()
+// reads into this object whenever the theme changes. That way the schematic and
+// the chrome around it cannot drift — there is one palette, in one file, and
+// a light canvas with dark chrome is not expressible.
 const T={
-  gridDot:'#c3ccd8',      // minor grid — must read without shouting
-  gridLine:'#dde3ec',     // major gridlines every 5 units
+  gridMajor:'#c3ccd8',    // every 5th rule, drawn stronger
+  gridMinor:'#dde3ec',
   wire:'#55627a',
   ink:'#2b3440',          // component bodies and leads
+  body:'#ffffff',         // fill inside a body: IC blocks, NOT bubbles
   label:'#7a879b',        // value labels and axes
   accent:'#1f6feb',
   junction:'#55627a',
@@ -78,8 +94,85 @@ const T={
   plotGrid:'#e6ebf3',
   zeroLine:'#aab6c8',
   selV:'#2b3440', selI:'#e0952a',
-  mcuOn:'#2ea05a', mcuOff:'#eef2f7', mcuOnInk:'#ffffff',
+  mcuOn:'#a4670f', mcuOff:'#eef2f7', mcuOnInk:'#ffffff',
+  segOn:'#d8382c', segOff:'#e9edf3',
+  selBody:'#eaf1fe',     // body fill while selected, so the tint reads through
+  highlight:'#ffd84d',   // the hovered net, washed under the wires
+  chargePos:'#e05545', chargeNeg:'#3f6ee0',   // capacitor plate charge bubbles
+  vHigh:'#d23a34', vLow:'#236ad9',
+  shadow:'rgba(16,24,40,0.13)',
 };
+/** Which stylesheet custom property backs each palette entry. */
+const T_VARS:Record<keyof typeof T,string>={
+  gridMajor:'--cv-grid-major', gridMinor:'--cv-grid-minor', wire:'--cv-wire',
+  ink:'--cv-ink', body:'--cv-body', label:'--cv-label', accent:'--cv-accent',
+  junction:'--cv-junction', current:'--cv-current', panelBg:'--cv-panel-bg',
+  panelLine:'--cv-panel-line', panelInk:'--cv-panel-ink', plotGrid:'--cv-plot-grid',
+  zeroLine:'--cv-zero-line', selV:'--cv-sel-v', selI:'--cv-sel-i',
+  mcuOn:'--cv-mcu-on', mcuOff:'--cv-mcu-off', mcuOnInk:'--cv-mcu-on-ink',
+  segOn:'--cv-seg-on', segOff:'--cv-seg-off',
+  selBody:'--cv-sel-body',
+  highlight:'--cv-highlight',
+  chargePos:'--cv-charge-pos', chargeNeg:'--cv-charge-neg',
+  vHigh:'--cv-v-high', vLow:'--cv-v-low', shadow:'--canvas-shadow',
+};
+
+// ---- Theme -----------------------------------------------------------------
+// The chosen theme is stamped on <html> as data-theme (an inline script in
+// index.html does it before first paint, so there is no flash of the wrong
+// theme). Everything downstream — CSS and canvas alike — follows that one
+// attribute. Nothing here decides a colour; it only decides which column of
+// the stylesheet's palette is live.
+type Theme='light'|'dark';
+const THEME_KEY='volta.theme';
+/** [r,g,b] of the voltage ramp's three stops, re-parsed on each theme change. */
+let ramp={neutral:[85,98,122],high:[210,58,52],low:[35,106,217]};
+
+function hexRGB(h:string):[number,number,number]{
+  const s=h.trim().replace(/^#/,'');
+  const n=s.length===3?s.replace(/(.)/g,'$1$1'):s;
+  const v=parseInt(n.slice(0,6),16);
+  return Number.isNaN(v)?[85,98,122]:[(v>>16)&255,(v>>8)&255,v&255];
+}
+/** Pull every --cv-* value out of the live stylesheet and into T. */
+function syncPalette(){
+  const cs=getComputedStyle(document.documentElement);
+  for(const key of Object.keys(T_VARS) as (keyof typeof T)[]){
+    const v=cs.getPropertyValue(T_VARS[key]).trim();
+    if(v) T[key]=v;
+  }
+  ramp={neutral:hexRGB(T.wire),high:hexRGB(T.vHigh),low:hexRGB(T.vLow)};
+}
+function currentTheme():Theme{
+  return document.documentElement.dataset.theme==='dark'?'dark':'light';
+}
+/** @param persist false when adopting the OS preference or booting — only an
+ *  explicit click should write a choice that outranks the system. */
+function applyTheme(t:Theme,persist=true){
+  document.documentElement.dataset.theme=t;
+  if(persist) try{ localStorage.setItem(THEME_KEY,t); }catch{}
+  // The mobile browser/status bar chrome takes its colour from this meta tag;
+  // left alone it keeps painting the light header colour over a dark app.
+  const meta=document.querySelector('meta[name="theme-color"]');
+  syncPalette();
+  if(meta) meta.setAttribute('content',getComputedStyle(document.documentElement)
+    .getPropertyValue('--panel').trim()||'#ffffff');
+  const btn=document.getElementById('themeBtn');
+  if(btn){
+    const dark=t==='dark';
+    btn.innerHTML=`<svg class="ic" viewBox="0 0 24 24"><use href="#i-${dark?'sun':'moon'}"/></svg>`;
+    btn.title=dark?'Switch to the light theme':'Switch to the dark theme';
+    btn.setAttribute('aria-label',btn.title);
+  }
+}
+
+// Meter internals. The test current is small enough not to disturb a live
+// circuit much and large enough to read against numerical noise; the open
+// reading is the resistance a real meter shows as "OL".
+const OHM_TEST_I=1e-3;      // amps injected by the ohmmeter
+const OHM_OPEN_R=1e9;       // its own shunt: an open circuit reads this
+const OHM_REF_R=1e10;       // its tie to the reference, so it can float alone
+const VOLT_COIL_R=1e8;      // wattmeter voltage coil, as for the voltmeter
 
 const GRID=26;               // pixels per grid unit
 /** Non-null element lookup — every id here is declared in index.html. */
@@ -89,7 +182,10 @@ const el=(id:string):HTMLElement=>{
   return e;
 };
 const cv=el('cv') as HTMLCanvasElement;
-const ctx=cv.getContext('2d')!;
+// Rebindable so a thumbnail can be rendered with the SAME symbol code that
+// draws the screen — see thumbnailDataURL. Duplicating the symbols into a
+// second renderer would guarantee the two drift apart.
+let ctx=cv.getContext('2d')!;
 const stage=el('stage');
 
 // The document: a list of components and a list of wires.
@@ -136,6 +232,7 @@ const PIN_OFFSETS:Partial<Record<PartType,[number,number][]>>={
   H:[[4,-1],[4,1],[0,-1],[0,1]],
   XF:[[0,-1],[0,1],[4,-1],[4,1]],  // primary +/-, secondary +/-
   RLY:[[0,-1],[0,1],[4,-1],[4,1]], // coil +/-, contact A/B
+  WM:[[0,-1],[0,1],[4,-1],[4,1]],  // current coil in/out, voltage sense +/-
   LOGIC:[[0,0]],                   // one pin; the return path is ground
   ...Object.fromEntries(Object.keys(DIGITAL).map(t=>[t,digitalPins(t)])),
 };
@@ -170,6 +267,10 @@ interface TypeInfo { name:string; unit:string; def:number }
 // contain them and the renderer draws them, so they need entries here too.
 const TYPES:Record<PartType,TypeInfo>={
   R:{name:'Resistor',unit:'Ω',def:1000},
+  VM:{name:'Voltmeter',unit:'Ω',def:1e8},
+  AM:{name:'Ammeter',unit:'Ω',def:0},
+  OM:{name:'Ohmmeter',unit:'Ω',def:0},
+  WM:{name:'Wattmeter',unit:'W',def:0},
   V:{name:'Voltage',unit:'V',def:5},
   I:{name:'Current',unit:'A',def:0.01},
   C:{name:'Capacitor',unit:'F',def:1e-6},
@@ -328,6 +429,31 @@ function toDevices(c:Comp,nodes:NodeId[],alloc:()=>NodeId):Component[]{
         : {id:c.id,type:'R',nodes:[nodes[0],0],value:MCU_INPUT_Z}];
     }
     case 'R': return [{id:c.id,type:'R',nodes:pair,value}];
+    // A real voltmeter is a big resistor, and modelling it as one keeps the
+    // matrix non-singular: a true open circuit would leave whatever it is
+    // measuring floating, with no path to the reference at all.
+    case 'VM': return [{id:c.id,type:'R',nodes:pair,value:Math.max(1e3,value||1e8)}];
+    // A real ammeter is a short. A 0 V source IS the ideal short, and the
+    // solver already solves for its branch current — which is exactly the
+    // reading. This is the same trick the F and H sources use internally.
+    case 'AM': return [{id:c.id,type:'V',nodes:pair,value:0,wave:'DC'}];
+    // An ohmmeter is not a passive part at all: a real one INJECTS a known test
+    // current and divides the voltage it produces. Modelled the same way, so
+    // the reading is derived the way the instrument derives it rather than
+    // read off a value the solver never computes. The big shunt across it is
+    // what a real meter's open-circuit reading is — without it an unconnected
+    // meter would have nowhere to push its test current and the matrix would
+    // be singular.
+    case 'OM': return [
+      {id:c.id,type:'I',nodes:[pair[1],pair[0]],value:OHM_TEST_I},
+      {id:c.id+':shunt',type:'R',nodes:pair,value:OHM_OPEN_R},
+      // A handheld meter is a self-contained loop: you measure a resistor lying
+      // on the bench without wiring it to anything. That loop still needs a
+      // reference or the matrix is singular, so the meter brings its own —
+      // a tie to node 0 ten times weaker than its own shunt, which is far too
+      // faint to move any reading but enough to anchor a floating island.
+      {id:c.id+':ref',type:'R',nodes:[pair[1],0],value:OHM_REF_R},
+    ];
     case 'C': return [{id:c.id,type:'C',nodes:pair,value}];
     case 'CP': return [{id:c.id,type:'C',nodes:pair,value}];
     case 'L': return [{id:c.id,type:'L',nodes:pair,value}];
@@ -364,6 +490,16 @@ function toDevices(c:Comp,nodes:NodeId[],alloc:()=>NodeId):Component[]{
       return [{id:c.id,type:c.type,nodes:quad,value}];
     case 'XF':
       return [{id:c.id,type:'XF',nodes:quad,value,l2:c.l2??value,k:c.k??0.99}];
+    // A real wattmeter has two coils: a current coil in series with the load
+    // and a voltage coil across it. Both are modelled honestly — a 0 V source
+    // for the current coil (its branch current IS the load current) and a large
+    // resistor for the voltage coil — and the reading is their product, which
+    // is what makes it read real power on an AC waveform rather than the
+    // product of two averages.
+    case 'WM': return [
+      {id:c.id,type:'V',nodes:[nodes[0],nodes[1]],value:0,wave:'DC'},
+      {id:c.id+':v',type:'R',nodes:[nodes[2],nodes[3]],value:VOLT_COIL_R},
+    ];
     case 'RLY': {
       // Coil = winding resistance in series with its inductance, so the
       // armature takes time to pull in and the coil kicks back when it opens.
@@ -449,6 +585,16 @@ function pinCurrents(c:Comp,result:Solution):number[]{
     const io=cur(c.id), is=cur(c.id+':sense');
     return [io,-io,is,-is];
   }
+  if(c.type==='WM'){
+    const ii=cur(c.id), iv=cur(c.id+':v');
+    return [ii,-ii,iv,-iv];        // current coil and voltage coil are separate
+  }
+  if(c.type==='OM'){
+    // What flows through the thing under test is the injected current minus
+    // whatever the meter's own shunt takes.
+    const i=OHM_TEST_I-cur(c.id+':shunt');
+    return [i,-i];
+  }
   const t=result.terminals&&result.terminals[c.id];
   if(t) return [t.Ic,t.Ib,t.Ie];                  // 3-terminal active devices
   const i=cur(c.id);
@@ -487,7 +633,9 @@ function buildNetlist():Netlist{
   // their inputs leak to it and their outputs drive against it — so a circuit
   // made of them already has a 0 V reference and shouldn't be made to carry a
   // ground symbol that connects to nothing just to satisfy the Run check.
-  const implicitGround=comps.some(c=>isDigital(c.type)||c.type==='MCU'||c.type==='LOGIC');
+  // An ohmmeter carries its own reference (see toDevices), so a bare resistor
+  // and a meter is a complete, runnable measurement with no ground symbol.
+  const implicitGround=comps.some(c=>isDigital(c.type)||c.type==='MCU'||c.type==='LOGIC'||c.type==='OM');
   const hasGround=grounded.size>0||implicitGround;
   const nodeCount=next-1+(hasGround?1:0);
   return {netComps,nodeOf,nodeCount,grounded:hasGround};
@@ -630,16 +778,16 @@ let vRange={min:-1,max:1};
 // warm red at the high end, and a neutral slate in the middle so an unenergised
 // net doesn't shout. Saturation carries the signal; lightness stays dark enough
 // to read against white.
+/** Node voltage as a colour: neutral wire grey at mid-rail, ramping to the
+ *  theme's high and low stops at the rails. Both endpoints come from the
+ *  palette, so a dark schematic ramps through colours that survive on grey. */
 function voltColor(v:number):string{
   const {min,max}=vRange; const mid=(min+max)/2; const half=Math.max(1e-6,(max-min)/2);
   const t=Math.max(-1,Math.min(1,(v-mid)/half));
-  if(t>=0){ // neutral slate -> red
-    const r=Math.round(85+125*t), g=Math.round(98-40*t), b=Math.round(122-70*t);
-    return `rgb(${r},${g},${b})`;
-  }
-  const k=-t;  // neutral slate -> blue
-  const r=Math.round(85-50*k), g=Math.round(98+8*k), b=Math.round(122+95*k);
-  return `rgb(${r},${g},${b})`;
+  const [nr,ng,nb]=ramp.neutral;
+  const [er,eg,eb]=t>=0?ramp.high:ramp.low;
+  const k=Math.abs(t);
+  return `rgb(${Math.round(nr+(er-nr)*k)},${Math.round(ng+(eg-ng)*k)},${Math.round(nb+(eb-nb)*k)})`;
 }
 
 let animPhase=0;
@@ -664,7 +812,7 @@ function draw(){
     const x1=Math.ceil(br.x/GRID), y1=Math.ceil(br.y/GRID);
     for(const major of [false,true]){
       ctx.beginPath();
-      ctx.strokeStyle=major?T.gridDot:T.gridLine;
+      ctx.strokeStyle=major?T.gridMajor:T.gridMinor;
       ctx.lineWidth=(major?1:1)*px;
       for(let i=x0;i<=x1;i++){
         if((Math.abs(i)%5===0)!==major) continue;
@@ -686,6 +834,9 @@ function draw(){
     const nd=net.nodeOf(x,y); const v=lastResult.nodeVoltage[nd]??0; return voltColor(v);
   };
 
+  // The hovered net washes in underneath, so the wires draw on top of it.
+  if(hover) drawNetHighlight(net??buildNetlist());
+
   // wires
   const wc = running? solveWireCurrents(lastResult) : new Map<number,number>();
   wires.forEach((w,wi)=>{
@@ -696,7 +847,28 @@ function draw(){
   });
 
   // components
-  for(const c of comps) drawComponent(c, nodeColor);
+  // Selection reads as COLOUR, not as a box. A dashed rectangle round a part
+  // is another boundary competing with the symbol's own outline, and on a dense
+  // schematic it is one more thing to look past. Tinting the part itself says
+  // "this one" without adding a line to the drawing — so the body, its label
+  // and a soft wash behind it all shift to the accent, and the symbol keeps its
+  // shape.
+  for(const c of comps){
+    const sel = c===selected || multi.includes(c);
+    if(!sel){ drawComponent(c, nodeColor); continue; }
+    // The wash sits under the symbol so it never washes the symbol out.
+    const ps=pinsOf(c);
+    const xs=ps.map(p=>gx(p.x)), ys=ps.map(p=>gy(p.y));
+    ctx.save();
+    ctx.fillStyle=T.accent; ctx.globalAlpha=0.13;
+    roundRectPath(Math.min(...xs)-15,Math.min(...ys)-15,
+      Math.max(...xs)-Math.min(...xs)+30, Math.max(...ys)-Math.min(...ys)+30, 8);
+    ctx.fill(); ctx.restore();
+    const ink=T.ink, label=T.label, body=T.body;
+    T.ink=T.accent; T.label=T.accent; T.body=T.selBody;
+    try{ drawComponent(c, nodeColor); }
+    finally{ T.ink=ink; T.label=label; T.body=body; }
+  }
 
   // scope probe markers
   if(scopeProbes.length){
@@ -716,28 +888,45 @@ function draw(){
   for(const [k,n] of pinCount){ if(n>=3){ const [x,y]=k.split(',').map(Number);
     ctx.beginPath(); ctx.arc(gx(x),gy(y),3.5,0,7); ctx.fill(); } }
 
-  // wire drawing preview
-  if(tool==='wire'&&wireStart){ ctx.strokeStyle=T.accent; ctx.setLineDash([5,4]); ctx.lineWidth=2;
+  // Wire preview — the actual route, not a straight line to the cursor, so the
+  // corner and the pin it will snap to are both visible before you commit.
+  if(tool==='wire'){
     const mw=toWorld(mouse.px,mouse.py);
-    ctx.beginPath(); ctx.moveTo(gx(wireStart.x),gy(wireStart.y)); ctx.lineTo(mw.x,mw.y); ctx.stroke(); ctx.setLineDash([]); }
+    const a=wireAnchor(mw.x/GRID,mw.y/GRID);
+    ctx.strokeStyle=T.accent; ctx.lineWidth=2;
+    if(wireStart){
+      ctx.setLineDash([5,4]);
+      ctx.beginPath();
+      const segs=routeWire(wireStart,{x:a.x,y:a.y},wireExit,a.exit,[wireBox,a.box]);
+      if(segs.length){
+        ctx.moveTo(gx(segs[0].x1),gy(segs[0].y1));
+        for(const s of segs) ctx.lineTo(gx(s.x2),gy(s.y2));
+      }
+      ctx.stroke(); ctx.setLineDash([]);
+    }
+    // Ring the pin the next click will land on.
+    if(a.exit){ ctx.beginPath(); ctx.arc(gx(a.x),gy(a.y),5,0,7); ctx.stroke(); }
+  }
   // ghost for placing
   if(isPlaceType(tool)&&mouse.gx!=null&&mouse.gy!=null){ drawGhost(tool,mouse.gx,mouse.gy); }
 
-  // selection halo
-  if(selected){ const ps=pinsOf(selected);
-    ctx.strokeStyle=T.accent; ctx.setLineDash([4,3]); ctx.lineWidth=1.5;
-    const xs=ps.map(p=>gx(p.x)), ys=ps.map(p=>gy(p.y));
-    const minx=Math.min(...xs)-14,maxx=Math.max(...xs)+14,miny=Math.min(...ys)-14,maxy=Math.max(...ys)+14;
-    ctx.strokeRect(minx,miny,maxx-minx,maxy-miny); ctx.setLineDash([]); }
+  // (Selection is drawn as colour, with the parts themselves — see above.)
 
   ctx.restore();
   // Panels are screen furniture, not part of the schematic: they keep a fixed
   // size and position regardless of zoom, so they draw in screen space.
   ctx.setTransform(dpr,0,0,dpr,0,0);
+  drawHoverChip();
   if(panelMode==='bode') drawBode(); else drawScope();
+  // Zoom readout, as a chip rather than bare text floating on the grid.
   if(view.scale!==1){
-    ctx.fillStyle=T.label; ctx.font='10px ui-monospace,monospace'; ctx.textAlign='right';
-    ctx.fillText(Math.round(view.scale*100)+'%', W-12, 18); ctx.textAlign='left';
+    const txt=Math.round(view.scale*100)+'%';
+    ctx.font=`10px ${MONO}`;
+    const tw=ctx.measureText(txt).width, cw=tw+16, cx=W-12-cw, cy=10;
+    ctx.fillStyle=T.panelBg; ctx.strokeStyle=T.panelLine; ctx.lineWidth=1;
+    roundRectPath(cx,cy,cw,20,10); ctx.fill(); ctx.stroke();
+    ctx.fillStyle=T.label; ctx.textAlign='center';
+    ctx.fillText(txt, cx+cw/2, cy+14); ctx.textAlign='left';
   }
 }
 
@@ -749,7 +938,7 @@ function draw(){
 interface Channel { label:string; color:string; data:number[]; unit:string }
 // Deliberately outside SCOPE_COLORS: the selected part's voltage shares a plot
 // with the probe traces, so it must not collide with any of them.
-const SEL_V_COLOR=T.selV, SEL_I_COLOR=T.current;
+// (read from T at draw time so a theme switch repaints them)
 
 function scopeChannels():Channel[]{
   const chs:Channel[]=[];
@@ -757,10 +946,62 @@ function scopeChannels():Channel[]{
   scopeProbes.forEach((p,i)=>chs.push({
     label:`probe ${i+1}`, color:p.color, data:buf?buf.series[i]:[], unit:'V' }));
   if(selected&&selected.type!=='GND'){
-    chs.push({label:`${selected.id} V`, color:SEL_V_COLOR, data:buf?buf.selV:[], unit:'V'});
-    chs.push({label:`${selected.id} I`, color:SEL_I_COLOR, data:buf?buf.selI:[], unit:'A'});
+    chs.push({label:`${selected.id} V`, color:T.selV, data:buf?buf.selV:[], unit:'V'});
+    chs.push({label:`${selected.id} I`, color:T.selI, data:buf?buf.selI:[], unit:'A'});
   }
   return chs;
+}
+
+// ---- Panel furniture -------------------------------------------------------
+// The scope and the Bode panel are the same object with different contents, so
+// the frame, the title row and the empty-state message are drawn once here.
+const UI_FONT='-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif';
+const MONO='ui-monospace,SFMono-Regular,Menlo,monospace';
+
+/** Uppercase section label with letter-spacing where the browser supports it. */
+function smallCaps(text:string,x:number,y:number,color=T.label){
+  ctx.save();
+  ctx.fillStyle=color; ctx.font=`600 9px ${UI_FONT}`; ctx.textAlign='left';
+  // letterSpacing is Chrome 99+/Safari 17+; without it the label just sits
+  // tighter, which is a cosmetic loss rather than a broken label.
+  if('letterSpacing' in ctx) (ctx as CanvasRenderingContext2D&{letterSpacing:string}).letterSpacing='0.09em';
+  ctx.fillText(text.toUpperCase(),x,y);
+  ctx.restore();
+}
+
+function roundRectPath(x:number,y:number,w:number,h:number,r:number){
+  ctx.beginPath();
+  if(ctx.roundRect) ctx.roundRect(x,y,w,h,r);
+  else ctx.rect(x,y,w,h);          // ancient webviews: square corners, still legible
+}
+
+/** Floating panel: soft shadow, rounded edge, and a ruled title row. */
+function panelFrame(x:number,y:number,w:number,h:number,title:string,right?:string){
+  ctx.save();
+  ctx.shadowColor=T.shadow; ctx.shadowBlur=20; ctx.shadowOffsetY=5;
+  ctx.fillStyle=T.panelBg; roundRectPath(x,y,w,h,10); ctx.fill();
+  ctx.restore();
+  ctx.strokeStyle=T.panelLine; ctx.lineWidth=1;
+  roundRectPath(x+0.5,y+0.5,w-1,h-1,10); ctx.stroke();
+  smallCaps(title,x+14,y+17);
+  if(right){
+    ctx.save();
+    ctx.fillStyle=T.label; ctx.font=`10px ${MONO}`; ctx.textAlign='right';
+    ctx.fillText(right,x+w-14,y+17); ctx.restore();
+  }
+  // Hairline under the title, inset so it reads as a rule and not a border.
+  ctx.strokeStyle=T.panelLine; ctx.globalAlpha=.7;
+  ctx.beginPath(); ctx.moveTo(x+12,y+25.5); ctx.lineTo(x+w-12,y+25.5); ctx.stroke();
+  ctx.globalAlpha=1;
+}
+
+/** Centred placeholder for a panel with nothing to plot yet. */
+function panelMessage(msg:string,x:number,y:number,w:number,h:number){
+  ctx.save();
+  ctx.fillStyle=T.label; ctx.font=`12px ${UI_FONT}`; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(msg,x+w/2,y+h/2);
+  ctx.restore();
+  ctx.textAlign='left'; ctx.textBaseline='alphabetic';
 }
 
 // Draw one set of same-unit traces into a rectangle, autoscaled to their range.
@@ -772,23 +1013,47 @@ function plotChannels(chs:Channel[], t:number[], x:number, y:number, w:number, h
   const pad=(mx-mn)*0.1; mn-=pad; mx+=pad;
   const t0=t[0], t1=t[t.length-1], dt=(t1-t0)||1;
   const X=(tv:number)=>x+(tv-t0)/dt*w, Y=(v:number)=>y+h-(v-mn)/(mx-mn)*h;
+
+  // Graticule: four horizontal divisions and six vertical ones, so a waveform
+  // can be read off rather than only looked at.
   ctx.strokeStyle=T.plotGrid; ctx.lineWidth=1;
-  for(let i=0;i<=2;i++){ const yy=y+h*i/2; ctx.beginPath(); ctx.moveTo(x,yy); ctx.lineTo(x+w,yy); ctx.stroke(); }
-  if(mn<0&&mx>0){ ctx.strokeStyle=T.zeroLine; ctx.beginPath(); ctx.moveTo(x,Y(0)); ctx.lineTo(x+w,Y(0)); ctx.stroke(); }
-  ctx.fillStyle=T.label; ctx.font='9px ui-monospace,monospace'; ctx.textAlign='right';
-  ctx.fillText(fmt(mx,unit), x-5, y+8); ctx.fillText(fmt(mn,unit), x-5, y+h);
+  ctx.beginPath();
+  for(let i=0;i<=4;i++){ const yy=Math.round(y+h*i/4)+0.5; ctx.moveTo(x,yy); ctx.lineTo(x+w,yy); }
+  for(let i=1;i<6;i++){ const xx=Math.round(x+w*i/6)+0.5; ctx.moveTo(xx,y); ctx.lineTo(xx,y+h); }
+  ctx.stroke();
+  // Zero is the one line worth distinguishing from the rest of the graticule.
+  if(mn<0&&mx>0){
+    ctx.save();
+    ctx.strokeStyle=T.zeroLine; ctx.setLineDash([3,3]);
+    ctx.beginPath(); ctx.moveTo(x,Y(0)); ctx.lineTo(x+w,Y(0)); ctx.stroke();
+    ctx.restore();
+  }
+  ctx.fillStyle=T.label; ctx.font=`9px ${MONO}`; ctx.textAlign='right';
+  ctx.fillText(fmt(mx,unit), x-6, y+7);
+  if(mn<0&&mx>0) ctx.fillText(fmt(0,unit), x-6, Y(0)+3);
+  ctx.fillText(fmt(mn,unit), x-6, y+h+3);
+
+  // Traces are clipped to the plot: an autoscale lags a fast transient by a
+  // frame or two, and an unclipped spike would scribble over the legend.
+  ctx.save();
+  ctx.beginPath(); ctx.rect(x,y-1,w,h+2); ctx.clip();
+  ctx.lineJoin='round'; ctx.lineCap='round';
   for(const c of chs){
     if(c.data.length<2) continue;
     // A trace can be shorter than the time axis (a newly-selected part starts
     // sampling mid-window), so align it to the most recent samples.
     const off=t.length-c.data.length;
-    ctx.strokeStyle=c.color; ctx.lineWidth=1.5; ctx.beginPath();
+    ctx.strokeStyle=c.color; ctx.lineWidth=1.75; ctx.beginPath();
     for(let k=0;k<c.data.length;k++){
       const xx=X(t[k+off]??t[t.length-1]), yy=Y(c.data[k]);
       k===0?ctx.moveTo(xx,yy):ctx.lineTo(xx,yy);
     }
     ctx.stroke();
+    // A dot on the newest sample marks where "now" is on each trace.
+    const lastX=X(t[t.length-1]), lastY=Y(c.data[c.data.length-1]);
+    ctx.fillStyle=c.color; ctx.beginPath(); ctx.arc(lastX,lastY,2.2,0,Math.PI*2); ctx.fill();
   }
+  ctx.restore();
   ctx.textAlign='left';
 }
 
@@ -798,57 +1063,74 @@ function drawScope(){
   const W=cv.width/devicePixelRatio, H=cv.height/devicePixelRatio;
   const volts=chs.filter(c=>c.unit==='V'), amps=chs.filter(c=>c.unit==='A');
   const twoRow=volts.length>0&&amps.length>0;
-  const pad=10, ph=twoRow?208:170; const px=pad, py=H-ph-pad, pw=W-2*pad;
-  ctx.fillStyle=T.panelBg; ctx.strokeStyle=T.panelLine; ctx.lineWidth=1;
-  ctx.fillRect(px,py,pw,ph); ctx.strokeRect(px,py,pw,ph);
-  ctx.fillStyle=T.ink; ctx.font='11px ui-monospace,monospace'; ctx.textAlign='left';
-  ctx.fillText('OSCILLOSCOPE', px+12, py+16);
+  const pad=12, ph=twoRow?214:176; const px=pad, py=H-ph-pad, pw=W-2*pad;
+  const t=scopeBuf?.t;
+  const span=t&&t.length>1?fmt((t[t.length-1]-t[0])||1,'s')+' window':'';
+  panelFrame(px,py,pw,ph,'Oscilloscope',span);
 
-  const plotX=px+58, plotY=py+26, plotW=pw-200, plotH=ph-46;
-  // legend, with each trace's live value
-  const lx=plotX+plotW+18; let ly=plotY+8;
+  // The legend column is sized to its longest entry rather than a fixed 200px,
+  // so two probes don't reserve room for six.
+  ctx.font=`10px ${MONO}`;
+  let legendW=0;
   for(const c of chs){
-    ctx.fillStyle=c.color; ctx.fillRect(lx,ly-8,11,11);
-    ctx.fillStyle=T.ink; ctx.font='10px ui-monospace,monospace'; ctx.textAlign='left';
     const last=c.data.length?c.data[c.data.length-1]:null;
-    ctx.fillText(c.label+(last!=null?`  ${fmt(last,c.unit)}`:''), lx+17, ly+1); ly+=19;
+    // Label and value stack on two lines, so the column only needs the wider
+    // of the two — measuring them joined reserves space nothing occupies.
+    legendW=Math.max(legendW,ctx.measureText(c.label).width);
+    if(last!=null) legendW=Math.max(legendW,ctx.measureText(fmt(last,c.unit)).width);
+  }
+  const legendCol=chs.length?Math.min(legendW+37,Math.max(pw*0.3,110)):0;
+  const plotX=px+56, plotY=py+38, plotW=pw-56-16-legendCol, plotH=ph-38-22;
+
+  // legend, with each trace's live value
+  const lx=plotX+plotW+20; let ly=plotY+9;
+  for(const c of chs){
+    ctx.fillStyle=c.color;
+    roundRectPath(lx,ly-8,10,10,3); ctx.fill();
+    ctx.fillStyle=T.panelInk; ctx.font=`10px ${MONO}`; ctx.textAlign='left';
+    const last=c.data.length?c.data[c.data.length-1]:null;
+    ctx.fillText(c.label,lx+17,ly+1);
+    if(last!=null){
+      ctx.fillStyle=T.label;
+      ctx.fillText(fmt(last,c.unit),lx+17,ly+13);
+    }
+    ly+=last!=null?28:19;
   }
   if(!chs.length){
-    ctx.fillStyle=T.label; ctx.font='11px ui-monospace,monospace'; ctx.textAlign='center';
-    ctx.fillText('tap a component to scope its voltage & current', plotX+plotW/2, plotY+plotH/2);
-    ctx.textAlign='left'; return;
+    panelMessage('Tap a component to scope its voltage & current',plotX,plotY,plotW,plotH);
+    return;
   }
-  if(!scopeBuf||scopeBuf.t.length<2){
-    ctx.fillStyle=T.label; ctx.font='11px ui-monospace,monospace'; ctx.textAlign='center';
-    ctx.fillText(running?'sampling…':'press Run to capture waveforms', plotX+plotW/2, plotY+plotH/2);
-    ctx.textAlign='left'; return;
+  if(!t||t.length<2){
+    panelMessage(running?'Sampling…':'Press Run to capture waveforms',plotX,plotY,plotW,plotH);
+    return;
   }
-  const t=scopeBuf.t;
   if(twoRow){
-    const gap=14, rowH=(plotH-gap)/2;
+    const gap=18, rowH=(plotH-gap)/2;
     plotChannels(volts, t, plotX, plotY, plotW, rowH, 'V');
     plotChannels(amps, t, plotX, plotY+rowH+gap, plotW, rowH, 'A');
   } else {
     plotChannels(chs, t, plotX, plotY, plotW, plotH, chs[0].unit);
   }
-  const dt=(t[t.length-1]-t[0])||1;
-  ctx.fillStyle=T.label; ctx.font='9px ui-monospace,monospace'; ctx.textAlign='center';
-  ctx.fillText(fmt(dt,'s')+' window', plotX+plotW/2, py+ph-6);
   ctx.textAlign='left';
 }
 
 // ---- Bode plot panel (AC frequency response) -------------------------------
 function drawBode(){
   const W=cv.width/devicePixelRatio, H=cv.height/devicePixelRatio;
-  const pad=10, ph=200; const px=pad, py=H-ph-pad, pw=W-2*pad;
-  ctx.fillStyle=T.panelBg; ctx.strokeStyle=T.panelLine; ctx.lineWidth=1;
-  ctx.fillRect(px,py,pw,ph); ctx.strokeRect(px,py,pw,ph);
-  ctx.fillStyle=T.ink; ctx.font='11px ui-monospace,monospace'; ctx.textAlign='left';
-  ctx.fillText('BODE · frequency response', px+12, py+16);
-  if(!bodeData){ ctx.fillStyle=T.label; ctx.fillText('place a probe on the output, then press Bode', px+180, py+16); return; }
-  const f=bodeData.freqs, f0=f[0], f1=f[f.length-1], lg=Math.log10;
+  const pad=12, ph=210; const px=pad, py=H-ph-pad, pw=W-2*pad;
+  const f=bodeData?.freqs;
+  panelFrame(px,py,pw,ph,'Bode · frequency response',
+    f?`${fmt(f[0],'Hz')} – ${fmt(f[f.length-1],'Hz')}`:'');
+  if(!bodeData||!f){
+    panelMessage('Place a probe on the output, then press Bode',px,py+26,pw,ph-26);
+    return;
+  }
+  const f0=f[0], f1=f[f.length-1], lg=Math.log10;
+  // 40px of title row above, 28px of decade labels below, 16px between the two
+  // stacked plots — anything left over is split 55/45 gain over phase.
   const plotX=px+54, plotW=pw-210;
-  const magY=py+28, magH=(ph-52)*0.55, phY=magY+magH+16, phH=(ph-52)*0.45;
+  const rows=ph-40-28-16;
+  const magY=py+40, magH=rows*0.55, phY=magY+magH+16, phH=rows*0.45;
   const Xf=(fr:number)=>plotX+(lg(fr)-lg(f0))/(lg(f1)-lg(f0))*plotW;
   let mn=Infinity,mx=-Infinity;
   for(const c of bodeData.curves) for(const v of c.mag){ if(isFinite(v)){ if(v<mn)mn=v; if(v>mx)mx=v; } }
@@ -874,40 +1156,110 @@ function drawBode(){
     ctx.beginPath(); f.forEach((fr,i)=>{ const xx=Xf(fr),yy=Yp(c.phase[i]); i===0?ctx.moveTo(xx,yy):ctx.lineTo(xx,yy); }); ctx.stroke(); ctx.setLineDash([]);
   });
   const lx=plotX+plotW+18; let ly=magY+8;
-  bodeData.curves.forEach(c=>{ ctx.fillStyle=c.color; ctx.fillRect(lx,ly-8,11,11);
-    ctx.fillStyle=T.ink; ctx.textAlign='left'; ctx.font='10px ui-monospace,monospace'; ctx.fillText(c.label,lx+17,ly+1); ly+=18; });
-  ctx.fillStyle=T.label; ctx.font='9px ui-monospace,monospace'; ctx.textAlign='left';
+  bodeData.curves.forEach(c=>{ ctx.fillStyle=c.color; roundRectPath(lx,ly-8,10,10,3); ctx.fill();
+    ctx.fillStyle=T.panelInk; ctx.textAlign='left'; ctx.font=`10px ${MONO}`; ctx.fillText(c.label,lx+17,ly+1); ly+=18; });
+  ctx.fillStyle=T.label; ctx.font=`9px ${MONO}`; ctx.textAlign='left';
   ctx.fillText('solid = gain (dB)', lx, ly+8); ctx.fillText('dashed = phase (°)', lx, ly+20);
 }
 
-// moving dots to show current (EveryCircuit-style)
+// ---- Capacitor charge -------------------------------------------------------
+// A ⊕/⊖ pair on the plates, swapping sides with the polarity and swelling with
+// the stored charge. It is the one thing a static capacitor symbol can never
+// say: which way it is charged and how hard, updated every frame. On an AC
+// source you watch them trade places at the source frequency, which is most of
+// the intuition the symbol is there to build.
+function drawCharge(c:Comp,P:(a:number,b:number)=>Pt){
+  if(!running||!lastResult) return;
+  const {v}=partVI(c,lastResult);
+  // Scale against the live voltage range so a 3 V swing and a 300 mV one both
+  // read; below a threshold there is no charge worth drawing.
+  const span=Math.max(1e-9,Math.max(Math.abs(vRange.min),Math.abs(vRange.max)));
+  const mag=Math.min(1,Math.abs(v)/span);
+  if(mag<0.04) return;
+  const r=3+mag*3.4;
+  // v is A-to-B: positive means plate A holds the positive charge.
+  const plateA=P(-7,0), plateB=P(7,0);
+  const pos=v>=0?plateA:plateB, neg=v>=0?plateB:plateA;
+  ctx.save();
+  ctx.lineWidth=1.4; ctx.lineCap='round';
+  const bubble=(p:Pt,fill:string,plus:boolean)=>{
+    ctx.fillStyle=fill; ctx.beginPath(); ctx.arc(p.x,p.y,r,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle=T.mcuOnInk; ctx.beginPath();
+    ctx.moveTo(p.x-r*0.5,p.y); ctx.lineTo(p.x+r*0.5,p.y);
+    if(plus){ ctx.moveTo(p.x,p.y-r*0.5); ctx.lineTo(p.x,p.y+r*0.5); }
+    ctx.stroke();
+  };
+  bubble(pos,T.chargePos,true);
+  bubble(neg,T.chargeNeg,false);
+  ctx.restore();
+}
+
+// Moving dots to show current. Spacing is a fixed distance in world units, not
+// a fraction of the segment: dividing each run into n dots made a short wire's
+// dots crawl far apart and a long one's bunch up, so the same current read as
+// two different flows depending on where you drew it. A constant pitch makes
+// the whole schematic one legible stream, and lets the dots carry the magnitude
+// in their size instead.
+const FLOW_PITCH=15;   // world units between dots
 function drawFlow(x1:number,y1:number,x2:number,y2:number,cur:number){
-  if(Math.abs(cur)<1e-12) return;
+  const mag=Math.abs(cur);
+  if(mag<1e-12) return;
   const len=Math.hypot(x2-x1,y2-y1); if(len<1) return;
   const ux=(x2-x1)/len, uy=(y2-y1)/len;
   const dir=Math.sign(cur);
-  const speed=Math.min(1, 0.15+Math.log10(1+Math.abs(cur)*1000)/4); // visual only
-  const spacing=16; const n=Math.max(1,Math.floor(len/spacing));
+  // Log scale: real circuits span microamps to amps, and a linear map would
+  // leave everything below the largest current apparently motionless.
+  const speed=Math.min(1, 0.15+Math.log10(1+mag*1000)/4);
+  const r=1.7+Math.min(1.3,Math.log10(1+mag*1000)/4);
+  // Phase in world units so a dot's position doesn't depend on segment length.
+  let off=(animPhase*speed*dir*FLOW_PITCH*3)%FLOW_PITCH;
+  if(off<0) off+=FLOW_PITCH;
   ctx.fillStyle=T.current;
-  for(let i=0;i<n;i++){
-    let f=((i/n)+ (animPhase*speed*dir))%1; if(f<0) f+=1;
-    const px=x1+ux*len*f, py=y1+uy*len*f;
-    ctx.beginPath(); ctx.arc(px,py,2.2,0,7); ctx.fill();
+  ctx.beginPath();
+  for(let d=off; d<len; d+=FLOW_PITCH){
+    ctx.moveTo(x1+ux*d+r, y1+uy*d);
+    ctx.arc(x1+ux*d, y1+uy*d, r, 0, Math.PI*2);
   }
+  ctx.fill();
 }
 
 // Which pins form the left-hand port and which the right, for the parts drawn
 // as a body with a port on each side. A dependent source senses on the left and
 // drives on the right; a transformer's primary is the left port.
 const FOUR_PIN_SIDES:Partial<Record<PartType,{left:[number,number];right:[number,number]}>>={
+  // The wattmeter's current coil is the in-series port, so it sits on the
+  // signal path (left in, right out is wrong here — both current pins are one
+  // port). Left = current coil, right = voltage sense, same as the relay.
+  WM:{left:[0,1],right:[2,3]},
   E:{left:[2,3],right:[0,1]},  G:{left:[2,3],right:[0,1]},
   F:{left:[2,3],right:[0,1]},  H:{left:[2,3],right:[0,1]},
   XF:{left:[0,1],right:[2,3]}, RLY:{left:[0,1],right:[2,3]},
 };
+/** An ohmmeter's face: R = V/I, and "OL" once the reading runs off the top.
+ *  A real meter shows over-limit rather than a number it cannot stand behind,
+ *  and here the ceiling is literally the meter's own shunt — past about a tenth
+ *  of it, what you are reading is mostly the instrument. */
+function ohmReading(v:number):string{
+  const r=Math.abs(v)/OHM_TEST_I;
+  return r>=OHM_OPEN_R*0.1 ? 'OL' : fmt(r,'Ω');
+}
+
+/** Real power: the product of the two coils, instant by instant. */
+function wattReading(c:Comp,result:Solution,coilI:number):number{
+  const ps=pinsOf(c);
+  const nv=(p:Pt)=>simNet?(result.nodeVoltage[simNet.nodeOf(p.x,p.y)]??0):0;
+  return (nv(ps[2])-nv(ps[3]))*coilI;
+}
+
 function fourPinLabel(c:Comp):string{
   const v=c.value??TYPES[c.type].def;
   if(c.type==='XF') return `${fmt(v,'H')} : ${fmt(c.l2??v,'H')}`;
   if(c.type==='RLY') return `${fmt(v,'Ω')} coil · ${c.on?'closed':'open'}`;
+  if(c.type==='WM'){
+    if(!running||!lastResult) return 'watts';
+    const I=pinCurrents(c,lastResult);
+    return fmt(wattReading(c,lastResult,I[0]),'W');
+  }
   return `${fmt(v,'').trim()} ${TYPES[c.type].unit}`;
 }
 
@@ -948,8 +1300,8 @@ function drawDigital(c:Comp,ps:Pt[],col:(x:number,y:number)=>string){
 
   ctx.save();
   ctx.translate(cxp,cyp); ctx.rotate(ang);
-  ctx.strokeStyle=T.ink; ctx.fillStyle=T.panelBg; ctx.lineWidth=2;
-  const bubble=(x:number)=>{ ctx.beginPath(); ctx.arc(x+5,0,5,0,7); ctx.fillStyle='#fff'; ctx.fill(); ctx.stroke(); };
+  ctx.strokeStyle=T.ink; ctx.fillStyle=T.body; ctx.lineWidth=2;
+  const bubble=(x:number)=>{ ctx.beginPath(); ctx.arc(x+5,0,5,0,7); ctx.fillStyle=T.body; ctx.fill(); ctx.stroke(); };
   if(spec.gate){
     const inv=c.type==='NAND'||c.type==='NOR'||c.type==='XNOR'||c.type==='NOT';
     const nose=inv?halfW-10:halfW;      // an inverting gate gives up its nose to the bubble
@@ -995,7 +1347,7 @@ function drawDigital(c:Comp,ps:Pt[],col:(x:number,y:number)=>string){
         [0,-sh,hw,t],[sw,-sh/2,t,hh],[sw,sh/2,t,hh],
         [0,sh,hw,t],[-sw,sh/2,t,hh],[-sw,-sh/2,t,hh],[0,0,hw,t]];
       seg.forEach(([sx,sy,bw,bh],i)=>{
-        ctx.fillStyle=(g>>i)&1?'#d8382c':'#e9edf3';
+        ctx.fillStyle=(g>>i)&1?T.segOn:T.segOff;
         ctx.fillRect(sx-bw,sy-bh,bw*2,bh*2);
       });
     }
@@ -1204,17 +1556,29 @@ function drawComponent(c:Comp,nodeColor:NodeColor){
       ctx.setLineDash([3,3]); ctx.lineWidth=1.2;
       line(P4(-16,0),P4(18,6)); ctx.setLineDash([]); ctx.lineWidth=2;
     } else {
-      // Dependent source: a diamond, and the letter naming which of the four
-      // it is. The current-controlled pair also shows the internal ammeter
-      // shorting its two sensing pins together.
-      const dia=[P4(28,0),P4(9,-19),P4(-10,0),P4(9,19)];
-      ctx.beginPath(); ctx.moveTo(dia[0].x,dia[0].y);
-      for(let i=1;i<4;i++) ctx.lineTo(dia[i].x,dia[i].y); ctx.closePath(); ctx.stroke();
-      if(c.type==='F'||c.type==='H') line(P4(-32,-26),P4(-32,26));
-      ctx.fillStyle=T.label; ctx.font='11px ui-monospace,monospace'; ctx.textAlign='center';
-      ctx.font='12px ui-monospace,monospace';
-      const lt=P4(9,0); ctx.fillText(c.type, lt.x, lt.y+4);
-      ctx.fillStyle=T.ink;
+      if(c.type==='WM'){
+        // Meter face: a circle with W, plus the two coils named at their pins
+        // so the in-series port cannot be confused with the across-the-load one.
+        ctx.beginPath(); ctx.arc(mid.x,mid.y,15,0,7); ctx.stroke();
+        ctx.fillStyle=T.ink; ctx.font='600 13px sans-serif'; ctx.textAlign='center';
+        ctx.fillText('W',mid.x,mid.y+5);
+        ctx.fillStyle=T.label; ctx.font='8px ui-monospace,monospace';
+        ctx.fillText('I',P4(-22,0).x,P4(-22,0).y+3);
+        ctx.fillText('V',P4(22,0).x,P4(22,0).y+3);
+        ctx.fillStyle=T.ink; ctx.textAlign='left';
+      } else {
+        // Dependent source: a diamond, and the letter naming which of the four
+        // it is. The current-controlled pair also shows the internal ammeter
+        // shorting its two sensing pins together.
+        const dia=[P4(28,0),P4(9,-19),P4(-10,0),P4(9,19)];
+        ctx.beginPath(); ctx.moveTo(dia[0].x,dia[0].y);
+        for(let i=1;i<4;i++) ctx.lineTo(dia[i].x,dia[i].y); ctx.closePath(); ctx.stroke();
+        if(c.type==='F'||c.type==='H') line(P4(-32,-26),P4(-32,26));
+        ctx.fillStyle=T.label; ctx.font='11px ui-monospace,monospace'; ctx.textAlign='center';
+        ctx.font='12px ui-monospace,monospace';
+        const lt=P4(9,0); ctx.fillText(c.type, lt.x, lt.y+4);
+        ctx.fillStyle=T.ink;
+      }
     }
     if(running&&lastResult){
       const I=pinCurrents(c,lastResult);
@@ -1287,6 +1651,16 @@ function drawComponent(c:Comp,nodeColor:NodeColor){
     ctx.beginPath(); ctx.moveTo(pL1.x,pL1.y); ctx.lineTo(pL2.x,pL2.y);
     ctx.moveTo(pS1.x,pS1.y); ctx.lineTo(pS2.x,pS2.y); ctx.stroke();
     ctx.font='11px sans-serif'; const pp=P(-9,-13); ctx.fillText('+',pp.x-3,pp.y+4);
+  } else if(c.type==='VM'||c.type==='AM'||c.type==='OM'){
+    // The standard meter symbol: a circle around the letter. Kept upright
+    // whatever the part's rotation — a rotated V or A stops reading as one.
+    ctx.beginPath(); ctx.arc(mx,my,12,0,7); ctx.stroke();
+    ctx.save();
+    ctx.fillStyle=T.ink; ctx.font='600 13px sans-serif';
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(c.type==='VM'?'V':c.type==='AM'?'A':'\u03a9',mx,my+0.5);
+    ctx.restore();
+    ctx.textAlign='left'; ctx.textBaseline='alphabetic';
   } else if(c.type==='VS'){
     ctx.beginPath(); ctx.arc(mx,my,12,0,7); ctx.stroke();
     ctx.beginPath();
@@ -1309,11 +1683,21 @@ function drawComponent(c:Comp,nodeColor:NodeColor){
     // redraw inner leads to plates
     ctx.strokeStyle=col(A.x,A.y); ctx.beginPath(); ctx.moveTo(mx-ux*13,my-uy*13); ctx.lineTo(mx-ux*3,my-uy*3); ctx.stroke();
     ctx.strokeStyle=col(B.x,B.y); ctx.beginPath(); ctx.moveTo(mx+ux*13,my+uy*13); ctx.lineTo(mx+ux*3,my+uy*3); ctx.stroke();
+    drawCharge(c,P);
   } else if(c.type==='L'){
+    // Four half-circle bumps spanning exactly the gap between the leads, which
+    // stop at ±13. The bumps used to step from −12 in 8s, so the coil ran to
+    // +20 — seven units past the right lead, leaving that end visibly detached.
+    // Deriving the step from the lead gap keeps the two ends meeting whatever
+    // the bump count.
     ctx.strokeStyle=T.ink; ctx.beginPath();
-    for(let i=0;i<4;i++){ const d=-12+i*8; const c0=P(d+4,0);
+    const bumps=4, w=26/bumps, r=w/2, ang=Math.atan2(uy,ux);
+    for(let i=0;i<bumps;i++){
+      const d=-13+i*w, c0=P(d+r,0);
       ctx.moveTo(P(d,0).x,P(d,0).y);
-      ctx.arc(c0.x,c0.y,4,Math.atan2(uy,ux)+Math.PI,Math.atan2(uy,ux),false); } ctx.stroke();
+      ctx.arc(c0.x,c0.y,r,ang+Math.PI,ang,false);
+    }
+    ctx.stroke();
   } else if(c.type==='D'||c.type==='LED'){
     if(c.type==='LED'){
       // Brightness tracks forward current on a log scale — an LED is visibly
@@ -1384,6 +1768,7 @@ function drawComponent(c:Comp,nodeColor:NodeColor){
     ctx.strokeStyle=col(B.x,B.y); ctx.beginPath(); ctx.moveTo(mx+ux*13,my+uy*13); ctx.lineTo(mx+ux*3,my+uy*3); ctx.stroke();
     ctx.fillStyle=T.ink; ctx.font='11px sans-serif';
     const pp=P(-9,-13); ctx.fillText('+',pp.x-3,pp.y+4);
+    drawCharge(c,P);
   } else if(isContact(c.type)){
     // A hinged blade pivoting off pin A. Open, it stands off the far contact;
     // closed, it lies across both — the same picture the schematic symbol uses,
@@ -1414,6 +1799,17 @@ function drawComponent(c:Comp,nodeColor:NodeColor){
   const lp=P(0,-18);
   const noLabel:PartType[]=['D','LED'];
   let valTxt = noLabel.includes(c.type)?'':fmt(c.value??TYPES[c.type].def,TYPES[c.type].unit);
+  // A meter's label is its READING — the value it carries is only the internal
+  // resistance that makes it solvable, and showing 100 MΩ next to a voltmeter
+  // would be worse than showing nothing.
+  if(c.type==='VM'||c.type==='AM'||c.type==='OM'){
+    if(running&&lastResult){
+      const {v,i}=partVI(c,lastResult);
+      valTxt = c.type==='VM' ? fmt(v,'V')
+             : c.type==='AM' ? fmt(i,'A')
+             : ohmReading(v);
+    } else valTxt = c.type==='VM'?'volts':c.type==='AM'?'amps':'ohms';
+  }
   if(c.type==='VS'||c.type==='SQ') valTxt = fmt(c.amp??0,'V')+' '+fmt(c.freq??0,'Hz');
   if(isContact(c.type)) valTxt = contactClosed(c)?'closed':'open';
   // A motor's interesting number is its speed, not its winding resistance.
@@ -1440,14 +1836,332 @@ function drawGhost(type:PartType,x:number,y:number){
 // ===========================================================================
 //  PART 5 — INTERACTION
 // ===========================================================================
-const PLACE_TYPES:PartType[]=['R','POT','V','VS','SQ','I','C','CP','L','XF','D','LED','LAMP',
+const PLACE_TYPES:PartType[]=['R','POT','V','VS','SQ','I','C','CP','L','XF','D','LED','LAMP','VM','AM','OM','WM',
   'SW','PB','PBNC','RLY','MOT','QN','QP','MN','MP','OA','E','G','F','H','GND','MCU',
   'LOGIC',...(Object.keys(DIGITAL) as DigitalType[])];
 const isPlaceType=(t:Tool):t is PartType=>(PLACE_TYPES as string[]).includes(t);
 let mouse:{px:number;py:number;gx:number|null;gy:number|null}={px:0,py:0,gx:null,gy:null};
 let wireStart:Pt|null=null;
+
+// ---- Auto-routing ----------------------------------------------------------
+// Clicking two parts should join them, not make you aim at their pins and then
+// draw the corner yourself. A click anywhere on a part snaps to its nearest
+// pin, and the run between two points is emitted as one or two AXIS-ALIGNED
+// segments — a schematic wire that cuts diagonally across the grid is a wire
+// nobody can follow.
+//
+// Which way the elbow turns is decided by the pins, not by the geometry: a lead
+// should leave a part along the part's own axis (out of the end of a resistor,
+// not sideways out of its body). Only when neither end expresses a preference
+// does it fall back to "longest run first".
+type Axis=[number,number]|null;
+interface Box { x0:number; y0:number; x1:number; y1:number }
+interface WireEnd { x:number; y:number; exit:Axis; box:Box|null }
+let wireExit:Axis=null;
+let wireBox:Box|null=null;   // footprint of the part the run started on
+
+/** The direction a lead should leave this pin: along the part's own axis. */
+function pinExit(c:Comp,i:number):Axis{
+  const ps=pinsOf(c);
+  if(ps.length<2) return [0,-1];        // ground and other single-pin symbols
+  const cx=ps.reduce((s,p)=>s+p.x,0)/ps.length;
+  const cy=ps.reduce((s,p)=>s+p.y,0)/ps.length;
+  const dx=ps[i].x-cx, dy=ps[i].y-cy;
+  if(dx===0&&dy===0) return null;
+  return Math.abs(dx)>=Math.abs(dy)?[Math.sign(dx),0]:[0,Math.sign(dy)];
+}
+
+/** The rectangle a part's pins span — the region a wire must not corner in. */
+function pinBox(c:Comp):Box{
+  const ps=pinsOf(c);
+  return {x0:Math.min(...ps.map(p=>p.x)), y0:Math.min(...ps.map(p=>p.y)),
+          x1:Math.max(...ps.map(p=>p.x)), y1:Math.max(...ps.map(p=>p.y))};
+}
+
+/** Where a click lands: a part's nearest pin, or the bare grid cell. */
+function wireAnchor(gxu:number,gyu:number):WireEnd{
+  const c=hitComponent(gxu,gyu);
+  if(!c) return {x:Math.round(gxu),y:Math.round(gyu),exit:null,box:null};
+  const ps=pinsOf(c);
+  let bi=0,bd=Infinity;
+  ps.forEach((p,i)=>{ const d=Math.hypot(p.x-gxu,p.y-gyu); if(d<bd){ bd=d; bi=i; } });
+  return {x:ps[bi].x,y:ps[bi].y,exit:pinExit(c,bi),box:pinBox(c)};
+}
+
+/** One or two right-angled segments from a to b. Empty if they coincide. */
+function routeWire(a:Pt,b:Pt,from:Axis,to:Axis,boxes:(Box|null)[]=[]):Wire[]{
+  if(a.x===b.x&&a.y===b.y) return [];
+  if(a.x===b.x||a.y===b.y) return [{x1:a.x,y1:a.y,x2:b.x,y2:b.y}];
+  // An elbow must not land inside a part's own footprint. This is not
+  // cosmetic: on a multi-pin part a corner between two of its pins joins them
+  // through that corner and shorts the part out. A wattmeter wired this way
+  // read 0 W because its current coil had been bridged — and the schematic
+  // looked perfectly reasonable.
+  const blocked=(k:Pt)=>
+    (k.x!==a.x||k.y!==a.y)&&(k.x!==b.x||k.y!==b.y)&&
+    boxes.some(bx=>!!bx&&k.x>=bx.x0&&k.x<=bx.x1&&k.y>=bx.y0&&k.y<=bx.y1);
+  // Leaving the start along its axis wins; otherwise arrive along the end's.
+  // The exit's SIGN matters, not just its axis: a lead off the left end of a
+  // resistor that turns right immediately runs back through the part it just
+  // left. When the target is behind the pin, step off perpendicular first.
+  const horizFirst =
+    from ? (from[0]!==0 ? Math.sign(b.x-a.x)===from[0]
+                        : Math.sign(b.y-a.y)!==from[1]) :
+    to   ? to[0]===0 :                       // arrive vertically -> go across first
+    Math.abs(b.x-a.x)>=Math.abs(b.y-a.y);
+  const prefer = horizFirst ? {x:b.x,y:a.y} : {x:a.x,y:b.y};
+  const other  = horizFirst ? {x:a.x,y:b.y} : {x:b.x,y:a.y};
+  const k = blocked(prefer)&&!blocked(other) ? other : prefer;
+  return [{x1:a.x,y1:a.y,x2:k.x,y2:k.y},{x1:k.x,y1:k.y,x2:b.x,y2:b.y}];
+}
 let ghostRot:Rot=0;
 let dragging:{c:Comp;dx:number;dy:number;x0:number;y0:number}|null=null;
+
+// ---- Rubber-band wiring ----------------------------------------------------
+// Dragging a part used to leave its wires behind, so moving a finished circuit
+// took it apart. Now every wire that touches a moved pin follows it, and stays
+// orthogonal while it does — which is the property that makes a schematic
+// readable in the first place.
+//
+// The trick is to do it without a richer wire model. A wire is two points, so
+// an L needs two of them: at drag start each attached wire is split in place
+// into a NEAR segment (pin → corner) and a FAR segment (corner → fixed end).
+// The corner is derived from the wire's ORIGINAL direction, so a run that was
+// horizontal stays horizontal at its fixed end and grows a vertical leg at the
+// pin, exactly the way a person would have redrawn it. Both segments start
+// zero-length and coincident, so nothing changes visually until the part moves;
+// the degenerate ones are swept up on release.
+interface WireLink {
+  near:number;              // wire whose end 1 tracks the pin
+  far:number|null;          // wire from the corner to the fixed end (null = no elbow)
+  pin:number;               // which pin of the dragged part it follows
+  qx:number; qy:number;     // the end that stays put
+  orient:'h'|'v'|null;      // original run direction; null means route straight
+}
+/** Wires with BOTH ends on the dragged part: translated whole, never elbowed. */
+interface WireCarry { i:number; x1:number; y1:number; x2:number; y2:number }
+let dragLinks:WireLink[]=[];
+let dragCarry:WireCarry[]=[];
+let dragBody:Comp[]=[];
+let dragOrigin=new Map<Comp,Pt>();
+/** Probes sitting on the moving body — they travel with the node they measure. */
+let dragProbes:{p:Probe;x0:number;y0:number}[]=[];
+
+// ---- Multi-selection --------------------------------------------------------
+// `selected` stays the single part the inspector edits; `multi` is the set the
+// user has gathered with ⌘A or shift-click. They are deliberately separate:
+// editing a value only makes sense for one part, while moving and deleting make
+// sense for many, and conflating the two would mean the inspector had to guess.
+let multi:Comp[]=[];
+
+/** Take the whole schematic — the setup for "move it" or "delete it". */
+function selectAll(){
+  multi=comps.slice(); selected=null;
+  renderInspector(); draw();
+  if(multi.length) flashHint(`${multi.length} part${multi.length===1?'':'s'} selected — drag to move them together, `
+    +'<span class="kbd">Del</span> to remove them.');
+}
+function clearMulti(){ if(multi.length){ multi=[]; renderInspector(); } }
+
+/** Remove the multi-selection, and any wire left dangling by its removal. */
+function deleteMulti(){
+  if(!multi.length) return;
+  const gone=new Set(multi);
+  // Collect the pins that are about to disappear so their wires go too — a
+  // deleted part that leaves its leads behind is just litter.
+  const orphan=new Set(multi.flatMap(c=>pinsOf(c)).map(p=>p.x+','+p.y));
+  comps=comps.filter(c=>!gone.has(c));
+  // A pin position is only orphaned if no surviving part still holds it.
+  for(const c of comps) for(const p of pinsOf(c)) orphan.delete(p.x+','+p.y);
+  wires=wires.filter(w=>!orphan.has(w.x1+','+w.y1)&&!orphan.has(w.x2+','+w.y2));
+  const n=multi.length;
+  multi=[]; selected=null;
+  refreshMeta(); commit(); renderInspector(); draw();
+  flashHint(`Removed ${n} part${n===1?'':'s'}. <span class="kbd">⌘Z</span> puts them back.`);
+}
+
+/** Attach every wire touching `c`'s pins to the drag, splitting where needed.
+ *
+ *  The distinction that matters is whether a pin sits on a JUNCTION — a point
+ *  something else also holds, another part's pin or a second wire end. A
+ *  junction must not move: taking it along would silently unhook whatever else
+ *  was there (dragging a capacitor off a resistor's pin used to orphan the
+ *  resistor while still looking connected). So a junction stays where it is and
+ *  the part grows a new lead back to it. Only a lead held by this pin alone —
+ *  a wire with nothing else at that end — travels with the part. */
+function beginWireDrag(cs:Comp[]){
+  dragLinks=[]; dragCarry=[];
+  dragBody=cs;
+  // The moving set is treated as one rigid body: pin identity is a flat index
+  // across all of its parts, so a multi-part drag reuses the whole mechanism.
+  const pins=cs.flatMap(c=>pinsOf(c));
+  const inSet=new Set<Comp>(cs);
+  const at=(x:number,y:number)=>pins.findIndex(p=>p.x===x&&p.y===y);
+  const n=wires.length;   // the loop appends; only pre-existing wires attach
+
+  // Wires with both ends inside the body ride along whole and are not junctions.
+  const carried=new Set<number>();
+  for(let i=0;i<n;i++){
+    const w=wires[i];
+    if(at(w.x1,w.y1)>=0&&at(w.x2,w.y2)>=0){
+      carried.add(i);
+      dragCarry.push({i,x1:w.x1,y1:w.y1,x2:w.x2,y2:w.y2});
+    }
+  }
+
+  // A probe measures a point on the schematic, so it has to travel with that
+  // point — leaving it behind silently re-points it at empty grid, and the
+  // scope trace it was driving goes flat with no visible cause.
+  const held=new Set<string>();
+  for(const p of pins) held.add(p.x+','+p.y);
+  for(const i of carried){ const w=wires[i]; held.add(w.x1+','+w.y1); held.add(w.x2+','+w.y2); }
+  dragProbes=scopeProbes.filter(pr=>held.has(pr.x+','+pr.y)).map(pr=>({p:pr,x0:pr.x,y0:pr.y}));
+
+  pins.forEach((p,k)=>{
+    // Every wire end sitting on this pin, ignoring the ones riding along.
+    const ends:{i:number;end:1|2}[]=[];
+    for(let i=0;i<n;i++){
+      if(carried.has(i)) continue;
+      const w=wires[i];
+      if(w.x1===p.x&&w.y1===p.y) ends.push({i,end:1});
+      if(w.x2===p.x&&w.y2===p.y) ends.push({i,end:2});
+    }
+    const sharedPin=comps.some(o=>!inSet.has(o)&&pinsOf(o).some(q=>q.x===p.x&&q.y===p.y));
+    const junction=sharedPin||ends.length>1;
+
+    if(junction){
+      // Anchor the point and run a fresh lead out to the pin. Both segments
+      // start collapsed onto the anchor, so an accidental click adds nothing.
+      const far=wires.length; wires.push({x1:p.x,y1:p.y,x2:p.x,y2:p.y});
+      const near=wires.length; wires.push({x1:p.x,y1:p.y,x2:p.x,y2:p.y});
+      // 'h' puts the elbow at (pin.x, anchor.y): the lead leaves the pin
+      // vertically and meets the anchor along the horizontal, which is how a
+      // person redraws a part that has slid down and across.
+      dragLinks.push({near,far,pin:k,qx:p.x,qy:p.y,orient:'h'});
+      return;
+    }
+    if(ends.length!==1) return;          // a free pin has nothing to drag
+
+    // A lead this pin alone holds: it follows, keeping its original direction
+    // at the far end and growing an elbow at the pin.
+    const {i,end}=ends[0];
+    const w=wires[i];
+    const qx=end===1?w.x2:w.x1, qy=end===1?w.y2:w.y1;
+    const orient:'h'|'v'|null = p.y===qy?'h' : p.x===qx?'v' : null;
+    if(orient===null){
+      wires[i]={x1:p.x,y1:p.y,x2:qx,y2:qy};
+      dragLinks.push({near:i,far:null,pin:k,qx,qy,orient:null});
+      return;
+    }
+    wires[i]={x1:p.x,y1:p.y,x2:qx,y2:qy};          // becomes the FAR segment
+    const near=wires.length; wires.push({x1:p.x,y1:p.y,x2:p.x,y2:p.y});
+    dragLinks.push({near,far:i,pin:k,qx,qy,orient});
+  });
+}
+
+/** Re-route the attached wires for the body's current position. */
+function updateWireDrag(ddx:number,ddy:number){
+  const pins=dragBody.flatMap(c=>pinsOf(c));
+  for(const l of dragLinks){
+    const p=pins[l.pin]; if(!p) continue;
+    const cx=l.orient==='h'?p.x:l.orient==='v'?l.qx:p.x;
+    const cy=l.orient==='h'?l.qy:l.orient==='v'?p.y:p.y;
+    if(l.far===null){ wires[l.near]={x1:p.x,y1:p.y,x2:l.qx,y2:l.qy}; continue; }
+    wires[l.near]={x1:p.x,y1:p.y,x2:cx,y2:cy};
+    wires[l.far]={x1:cx,y1:cy,x2:l.qx,y2:l.qy};
+  }
+  for(const w of dragCarry){
+    wires[w.i]={x1:w.x1+ddx,y1:w.y1+ddy,x2:w.x2+ddx,y2:w.y2+ddy};
+  }
+  for(const d of dragProbes){ d.p.x=d.x0+ddx; d.p.y=d.y0+ddy; }
+}
+
+/** Drop the zero-length segments a finished drag leaves behind. */
+function endWireDrag(){
+  dragLinks=[]; dragCarry=[]; dragBody=[]; dragProbes=[];
+  wires=wires.filter(w=>!(w.x1===w.x2&&w.y1===w.y2));
+}
+
+// ---- Net highlighting ------------------------------------------------------
+// Pointing at any wire or pin lights the whole electrical net it belongs to.
+// On a dense schematic that answers the question the drawing can't: which of
+// these crossing runs are actually the same conductor? Paired with the readout
+// chip it also says what that conductor is doing — its voltage, and the current
+// through the part under the cursor.
+interface Hover { node:NodeId; x:number; y:number; comp:Comp|null }
+let hover:Hover|null=null;
+
+/** The net under the cursor, or null. Screen pixels in, grid semantics out. */
+function updateHover(px:number,py:number){
+  hover=null;
+  if(tool!=='select'&&tool!=='probe') return;
+  const w=toWorld(px,py);
+  const gxu=w.x/GRID, gyu=w.y/GRID;
+  const near=10/GRID/view.scale;      // ~10 screen px, in grid units
+
+  // A pin wins over a wire: it is the more specific thing to point at.
+  let best:{x:number;y:number;d:number}|null=null;
+  for(const c of comps) for(const p of pinsOf(c)){
+    const d=Math.hypot(p.x-gxu,p.y-gyu);
+    if(d<near&&(!best||d<best.d)) best={x:p.x,y:p.y,d};
+  }
+  if(!best) for(const wr of wires){
+    const d=distToSeg(gxu,gyu,wr);
+    if(d<near&&(!best||d<best.d)) best={x:wr.x1,y:wr.y1,d};
+  }
+  if(best){
+    const net=buildNetlist();
+    hover={node:net.nodeOf(best.x,best.y),x:best.x,y:best.y,comp:hitComponent(gxu,gyu)};
+  }
+}
+
+/** Wash the hovered net over the schematic, under the wires themselves. */
+function drawNetHighlight(net:Netlist){
+  if(!hover) return;
+  const n=hover.node;
+  ctx.save();
+  ctx.strokeStyle=T.highlight; ctx.fillStyle=T.highlight;
+  ctx.lineWidth=9/view.scale; ctx.lineCap='round'; ctx.lineJoin='round';
+  ctx.globalAlpha=0.9;
+  for(const w of wires){
+    if(net.nodeOf(w.x1,w.y1)!==n) continue;
+    ctx.beginPath(); ctx.moveTo(gx(w.x1),gy(w.y1)); ctx.lineTo(gx(w.x2),gy(w.y2)); ctx.stroke();
+  }
+  for(const c of comps) for(const p of pinsOf(c)){
+    if(net.nodeOf(p.x,p.y)!==n) continue;
+    ctx.beginPath(); ctx.arc(gx(p.x),gy(p.y),6/view.scale,0,Math.PI*2); ctx.fill();
+  }
+  ctx.restore();
+}
+
+/** Readout chip beside the cursor: what this net is, and what it's doing. */
+function drawHoverChip(){
+  if(!hover) return;
+  const lines:string[]=[`node ${hover.node}`];
+  if(lastResult){
+    lines[0]+=`  ${fmt(lastResult.nodeVoltage[hover.node]??0,'V')}`;
+    if(hover.comp&&hover.comp.type!=='GND'){
+      const {v,i}=partVI(hover.comp,lastResult);
+      lines.push(`${hover.comp.id}  ${fmt(v,'V')}  ${fmt(i,'A')}`);
+    }
+  } else if(hover.comp&&hover.comp.type!=='GND'){
+    lines.push(hover.comp.id);
+  }
+  ctx.save();
+  ctx.font=`10px ${MONO}`;
+  const w=Math.max(...lines.map(s=>ctx.measureText(s).width))+16;
+  const h=lines.length*14+8;
+  const sx=gx(hover.x)*view.scale+view.ox, sy=gy(hover.y)*view.scale+view.oy;
+  // Flip to the other side of the cursor rather than run off the canvas.
+  const W=cv.width/devicePixelRatio;
+  let x=sx+14; if(x+w>W-8) x=sx-14-w;
+  const y=sy-h-12;
+  ctx.fillStyle=T.panelBg; ctx.strokeStyle=T.panelLine; ctx.lineWidth=1;
+  roundRectPath(x,y,w,h,6); ctx.fill(); ctx.stroke();
+  ctx.fillStyle=T.panelInk; ctx.textAlign='left';
+  lines.forEach((s,k)=>ctx.fillText(s,x+8,y+16+k*14));
+  ctx.restore();
+}
 let heldButton:Comp|null=null;   // push button currently held down by a pointer
 // Panning the canvas, and the two-pointer pinch that zooms it. Tracking live
 // pointers by id is what lets one finger pan while two fingers pinch.
@@ -1503,9 +2217,23 @@ stage.addEventListener('pointermove',e=>{
     return;
   }
   if(panning){ view.ox=panning.ox+(p.x-panning.px); view.oy=panning.oy+(p.y-panning.py); draw(); return; }
-  if(dragging){ dragging.c.x=g.x-dragging.dx; dragging.c.y=g.y-dragging.dy; }
+  if(dragging){
+    const nx=g.x-dragging.dx, ny=g.y-dragging.dy;
+    const ddx=nx-dragging.x0, ddy=ny-dragging.y0;
+    // Every part of the body moves by the same delta, so a multi-selection
+    // keeps its internal geometry — and therefore its internal wiring — exact.
+    for(const b of dragBody){
+      const o=dragOrigin.get(b); if(!o) continue;
+      b.x=o.x+ddx; b.y=o.y+ddy;
+    }
+    updateWireDrag(ddx,ddy);
+    hover=null;
+  } else {
+    updateHover(p.x,p.y);
+  }
   draw();
 });
+stage.addEventListener('pointerleave',()=>{ if(hover){ hover=null; draw(); } });
 
 // Wheel and trackpad pinch both zoom about the cursor; shift+wheel pans
 // sideways, matching how schematic and CAD editors behave.
@@ -1526,7 +2254,7 @@ stage.addEventListener('pointerdown',e=>{
   if(pointers.size>=2){                 // second finger down: pinch, not edit
     const [a,b]=[...pointers.values()];
     pinchDist=Math.hypot(a.x-b.x,a.y-b.y);
-    panning=null; dragging=null; wireStart=null; draw();
+    panning=null; dragging=null; endWireDrag(); wireStart=null; wireExit=null; wireBox=null; draw();
     return;
   }
   // Middle button, or space held, pans regardless of the active tool.
@@ -1549,15 +2277,29 @@ stage.addEventListener('pointerdown',e=>{
     refreshMeta(); commit(); draw(); return;
   }
   if(tool==='wire'){
-    if(!wireStart){ wireStart={x:g.x,y:g.y}; }
-    else if(g.x===wireStart.x&&g.y===wireStart.y){
+    const wp=toWorld(px,py);
+    const a=wireAnchor(wp.x/GRID,wp.y/GRID);
+    if(!wireStart){ wireStart={x:a.x,y:a.y}; wireExit=a.exit; wireBox=a.box; }
+    else if(a.x===wireStart.x&&a.y===wireStart.y){
       // Tapping the run's own start point ends it. Double-click does the same
       // on desktop, but a double-tap on touch is the browser's zoom gesture,
       // so touch needs a way out that isn't a double-tap.
-      wireStart=null;
+      wireStart=null; wireExit=null; wireBox=null;
     }
-    else { wires.push({x1:wireStart.x,y1:wireStart.y,x2:g.x,y2:g.y});
-      wireStart={x:g.x,y:g.y}; refreshMeta(); commit(); }
+    else {
+      const segs=routeWire(wireStart,{x:a.x,y:a.y},wireExit,a.exit,[wireBox,a.box]);
+      if(segs.length){
+        wires.push(...segs);
+        wireStart={x:a.x,y:a.y};
+        // Carry on from the new point along its own axis if it is a pin;
+        // from a bare corner, continue perpendicular to the run just laid so a
+        // hand-drawn polyline keeps turning instead of doubling back.
+        const last=segs[segs.length-1];
+        wireExit=a.exit??(last.y1===last.y2?[0,1]:[1,0]);
+        wireBox=a.box;
+        refreshMeta(); commit();
+      }
+    }
     draw(); return;
   }
   if(tool==='probe'){
@@ -1587,9 +2329,23 @@ stage.addEventListener('pointerdown',e=>{
     else { c.on=true; heldButton=c; try{ stage.setPointerCapture(e.pointerId); }catch{ /* best-effort */ } }
     selected=c; renderInspector(); syncValues(); draw(); return;
   }
-  selected=c; renderInspector();
+  if(c&&e.shiftKey){
+    // Shift-click gathers parts one at a time, and toggles one back out.
+    multi = multi.includes(c) ? multi.filter(m=>m!==c) : [...multi,c];
+    selected=null; renderInspector(); draw(); return;
+  }
+  const inMulti=!!c&&multi.includes(c);
+  if(!inMulti) clearMulti();
+  // Grabbing a member of the selection must not collapse it to that one part —
+  // otherwise the selection's own actions vanish the instant you reach for it.
+  selected=inMulti?null:c;
+  renderInspector();
   if(c){
     dragging={c,dx:g.x-c.x,dy:g.y-c.y,x0:c.x,y0:c.y};
+    // Dragging any member of a multi-selection drags the whole selection.
+    const body=multi.includes(c)?multi.slice():[c];
+    dragOrigin=new Map(body.map(b=>[b,{x:b.x,y:b.y}]));
+    beginWireDrag(body);
     // Keep receiving moves even if the pointer slides off the canvas mid-drag.
     try{ stage.setPointerCapture(e.pointerId); }catch{ /* capture is best-effort */ }
   } else {
@@ -1608,29 +2364,37 @@ const endDrag=(e?:PointerEvent)=>{
   if(heldButton){ heldButton.on=false; heldButton=null; syncValues(); renderInspector(); draw(); }
   if(!dragging) return;
   const moved=dragging.c.x!==dragging.x0||dragging.c.y!==dragging.y0;
-  dragging=null; refreshMeta();
+  dragging=null; endWireDrag(); refreshMeta();
   if(moved) commit();   // a drag that ends where it began isn't an edit
+  draw();
 };
 window.addEventListener('pointerup',endDrag);
 window.addEventListener('pointercancel',endDrag);
-stage.addEventListener('dblclick',()=>{ if(wireStart){ wireStart=null; draw(); } });
+stage.addEventListener('dblclick',()=>{ if(wireStart){ wireStart=null; wireExit=null; draw(); } });
 const turn=(r:Rot):Rot=>((r+90)%360) as Rot;
 let spaceHeld=false;
 window.addEventListener('keyup',e=>{ if(e.code==='Space') spaceHeld=false; });
 window.addEventListener('keydown',e=>{
-  const typing=(e.target as HTMLElement|null)?.tagName==='INPUT';
-  if(typing) return;              // never steal keys from the value fields
+  // Never steal keys from a field the user is typing in — the value inputs, the
+  // part search, or the MCU code editor. R and Delete are destructive here.
+  const tag=(e.target as HTMLElement|null)?.tagName;
+  if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT') return;
   const meta=e.metaKey||e.ctrlKey;
   if(e.code==='Space'){ spaceHeld=true; e.preventDefault(); }
   if(meta&&(e.key==='z'||e.key==='Z')){ e.preventDefault(); e.shiftKey?redo():undo(); return; }
   if(meta&&(e.key==='y'||e.key==='Y')){ e.preventDefault(); redo(); return; }
+  // ⌘A selects the whole schematic; Delete then clears it. Distinct from the
+  // Clear button only in that it is undoable in one step and leaves the view,
+  // the probes and the sketch alone.
+  if(meta&&(e.key==='a'||e.key==='A')){ e.preventDefault(); selectAll(); return; }
   // Zoom shortcuts, about the middle of the canvas.
   const cx=cv.width/devicePixelRatio/2, cy=cv.height/devicePixelRatio/2;
   if(e.key==='+'||e.key==='='){ zoomAt(cx,cy,1.2); return; }
   if(e.key==='-'||e.key==='_'){ zoomAt(cx,cy,1/1.2); return; }
   if(e.key==='0'){ fitView(); return; }
   if(e.key==='r'||e.key==='R'){ ghostRot=turn(ghostRot); if(selected){ selected.rot=turn(rotOf(selected)); refreshMeta(); commit(); } draw(); }
-  if(e.key==='Escape'){ wireStart=null; selected=null; setTool('select'); renderInspector(); draw(); }
+  if(e.key==='Escape'){ wireStart=null; wireExit=null; wireBox=null; selected=null; clearMulti(); setTool('select'); renderInspector(); draw(); }
+  if((e.key==='Delete'||e.key==='Backspace')&&multi.length){ deleteMulti(); return; }
   if((e.key==='Delete'||e.key==='Backspace')&&selected){ comps=comps.filter(k=>k!==selected); selected=null; refreshMeta(); commit(); renderInspector(); draw(); }
 });
 function distToSeg(x:number,y:number,w:Wire){
@@ -1652,7 +2416,9 @@ interface BodeData { freqs:number[]; curves:BodeCurve[] }
 let scopeProbes:Probe[]=[];       // grid points to plot
 let scopeBuf:ScopeBuf|null=null;
 let simNet:Netlist|null=null;     // netlist captured at Run (for probe node lookup)
-const SCOPE_COLORS=[T.accent,'#ffd43b','#ff8787','#69db7c','#da77f2','#ffa94d'];
+// Fixed, not theme-derived: a probe's colour is saved with the circuit, so it
+// has to mean the same thing in both themes and in a file shared between them.
+const SCOPE_COLORS=['#3b82f6','#eab308','#ef7d7d','#4ec97a','#c084fc','#fb923c'];
 const SCOPE_MAX=1400;
 function resetScope(){
   scopeBuf={t:[],series:scopeProbes.map(()=>[] as number[]),selV:[],selI:[],selId:selected?selected.id:null};
@@ -1732,16 +2498,24 @@ function startSim(){
   circuit=new Circuit(net.netComps.map(c=>({...c}))); liveIndex=null;
   mechanics=hasMechanics(); digital=hasDigital();
   circuit.captureTrace=mathMode;
-  simNet=net; resetScope(); panelMode='scope';
+  simNet=net; for(const p of scopeProbes) p.node=net.nodeOf(p.x,p.y);
+  resetScope(); panelMode='scope';
   simTime=0; running=true;
-  el('runBtn').textContent='◼ Stop';
-  el('runBtn').classList.add('stop');
+  setRunButton(true);
   loop();
+}
+/** Swap the Run/Stop face. The label stays real text — it is what the e2e
+ *  suite reads, and what a screen reader announces. */
+function setRunButton(runningNow:boolean){
+  const b=el('runBtn');
+  b.innerHTML=`<svg class="ic fill" viewBox="0 0 24 24"><use href="#i-${runningNow?'stop':'play'}"/></svg>`
+    +`<span>${runningNow?'Stop':'Run'}</span>`;
+  b.classList.toggle('stop',runningNow);
+  b.title=runningNow?'Stop the simulation (Space)':'Run the simulation (Space)';
 }
 function stopSim(){
   running=false; if(rafId) cancelAnimationFrame(rafId); rafId=null;
-  el('runBtn').textContent='▶ Run';
-  el('runBtn').classList.remove('stop');
+  setRunButton(false);
   draw();
 }
 // Restart from t=0 without touching the schematic: throws away the solver
@@ -1750,6 +2524,7 @@ function stopSim(){
 function resetSim(){
   stopSim();
   circuit=null; liveIndex=null; simNet=null; simTime=0; lastResult=null; bodeData=null;
+  for(const p of scopeProbes) delete p.node;
   panelMode='scope'; resetScope();
   vRange={min:-1,max:1};
   renderInspector(); draw();
@@ -1819,7 +2594,7 @@ function loop(){
   const net=simNet, buf=scopeBuf, res=lastResult;
   if(net&&buf&&res){
     buf.t.push(simTime);
-    scopeProbes.forEach((p,i)=>{ const nd=net.nodeOf(p.x,p.y);
+    scopeProbes.forEach((p,i)=>{ const nd=p.node??net.nodeOf(p.x,p.y);
       buf.series[i].push(res.nodeVoltage[nd]??0); });
     // The selected component's own voltage and current. Changing selection
     // starts a fresh trace rather than splicing two parts' data together.
@@ -1854,11 +2629,28 @@ function updateVRange(){
 // ===========================================================================
 function renderInspector(){
   const body=el('inspectorBody');
+  if(!selected&&multi.length){
+    body.innerHTML=`<h3>Selection</h3>
+      <div class="empty"><b>${multi.length}</b> part${multi.length===1?'':'s'} selected.
+        Drag any of them to move the whole selection — the wires follow and stay square.
+        Shift-click a part to add or remove it.</div>
+      <hr><div class="inspectoract">
+        <button class="btn danger" id="multiDel"><svg class="ic" viewBox="0 0 24 24"><use href="#i-trash"/></svg>Delete ${multi.length}</button>
+        <button class="btn" id="multiNone">Deselect</button>
+      </div>`;
+    document.getElementById('multiDel')?.addEventListener('click',deleteMulti);
+    document.getElementById('multiNone')?.addEventListener('click',()=>{ clearMulti(); draw(); });
+    renderReadout(); return;
+  }
   if(!selected){
     body.innerHTML=`<h3>Inspector</h3><div class="empty">
-      Select a component to edit its value.<br><br>
-      <b>Shortcuts</b><br>
-      <span class="kbd">R</span> rotate · <span class="kbd">Del</span> remove · <span class="kbd">Esc</span> deselect
+      Select a component to edit its value, or scope its voltage and current.
+      </div>
+      <div class="shortcuts">
+        <div><span class="kbd">R</span><span>Rotate</span></div>
+        <div><span class="kbd">Del</span><span>Remove</span></div>
+        <div><span class="kbd">Esc</span><span>Deselect</span></div>
+        <div><span class="kbd">0</span><span>Fit to view</span></div>
       </div><hr>
       <h3>Legend</h3>
       <div class="swatch-row"><span class="swatch" style="background:${voltColor(-1e9)}"></span> low voltage</div>
@@ -1869,7 +2661,7 @@ function renderInspector(){
   const sel=selected;                       // narrowed for the closures below
   const t=TYPES[sel.type];
   let html=`<h3>${t.name}</h3>`;
-  const noValue:PartType[]=['GND','D','LED','QN','QP','MN','MP','OA','VS','SQ','MCU',
+  const noValue:PartType[]=['GND','D','LED','QN','QP','MN','MP','OA','VS','SQ','MCU','AM','OM','WM',
     'SW','PB','PBNC',...(Object.keys(DIGITAL) as PartType[])];
   if(!noValue.includes(sel.type)){
     html+=`<div class="field"><label>Value (${t.unit}) — e.g. 4.7k, 100n, 12</label>
@@ -1949,6 +2741,37 @@ function renderInspector(){
       armature resistance. It draws a big stall current at start-up and settles as
       the back-EMF builds — watch the rpm on the symbol while it runs.</div></div>`;
   }
+  if(sel.type==='VM'){
+    html+=`<div class="field"><div class="empty">Wire it <b>across</b> the thing you want to
+      measure. Its value is the meter's own input resistance — high enough not to
+      disturb the circuit, but finite, because a true open circuit would leave
+      whatever it measures with no path to ground and nothing to solve against.
+      Its reading appears on the symbol while the simulation runs.</div></div>`;
+  }
+  if(sel.type==='AM'){
+    html+=`<div class="field"><div class="empty">Wire it <b>in series</b> — break the
+      connection and put the meter in the gap, so all the current you want to
+      measure flows through it. It is an ideal short with no resistance of its
+      own, so it does not change the circuit. Its reading appears on the symbol
+      while the simulation runs.</div></div>`;
+  }
+  if(sel.type==='OM'){
+    html+=`<div class="field"><div class="empty">Reads the resistance between its
+      pins by pushing a known ${fmt(OHM_TEST_I,'A')} through them and dividing the
+      voltage that results — which is how a real ohmmeter does it.
+      <b>Power the circuit down first</b>: with a source driving the same nodes
+      you are measuring that source, not the resistance. Beyond
+      ${fmt(OHM_OPEN_R*0.1,'Ω')} it reads <b>OL</b>, the same over-limit a bench
+      meter shows rather than a number it can't stand behind.</div></div>`;
+  }
+  if(sel.type==='WM'){
+    html+=`<div class="field"><label>Terminals</label><div class="empty">
+      Two coils, like the real instrument. The <b>I</b> pair on the left is the
+      current coil — break the circuit and wire it in series. The <b>V</b> pair
+      on the right is the voltage coil — wire it across the load. It reports
+      their product instant by instant, so on AC it reads <b>real</b> power,
+      not the product of two averages.</div></div>`;
+  }
   if(sel.type==='LED'){
     html+=`<div class="field"><div class="empty">A diode that lights with forward current. Add a series
       resistor — a bare LED across a supply is a short.</div></div>`;
@@ -1968,14 +2791,15 @@ function renderInspector(){
       <input id="pinInput" value="${sel.pin??13}"/></div>
       <div class="field"><div class="empty">Drives 0–5 V when your sketch sets this pin
         to OUTPUT; reads as HIGH above 2.5 V when set to INPUT. Write the sketch
-        under <b>🔌 Code</b>.</div></div>`;
+        under <b>Code</b> in the toolbar.</div></div>`;
   }
   if(sel.type==='OA'){
     html+=`<div class="field"><label>Terminals</label><div class="empty">Two input pins on the left (+ upper, − lower); output on the right. Ideal gain. Needs feedback.</div></div>`;
   }
-  html+=`<div class="field"><label>Orientation</label>
-    <button class="btn" onclick="rotateSel()">⟳ Rotate 90°</button></div>`;
-  html+=`<button class="btn" onclick="deleteSel()">🗑 Delete</button>`;
+  html+=`<hr><div class="inspectoract">
+    <button class="btn" onclick="rotateSel()"><svg class="ic" viewBox="0 0 24 24"><use href="#i-rotate"/></svg>Rotate 90°</button>
+    <button class="btn danger" onclick="deleteSel()"><svg class="ic" viewBox="0 0 24 24"><use href="#i-trash"/></svg>Delete</button>
+  </div>`;
   body.innerHTML=html;
   const vi=document.getElementById('valInput') as HTMLInputElement|null;
   if(vi){ vi.addEventListener('change',()=>{ const v=parseVal(vi.value); if(!isNaN(v)&&v>0){ sel.value=v; commit(); if(circuit&&running){ syncValues(); } draw(); } });
@@ -2200,8 +3024,26 @@ function renderReadout(){
   let host=document.getElementById('readoutHost');
   if(!host){ host=document.createElement('div'); host.id='readoutHost'; body.appendChild(host); }
   if(!lastResult){ host.innerHTML=''; renderMath(); return; }
+  const res=lastResult;      // narrowed for the closures below
   let rows='';
-  if(selected&&selected.type!=='GND'){
+  // A meter's live panel should read like the instrument, not like a generic
+  // two-terminal part: a wattmeter's own terminals drop nothing, so the stock
+  // "voltage across / current / power" row would report 0 W for a meter that is
+  // measuring 1.44 W on the canvas beside it.
+  if(selected&&selected.type==='WM'){
+    const I=pinCurrents(selected,lastResult);
+    const ps=pinsOf(selected);
+    const nv=(p:Pt)=>simNet?(res.nodeVoltage[simNet.nodeOf(p.x,p.y)]??0):0;
+    rows+=`<hr><h3>Reading — ${selected.id}</h3><div class="readout">
+      <div><span class="k">Power</span><span class="v">${fmt(wattReading(selected,lastResult,I[0]),'W')}</span></div>
+      <div><span class="k">Load voltage</span><span class="v">${fmt(nv(ps[2])-nv(ps[3]),'V')}</span></div>
+      <div><span class="k">Load current</span><span class="v">${fmt(I[0],'A')}</span></div></div>`;
+  } else if(selected&&selected.type==='OM'){
+    const {v}=partVI(selected,lastResult);
+    rows+=`<hr><h3>Reading — ${selected.id}</h3><div class="readout">
+      <div><span class="k">Resistance</span><span class="v">${ohmReading(v)}</span></div>
+      <div><span class="k">Test current</span><span class="v">${fmt(OHM_TEST_I,'A')}</span></div></div>`;
+  } else if(selected&&selected.type!=='GND'){
     const {v,i}=partVI(selected,lastResult);
     rows+=`<hr><h3>Live — ${selected.id}</h3><div class="readout">
       <div><span class="k">Voltage across</span><span class="v">${fmt(v,'V')}</span></div>
@@ -2231,69 +3073,153 @@ function flashHint(msg:string){ const h=el('hint'); h.innerHTML=msg; h.style.bor
   setTimeout(()=>{h.style.borderColor='';},2500); }
 
 // ---- Tool rail buttons ----
-const RAIL:{t:Tool;label:string;icon?:string}[]=[
-  {t:'select',label:'Select',icon:'M4 3l7 17 2-7 7-2z'},
-  {t:'wire',label:'Wire',icon:'M3 12h6a3 3 0 003-3V6M21 12h-6a3 3 0 00-3 3v3'},
-  {t:'probe',label:'Probe'},
-  {t:'R',label:'Resistor'},
-  {t:'POT',label:'Pot'},
-  {t:'V',label:'Source'},
-  {t:'VS',label:'Sine'},
-  {t:'SQ',label:'Square'},
-  {t:'I',label:'Current'},
-  {t:'C',label:'Cap'},
-  {t:'CP',label:'Cap +'},
-  {t:'L',label:'Inductor'},
-  {t:'XF',label:'Transf'},
-  {t:'D',label:'Diode'},
-  {t:'LED',label:'LED'},
-  {t:'LAMP',label:'Lamp'},
-  {t:'SW',label:'Switch'},
-  {t:'PB',label:'Button'},
-  {t:'PBNC',label:'Btn NC'},
-  {t:'RLY',label:'Relay'},
-  {t:'MOT',label:'Motor'},
-  {t:'QN',label:'NPN'},
-  {t:'QP',label:'PNP'},
-  {t:'MN',label:'NMOS'},
-  {t:'MP',label:'PMOS'},
-  {t:'OA',label:'Op-amp'},
-  {t:'E',label:'VCVS'},
-  {t:'G',label:'VCCS'},
-  {t:'F',label:'CCCS'},
-  {t:'H',label:'CCVS'},
-  {t:'GND',label:'Ground'},
-  {t:'MCU',label:'MCU pin'},
-  {t:'LOGIC',label:'Logic'},
-  {t:'NOT',label:'NOT'},
-  {t:'AND',label:'AND'},
-  {t:'OR',label:'OR'},
-  {t:'NAND',label:'NAND'},
-  {t:'NOR',label:'NOR'},
-  {t:'XOR',label:'XOR'},
-  {t:'XNOR',label:'XNOR'},
-  {t:'SRL',label:'SR latch'},
-  {t:'DL',label:'D latch'},
-  {t:'DFF',label:'D flip-flop'},
-  {t:'JKFF',label:'JK flip-flop'},
-  {t:'TFF',label:'T flip-flop'},
-  {t:'CNT4',label:'Counter'},
-  {t:'SEG7',label:'7-seg'},
-  {t:'NE555',label:'555'},
-  {t:'DAC4',label:'DAC'},
-  {t:'ADC4',label:'ADC'},
-  {t:'delete',label:'Delete',icon:'M6 7h12l-1 13H7zM9 7V4h6v3'},
+// Fifty-odd parts in one flat column is a scroll-and-hunt exercise, so they are
+// filed by what they *are*. `label` is what fits under a 50px tile; `full` is
+// the name a person would search for, and both feed the search index — typing
+// "flip" or "555" or "capacitor" has to find the part either way.
+interface RailItem { t:Tool; label:string; full?:string }
+interface RailGroup { name:string; items:RailItem[] }
+const RAIL_GROUPS:RailGroup[]=[
+  {name:'Tools',items:[
+    {t:'select',label:'Select'},
+    {t:'wire',label:'Wire',full:'Wire / connect pins'},
+    {t:'probe',label:'Probe',full:'Voltage probe'},
+    {t:'delete',label:'Delete',full:'Delete component or wire'},
+  ]},
+  {name:'Sources',items:[
+    {t:'V',label:'Source',full:'DC voltage source'},
+    {t:'VS',label:'Sine',full:'Sine voltage source'},
+    {t:'SQ',label:'Square',full:'Square wave source'},
+    {t:'I',label:'Current',full:'Current source'},
+    {t:'GND',label:'Ground'},
+  ]},
+  {name:'Passives',items:[
+    {t:'R',label:'Resistor'},
+    {t:'POT',label:'Pot',full:'Potentiometer'},
+    {t:'C',label:'Cap',full:'Capacitor'},
+    {t:'CP',label:'Cap +',full:'Polarized capacitor'},
+    {t:'L',label:'Inductor'},
+    {t:'XF',label:'Transf',full:'Transformer'},
+  ]},
+  {name:'Semiconductors',items:[
+    {t:'D',label:'Diode'},
+    {t:'LED',label:'LED'},
+    {t:'QN',label:'NPN',full:'NPN bipolar transistor'},
+    {t:'QP',label:'PNP',full:'PNP bipolar transistor'},
+    {t:'MN',label:'NMOS',full:'N-channel MOSFET'},
+    {t:'MP',label:'PMOS',full:'P-channel MOSFET'},
+    {t:'OA',label:'Op-amp',full:'Operational amplifier'},
+  ]},
+  {name:'Electromechanical',items:[
+    {t:'SW',label:'Switch',full:'SPST toggle switch'},
+    {t:'PB',label:'Button',full:'Push button, normally open'},
+    {t:'PBNC',label:'Btn NC',full:'Push button, normally closed'},
+    {t:'RLY',label:'Relay'},
+    {t:'MOT',label:'Motor',full:'DC motor'},
+    {t:'LAMP',label:'Lamp',full:'Incandescent lamp'},
+  ]},
+  {name:'Meters',items:[
+    {t:'VM',label:'Volt',full:'Voltmeter — reads the voltage across it'},
+    {t:'AM',label:'Amp',full:'Ammeter — wire it in series to read the current through it'},
+    {t:'OM',label:'Ohm',full:'Ohmmeter — reads the resistance between its pins (power the circuit down first)'},
+    {t:'WM',label:'Watt',full:'Wattmeter — current coil in series, voltage coil across the load'},
+  ]},
+  {name:'Dependent',items:[      // wraps to two lines as "Dependent sources"
+    {t:'E',label:'VCVS',full:'Voltage-controlled voltage source'},
+    {t:'G',label:'VCCS',full:'Voltage-controlled current source'},
+    {t:'F',label:'CCCS',full:'Current-controlled current source'},
+    {t:'H',label:'CCVS',full:'Current-controlled voltage source'},
+  ]},
+  {name:'Digital',items:[
+    {t:'MCU',label:'MCU pin',full:'Microcontroller pin'},
+    {t:'LOGIC',label:'Logic',full:'Logic input / clock'},
+    {t:'NOT',label:'NOT',full:'NOT gate / inverter'},
+    {t:'AND',label:'AND',full:'AND gate'},
+    {t:'OR',label:'OR',full:'OR gate'},
+    {t:'NAND',label:'NAND',full:'NAND gate'},
+    {t:'NOR',label:'NOR',full:'NOR gate'},
+    {t:'XOR',label:'XOR',full:'XOR gate'},
+    {t:'XNOR',label:'XNOR',full:'XNOR gate'},
+    {t:'SRL',label:'SR',full:'SR latch'},
+    {t:'DL',label:'D latch',full:'D latch'},
+    {t:'DFF',label:'D-FF',full:'D flip-flop'},
+    {t:'JKFF',label:'JK-FF',full:'JK flip-flop'},
+    {t:'TFF',label:'T-FF',full:'T flip-flop'},
+    {t:'CNT4',label:'Counter',full:'4-bit counter'},
+    {t:'SEG7',label:'7-seg',full:'7-segment display'},
+    {t:'NE555',label:'555',full:'555 timer'},
+    {t:'DAC4',label:'DAC',full:'4-bit digital-to-analog converter'},
+    {t:'ADC4',label:'ADC',full:'4-bit analog-to-digital converter'},
+  ]},
 ];
+
+const RAIL_COLLAPSED_KEY='volta.rail.collapsed';
+/** Group names the user has folded away, remembered between sessions. */
+function collapsedGroups():Set<string>{
+  try{ return new Set(JSON.parse(localStorage.getItem(RAIL_COLLAPSED_KEY)||'[]')); }
+  catch{ return new Set(); }
+}
+function saveCollapsed(s:Set<string>){
+  try{ localStorage.setItem(RAIL_COLLAPSED_KEY,JSON.stringify([...s])); }catch{}
+}
+
 function buildRail(){
-  const rail=el('rail');
-  rail.innerHTML='';
-  for(const item of RAIL){
-    const b=document.createElement('button'); b.className='tool'; b.dataset.t=item.t;
-    b.innerHTML=miniSymbol(item.t)+`<span>${item.label}</span>`;
-    b.onclick=()=>setTool(item.t);
-    rail.appendChild(b);
+  const host=el('railGroups');
+  host.innerHTML='';
+  const collapsed=collapsedGroups();
+  for(const g of RAIL_GROUPS){
+    const sec=document.createElement('section');
+    sec.className='railgroup'+(collapsed.has(g.name)?'':' open');
+    sec.dataset.g=g.name;
+
+    const head=document.createElement('button');
+    head.className='grouphead'; head.type='button';
+    head.setAttribute('aria-expanded',String(!collapsed.has(g.name)));
+    head.innerHTML=`<svg class="ic" viewBox="0 0 24 24"><use href="#i-chevron"/></svg>${g.name}`;
+    head.onclick=()=>{
+      const open=sec.classList.toggle('open');
+      head.setAttribute('aria-expanded',String(open));
+      const c=collapsedGroups();
+      open?c.delete(g.name):c.add(g.name);
+      saveCollapsed(c);
+    };
+    sec.appendChild(head);
+
+    const grid=document.createElement('div'); grid.className='grid';
+    for(const item of g.items){
+      const b=document.createElement('button');
+      b.className='tool'; b.type='button'; b.dataset.t=item.t;
+      b.title=item.full??item.label;
+      b.dataset.search=`${item.label} ${item.full??''} ${item.t}`.toLowerCase();
+      b.innerHTML=miniSymbol(item.t)+`<span>${item.label}</span>`;
+      b.onclick=()=>setTool(item.t);
+      grid.appendChild(b);
+    }
+    sec.appendChild(grid);
+    host.appendChild(sec);
   }
   updateRail();
+}
+
+/** Filter the palette to parts matching `q`, hiding groups left with nothing. */
+function filterRail(q:string){
+  const needle=q.trim().toLowerCase();
+  let hits=0;
+  for(const sec of document.querySelectorAll<HTMLElement>('.railgroup')){
+    let shown=0;
+    for(const b of sec.querySelectorAll<HTMLElement>('.tool')){
+      const match=!needle||(b.dataset.search??'').includes(needle);
+      b.hidden=!match;
+      if(match) shown++;
+    }
+    sec.hidden=shown===0;
+    hits+=shown;
+    // While searching, a collapsed group would hide its own matches — so a
+    // search opens everything, and restores the user's folds when cleared.
+    if(needle) sec.classList.add('open');
+    else sec.classList.toggle('open',!collapsedGroups().has(sec.dataset.g??''));
+  }
+  (el('railEmpty') as HTMLElement).hidden=hits>0;
 }
 function miniSymbol(t:Tool){
   const s=(inner:string)=>`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">${inner}</svg>`;
@@ -2337,13 +3263,20 @@ function miniSymbol(t:Tool){
     case 'SEG7': case 'DFF': case 'DL': case 'SRL': case 'JKFF': case 'TFF':
     case 'CNT4': case 'NE555': case 'DAC4': case 'ADC4':
       return s(`<rect x="5" y="4" width="14" height="16" rx="1"/><path d="M2 8h3M2 16h3M19 8h3M19 16h3"/><text x="12" y="14.5" font-size="6" fill="currentColor" stroke="none" text-anchor="middle">${DIGITAL[t]?.out.length?'\u2b1a':'8'}</text>`);
+    case 'VM': case 'AM': case 'OM':
+      return s(`<circle cx="12" cy="12" r="7"/><path d="M2 12h3M19 12h3"/>`
+        +`<text x="12" y="15.5" font-size="9" font-weight="600" fill="currentColor" stroke="none" text-anchor="middle">`
+        +`${t==='VM'?'V':t==='AM'?'A':'\u03a9'}</text>`);
+    case 'WM':
+      return s(`<circle cx="12" cy="12" r="7"/><path d="M2 8h3M2 16h3M19 8h3M19 16h3"/>`
+        +`<text x="12" y="15.5" font-size="9" font-weight="600" fill="currentColor" stroke="none" text-anchor="middle">W</text>`);
     case 'GND': return s('<path d="M12 4v8M6 12h12M8 16h8M10 20h4"/>');
     case 'MCU': return s('<rect x="4" y="7" width="16" height="10" rx="2"/><path d="M12 17v4"/>');
     case 'delete': return s('<path d="M5 7h14M9 7V4h6v3M7 7l1 13h8l1-13"/>');
   }
   return '';
 }
-function setTool(t:Tool){ tool=t; wireStart=null; updateRail();
+function setTool(t:Tool){ tool=t; wireStart=null; wireExit=null; wireBox=null; updateRail();
   const hints:Partial<Record<Tool,string>>={select:'Click a part to select & drag. Edit its value on the right.',
     wire:'Click pin to pin to lay wire. Double-click to finish a run.',
     probe:'Click a node/wire to scope its voltage. Click again to remove. Then press Run.',
@@ -2820,10 +3753,41 @@ el('mathBtn').onclick=()=>{
 };
 el('undoBtn').onclick=undo;
 el('redoBtn').onclick=redo;
+el('selectAllBtn').onclick=selectAll;
 el('rotateBtn').onclick=()=>{ ghostRot=turn(ghostRot); if(selected){selected.rot=turn(rotOf(selected)); refreshMeta(); commit();} draw(); };
 el('saveBtn').onclick=saveFile;
 el('openBtn').onclick=openFile;
 el('shareBtn').onclick=shareURL;
+
+// Palette search. Escape clears rather than closing anything, since the field
+// is always on screen — and blurs, so the canvas shortcuts come back.
+{
+  const q=el('partSearch') as HTMLInputElement;
+  q.addEventListener('input',()=>filterRail(q.value));
+  q.addEventListener('keydown',e=>{
+    if(e.key==='Escape'){ q.value=''; filterRail(''); q.blur(); }
+    // Enter on a single match picks it — the fast path for a known part name.
+    if(e.key==='Enter'){
+      const hit=document.querySelector<HTMLElement>('.railgroup:not([hidden]) .tool:not([hidden])');
+      if(hit?.dataset.t){ setTool(hit.dataset.t as Tool); q.blur(); }
+    }
+  });
+}
+
+// Theme toggle. The OS preference is only consulted while the user has never
+// chosen one — once they pick a side, following the system back would override
+// a deliberate choice.
+el('themeBtn').onclick=()=>{
+  applyTheme(currentTheme()==='dark'?'light':'dark');
+  renderInspector();     // the legend swatches are painted from the palette
+  draw();
+};
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change',e=>{
+  let chosen=null; try{ chosen=localStorage.getItem(THEME_KEY); }catch{}
+  if(chosen==='light'||chosen==='dark') return;
+  applyTheme(e.matches?'dark':'light',false);
+  renderInspector(); draw();
+});
 
 // ===========================================================================
 //  MCU CODE EDITOR — UI wiring
@@ -2892,7 +3856,7 @@ function applyAiCircuit(c:AiCircuit){
 
 // Key storage lives here rather than in ai.ts so that checking whether a key
 // exists doesn't drag the SDK chunk in.
-const AI_KEY='zuri.anthropic.key';
+const AI_KEY='volta.anthropic.key';
 const loadKey=()=>localStorage.getItem(AI_KEY)??'';
 const saveKey=(k:string)=>localStorage.setItem(AI_KEY,k.trim());
 const clearKey=()=>localStorage.removeItem(AI_KEY);
@@ -2918,9 +3882,13 @@ async function runAi(){
     const reply=await askAssistant({key:loadKey(),prompt,circuit:serializeModel()});
     if(reply.kind==='circuit'){
       applyAiCircuit(reply.circuit);
-      aiOut().innerHTML=`<div class="aigood">Built it — press <b>Run</b> to simulate.
-        ⌘Z undoes this like any other edit.</div>
-        <div class="empty">${escapeHtml(reply.circuit.notes)}</div>`;
+      // Close the sheet. It is a full-screen scrim over the canvas, so leaving
+      // it up after a build hides the very thing the user asked for — which
+      // reads as "nothing happened".
+      aiModal.hidden=true;
+      aiOut().innerHTML='';
+      flashHint(`${escapeHtml(reply.circuit.notes)||'Built it.'} `
+        +'Press <b>Run</b> to simulate; <span class="kbd">⌘Z</span> undoes it.');
     } else {
       aiOut().innerHTML=`<div class="aitext">${escapeHtml(reply.text)}</div>`;
     }
@@ -2946,7 +3914,268 @@ el('aiPrompt').addEventListener('keydown',e=>{
   if((e as KeyboardEvent).key==='Enter'&&((e as KeyboardEvent).metaKey||(e as KeyboardEvent).ctrlKey)) runAi();
 });
 
+// ===========================================================================
+//  COMMUNITY — mounted only when the app is configured for it
+// ===========================================================================
+// Volta stays a static offline PWA. With no Supabase credentials in the build
+// this whole block does nothing, the toolbar group stays hidden, and not a
+// byte of the SDK is fetched — the dynamic import inside community-ui is never
+// reached. That is the supported configuration, not a degraded one.
+
+/** Draw the current document into `octx`, fitted to a W×H box.
+ *  Shared by the gallery thumbnail and the About-page mosaic so both use the
+ *  SAME symbol code that draws the screen — a second renderer would drift. */
+function renderFitted(octx:CanvasRenderingContext2D,W:number,H:number,fill:string|null){
+  if(!comps.length) return false;
+  const pts=comps.flatMap(c=>bodyExtent(c));
+  for(const w of wires) pts.push({x:w.x1,y:w.y1},{x:w.x2,y:w.y2});
+  const xs=pts.map(p=>gx(p.x)), ys=pts.map(p=>gy(p.y));
+  const pad=26;
+  const x0=Math.min(...xs)-pad, x1=Math.max(...xs)+pad;
+  const y0=Math.min(...ys)-pad, y1=Math.max(...ys)+pad;
+  const scale=Math.min(W/(x1-x0||1), H/(y1-y0||1));
+
+  octx.save();
+  if(fill){ octx.fillStyle=fill; octx.fillRect(0,0,W,H); }
+  octx.setTransform(scale,0,0,scale,
+    -x0*scale+(W-(x1-x0)*scale)/2,
+    -y0*scale+(H-(y1-y0)*scale)/2);
+
+  const saved=ctx, savedRunning=running, savedSel=selected, savedHover=hover;
+  ctx=octx;
+  // A still picture of the circuit, not of a moment in its simulation: no flow
+  // dots, no selection tint, no hover wash.
+  running=false; selected=null; hover=null;
+  try{
+    for(const w of wires){
+      octx.strokeStyle=T.wire; octx.lineWidth=3; octx.lineCap='round';
+      octx.beginPath(); octx.moveTo(gx(w.x1),gy(w.y1)); octx.lineTo(gx(w.x2),gy(w.y2)); octx.stroke();
+    }
+    for(const c of comps) drawComponent(c,null);
+  } finally {
+    ctx=saved; running=savedRunning; selected=savedSel; hover=savedHover;
+    octx.restore();
+  }
+  return true;
+}
+
+/** A small PNG of the schematic, fitted, for the gallery card. Drawn offscreen
+ *  rather than cropped out of the live canvas: that one carries the scope
+ *  panel, the hover chip and whatever the view is panned to. */
+function thumbnailDataURL():string|null{
+  const W=640, H=400;
+  const off=document.createElement('canvas');
+  off.width=W; off.height=H;
+  const octx=off.getContext('2d');
+  if(!octx) return null;
+  const bg=getComputedStyle(document.documentElement).getPropertyValue('--bg').trim()||'#ffffff';
+  return renderFitted(octx,W,H,bg) ? off.toDataURL('image/png') : null;
+}
+
+// ---- Lending the real circuits out --------------------------------------
+// The Commons backdrop draws the app's OWN example circuits rather than
+// procedurally generated ones. A generator that scatters parts around a mesh
+// produces things that look like circuits to the eye and are nonsense to an
+// engineer — two sources in a loop, a switch in series with nothing. These are
+// the same documents the gallery ships, drawn with the same symbol code, so
+// every figure on that page is a circuit that actually solves.
+
+/** Every built-in example, as a document. Swaps the editor's own out and back;
+ *  the loaders never touch the undo stack, so nothing undoable is disturbed. */
+export function exampleDocs():SavedModel[]{
+  const keep={comps,wires,probes:scopeProbes,uid,sel:selected,multi:multi.slice()};
+  const out:SavedModel[]=[];
+  try{
+    for(const g of GALLERY){
+      comps=[]; wires=[]; scopeProbes=[]; selected=null; multi=[];
+      try{ g.fn(); out.push(serializeModel()); }catch{ /* skip a bad example */ }
+    }
+  } finally {
+    comps=keep.comps; wires=keep.wires; scopeProbes=keep.probes;
+    uid=keep.uid; selected=keep.sel; multi=keep.multi;
+    refreshMeta(); renderInspector(); draw();
+  }
+  return out;
+}
+
+/** Pixel extent of a document, so a caller can lay several out without overlap. */
+export function docBounds(doc:SavedModel):{w:number;h:number}{
+  const b=docExtent(doc);
+  return {w:b.x1-b.x0, h:b.y1-b.y0};
+}
+
+function docExtent(doc:SavedModel){
+  const keep=comps;
+  comps=doc.comps;
+  const pts:Pt[]=comps.flatMap(c=>bodyExtent(c));
+  comps=keep;
+  for(const w of doc.wires) pts.push({x:w.x1,y:w.y1},{x:w.x2,y:w.y2});
+  if(!pts.length) return {x0:0,y0:0,x1:0,y1:0};
+  const xs=pts.map(p=>gx(p.x)), ys=pts.map(p=>gy(p.y));
+  const pad=16;
+  return {x0:Math.min(...xs)-pad, y0:Math.min(...ys)-pad,
+          x1:Math.max(...xs)+pad, y1:Math.max(...ys)+pad};
+}
+
+/**
+ * Draw `doc` into `target` with its top-left at (ox,oy), at the editor's own
+ * scale.
+ *
+ * @param reveal 0..1 — wires are laid first, then parts dropped in, so it
+ *               reads as a circuit being built rather than fading up.
+ * @param flow   when > 0, current dots ride the wires at this phase.
+ */
+export function drawDoc(target:CanvasRenderingContext2D, doc:SavedModel,
+                        ox:number, oy:number, reveal:number, flow:number){
+  const keep={comps,wires,probes:scopeProbes,sel:selected,multi:multi.slice(),
+    run:running,hov:hover,res:lastResult,net:simNet};
+  const ext=docExtent(doc);
+  comps=doc.comps.map(c=>({...c}));
+  wires=doc.wires.map(w=>({...w}));
+  scopeProbes=[]; selected=null; multi=[];
+  // A still picture of the circuit, not of a moment in its simulation.
+  running=false; hover=null; lastResult=null; simNet=null;
+
+  const saved=ctx;
+  ctx=target;
+  target.save();
+  target.translate(ox-ext.x0, oy-ext.y0);
+  try{
+    const total=wires.length+comps.length;
+    const done=Math.floor(reveal*total);
+    const nW=Math.min(wires.length,done);
+    const nC=Math.max(0,done-wires.length);
+
+    target.strokeStyle=T.wire; target.lineWidth=3; target.lineCap='round';
+    target.beginPath();
+    for(let i=0;i<nW;i++){
+      const w=wires[i];
+      target.moveTo(gx(w.x1),gy(w.y1)); target.lineTo(gx(w.x2),gy(w.y2));
+    }
+    target.stroke();
+
+    for(let i=0;i<nC;i++) drawComponent(comps[i],null);
+
+    if(flow>0&&nC>=comps.length){
+      target.fillStyle=T.current;
+      for(const w of wires){
+        const len=Math.hypot(gx(w.x2)-gx(w.x1),gy(w.y2)-gy(w.y1));
+        if(len<1) continue;
+        const ux=(gx(w.x2)-gx(w.x1))/len, uy=(gy(w.y2)-gy(w.y1))/len;
+        for(let d=flow%FLOW_PITCH; d<len; d+=FLOW_PITCH){
+          target.beginPath();
+          target.arc(gx(w.x1)+ux*d, gy(w.y1)+uy*d, 2.1, 0, Math.PI*2);
+          target.fill();
+        }
+      }
+    }
+  } finally {
+    target.restore();
+    ctx=saved;
+    comps=keep.comps; wires=keep.wires; scopeProbes=keep.probes;
+    selected=keep.sel; multi=keep.multi;
+    running=keep.run; hover=keep.hov; lastResult=keep.res; simNet=keep.net;
+  }
+}
+
+/** What the animated backdrops need: the examples, and how to size and draw
+ *  one. Shared by the About page and the Commons page so both show real
+ *  circuits from one definition — see src/circuit-bg.ts for the painter. */
+function backdropApi(){
+  return { docs:exampleDocs() as unknown[],
+    bounds:(d:unknown)=>docBounds(d as SavedModel),
+    draw:(c:CanvasRenderingContext2D,d:unknown,ox:number,oy:number,rev:number,flow:number)=>
+      drawDoc(c,d as SavedModel,ox,oy,rev,flow) };
+}
+
+// ---- About -----------------------------------------------------------------
+// A plain view, not a modal: it is a page about the project, and it should be
+// readable and scrollable rather than boxed. Wired here rather than in
+// community-ui because it exists whether or not the commons is configured —
+// only its sign-in call to action is conditional.
+{
+  const about=el('aboutView');
+  const SEEN='volta.seenAbout';
+
+  // The backdrop starts lazily and is torn down on close, so nothing animates
+  // behind the editor. The import is dynamic for the same reason the paint is
+  // deferred: the page should be up before the renderer starts, not after.
+  let stopBackdrop:(()=>void)|null=null;
+  const startBackdrop=()=>{
+    if(stopBackdrop) return;
+    stopBackdrop=()=>{};                       // claim the slot; the import is async
+    void import('./circuit-bg').then(({startCircuitBackdrop})=>{
+      if(about.hidden) { stopBackdrop=null; return; }   // closed again already
+      stopBackdrop=startCircuitBackdrop(el('aboutBg') as HTMLCanvasElement,backdropApi());
+      el('aboutMosaic').classList.add('ready');
+    }).catch(()=>{ stopBackdrop=null; });
+  };
+  const openAbout=()=>{
+    about.hidden=false;
+    if('requestIdleCallback' in window) (window as unknown as
+      {requestIdleCallback:(cb:()=>void,o?:{timeout:number})=>void})
+      .requestIdleCallback(startBackdrop,{timeout:400});
+    else setTimeout(startBackdrop,50);
+  };
+  const closeAbout=()=>{
+    about.hidden=true;
+    stopBackdrop?.(); stopBackdrop=null;
+    el('aboutMosaic').classList.remove('ready');
+    try{ localStorage.setItem(SEEN,'1'); }catch{}
+  };
+
+  el('aboutBtn').onclick=openAbout;
+  el('aboutClose').onclick=closeAbout;
+  el('aboutOpen').onclick=closeAbout;
+  (el('aboutLicLink') as HTMLAnchorElement).href=
+    'https://creativecommons.org/licenses/by-sa/4.0/';
+  // The photo reveals itself only once it has genuinely decoded. naturalWidth
+  // is the check that matters: a dev server answering 404s with index.html
+  // would otherwise hand us an "image" that fires load and renders nothing.
+  const img=el('aboutImg') as HTMLImageElement;
+  const showPhoto=()=>{
+    if(img.naturalWidth>0){ img.classList.add('ready'); el('aboutImgFallback').hidden=true; }
+  };
+  img.addEventListener('load',showPhoto);
+  if(img.complete) showPhoto();
+  window.addEventListener('keydown',e=>{
+    if(e.key==='Escape'&&!about.hidden) closeAbout();
+  });
+
+  // About is the landing page. Two exceptions, both cases where showing it
+  // would be in the way rather than a welcome: a shared-circuit link, which
+  // someone followed to see a specific circuit, and a return visit — once you
+  // have been into the editor, the toolbar button is the way back.
+  let seen=false;
+  try{ seen=localStorage.getItem(SEEN)==='1'; }catch{}
+  if(!seen&&!location.hash) openAbout();
+}
+
+if(community.configured){
+  import('./community-ui').then(({mountCommunity})=>{
+    const api=mountCommunity({
+      serialize:()=>serializeModel(),
+      load:(doc,title)=>{
+        applyModel(doc as SavedModel);
+        commit(); fitView(); renderInspector(); draw();
+        void title;
+      },
+      thumbnail:()=>thumbnailDataURL(),
+      hint:(html)=>flashHint(html),
+      hasCircuit:()=>comps.length>0,
+      // Built on first Commons open, then reused for every figure.
+      backdrop:backdropApi,
+    });
+    // Clearing the schematic starts a document with no ancestry.
+    const clearBtn=el('clearBtn');
+    clearBtn.addEventListener('click',()=>api.clearLineage());
+  }).catch(e=>console.error('community features unavailable:',e));
+}
+
 // ---- boot ----
+// Adopt whatever theme the inline boot script settled on — this is what loads
+// the stylesheet's palette into T, so it has to happen before the first draw.
+applyTheme(currentTheme(),false);
 buildRail(); buildGallery(); setTool('select'); renderInspector();
 resize();
 if(!loadFromHash()) loadRC();   // restore a shared circuit, else the default example

@@ -195,7 +195,7 @@ schema has no billing tables; adding them later touches nothing here.
 `dist/`. Deploy `dist/` to any static host (GitHub Pages, Netlify, Vercel).
 
 **Desktop (Tauri).** Requires the Rust toolchain (`rustup`). Verified on macOS —
-`Zuri.app` builds and launches with the simulator running inside it.
+`Volta.app` builds and launches with the simulator running inside it.
 
 ```bash
 npm run tauri dev      # develop in a native window
@@ -209,7 +209,7 @@ regenerate them, render that SVG to a 1024×1024 PNG and run
 **Mobile (Capacitor 7).** Requires a JDK 21 and the Android SDK (Android
 Studio, or the command-line tools) for Android; Xcode and CocoaPods for iOS.
 Both are verified: `assembleDebug` produces a 3.9 MB APK
-(`com.zuri.livecircuit`, targetSdk 35) that runs on a physical Pixel, and the
+(`com.anaaya.volta`, targetSdk 35) that runs on a physical Pixel, and the
 iOS build runs in the Simulator with the full UI.
 
 ```bash

@@ -1,16 +1,129 @@
-  /* Light palette. Kept deliberately in step with the canvas palette (`T` in
-     main.ts) — the schematic and the chrome around it must read as one surface,
-     and a light canvas with dark chrome looks like two apps stapled together. */
+  /* THE PALETTE LIVES HERE — both halves of it.
+     The `--cv-*` variables are the colours the *canvas* paints with; main.ts
+     reads them straight out of this stylesheet on every theme change rather
+     than keeping its own copy. The schematic and the chrome around it have to
+     read as one surface, and the only way to guarantee that is one source of
+     truth. Add a canvas colour here, map it in T_VARS, and both themes get it.
+
+     Light is the default and lives on :root. The theme is chosen in JS and
+     stamped on <html> as data-theme, so there is exactly one switch to follow
+     — no media query racing an explicit choice. */
   :root{
-    --bg:#f7f9fc; --panel:#ffffff; --panel2:#eef2f8; --line:#d5dde8;
-    --ink:#1f2733; --muted:#68758a; --accent:#1f6feb; --accent2:#b3701b;
-    --good:#1a7f45; --bad:#c0392b; --wire:#55627a;
-    --shadow:0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.10);
+    --bg:#f7f9fc; --panel:#ffffff; --panel2:#eff3f9; --panel3:#e4eaf3; --line:#dbe2ec;
+    --line-strong:#c3ccda;
+    --ink:#1f2733; --ink-soft:#4a566a; --muted:#68758a; --faint:#93a0b3;
+    --accent:#1f6feb; --accent-soft:#e8f0fe; --accent-ring:#bcd4fb; --accent2:#b3701b;
+    /* Wordmark: deep blue base, cyan arc, white-hot core. Restrained on light,
+       where a glow reads as a printing fault rather than as light. */
+    --wm-a:#1442a8; --wm-b:#1682c4; --wm-hot:#22b4e8; --wm-glow:rgba(31,111,235,.22);
+    /* Amber, not green, for the primary action. It is the same family as
+       --accent2 and the developer card's gold, so the app has one warm colour
+       rather than two. Deep enough on light that white type on it holds up —
+       a brighter amber would look like a warning with unreadable text. */
+    --good:#a96e0e; --good-hover:#925e0b; --good-glow:rgba(169,110,14,.30);
+    --good-ink:#ffffff;
+    --bad:#c0392b; --bad-hover:#a93226; --bad-soft:#fdecea; --bad-line:#f0b8b1;
+    --bad-glow:rgba(192,57,43,.28);
+    --scrim:rgba(16,24,40,.42);
+    --hint-bg:rgba(255,255,255,.92);
+    --zero-cell:#c2cad6;
+    /* Two-layer shadows: a tight contact shadow for the edge, a wider ambient
+       one for lift. One blurred shadow alone reads as a smudge. */
+    --shadow-1:0 1px 1px rgba(16,24,40,.04), 0 1px 2px rgba(16,24,40,.06);
+    --shadow-2:0 1px 2px rgba(16,24,40,.06), 0 4px 12px rgba(16,24,40,.08);
+    --shadow-3:0 2px 4px rgba(16,24,40,.06), 0 12px 32px rgba(16,24,40,.16);
+    --canvas-shadow:rgba(16,24,40,.13);
+    --r-sm:6px; --r:8px; --r-lg:12px;
+    --hdr:52px;
+    --rail:184px; --inspector:300px; --inspector-math:420px;
+
+    /* ---- canvas ---- */
+    --cv-grid-major:#c3ccd8;   /* every 5th rule — countable at a glance */
+    --cv-grid-minor:#dde3ec;
+    --cv-wire:#55627a;
+    --cv-ink:#2b3440;          /* component bodies and leads */
+    --cv-body:#ffffff;         /* fill inside a body: IC blocks, NOT bubbles */
+    --cv-label:#7a879b;        /* value labels and axes */
+    --cv-accent:#1f6feb;
+    --cv-junction:#55627a;
+    --cv-current:#e0952a;      /* moving current dots */
+    --cv-panel-bg:rgba(252,253,255,0.96);
+    --cv-panel-line:#ccd5e2;
+    --cv-panel-ink:#2b3440;
+    --cv-plot-grid:#e6ebf3;
+    --cv-zero-line:#aab6c8;
+    --cv-sel-v:#2b3440;
+    --cv-sel-i:#e0952a;
+    --cv-mcu-on:#a4670f; --cv-mcu-off:#eef2f7; --cv-mcu-on-ink:#ffffff;
+    --cv-seg-on:#d8382c; --cv-seg-off:#e9edf3;
+    --cv-highlight:#ffe487;
+    --cv-sel-body:#eaf1fe;
+    --cv-charge-pos:#e0483a; --cv-charge-neg:#3f6ee0;
+    /* Node-voltage ramp endpoints. Neutral is --cv-wire: an unsolved schematic
+       and a solved one at 0 V have to be the same colour. */
+    --cv-v-high:#d23a34; --cv-v-low:#236ad9;
   }
+
+  /* Dark is a cool grey, not black. A pitch-black field makes thin schematic
+     strokes bloom and haloes the grid; ~#1b1f27 keeps the same contrast ratios
+     as the light theme without the glare. */
+  :root[data-theme="dark"]{
+    --bg:#1b1f27; --panel:#232833; --panel2:#2b3140; --panel3:#343b4c; --line:#363d4d;
+    --line-strong:#4b5468;
+    --ink:#e4e8ef; --ink-soft:#c2cad8; --muted:#8f9aac; --faint:#6d7889;
+    --accent:#5b9cff; --accent-soft:#23304a; --accent-ring:#37507f; --accent2:#e0a04a;
+    /* Dark is where the mark can actually glow. */
+    --wm-a:#4b8cf5; --wm-b:#49d8ff; --wm-hot:#e8fbff; --wm-glow:rgba(90,180,255,.45);
+    /* Dark inverts the ink: a mid amber bright enough to read on #1b1f27 is
+       far too bright to carry white type, so the label goes dark instead. */
+    --good:#d99a2b; --good-hover:#e6a638; --good-glow:rgba(217,154,43,.34);
+    --good-ink:#1b1f27;
+    --bad:#e05c4e; --bad-hover:#e86d60; --bad-soft:#37262a; --bad-line:#5c3a37;
+    --bad-glow:rgba(224,92,78,.3);
+    --scrim:rgba(8,10,15,.6);
+    --hint-bg:rgba(35,40,51,.92);
+    --zero-cell:#4a5364;
+    --shadow-1:0 1px 1px rgba(0,0,0,.2), 0 1px 2px rgba(0,0,0,.24);
+    --shadow-2:0 1px 2px rgba(0,0,0,.24), 0 4px 12px rgba(0,0,0,.3);
+    --shadow-3:0 2px 4px rgba(0,0,0,.3), 0 12px 32px rgba(0,0,0,.5);
+    --canvas-shadow:rgba(0,0,0,.4);
+
+    --cv-grid-major:#3f4757;
+    --cv-grid-minor:#2b3241;
+    --cv-wire:#8b97ad;
+    --cv-ink:#d7dde7;
+    --cv-body:#232833;
+    --cv-label:#96a1b3;
+    --cv-accent:#5b9cff;
+    --cv-junction:#8b97ad;
+    --cv-current:#f0a63c;
+    --cv-panel-bg:rgba(35,40,51,0.96);
+    --cv-panel-line:#3c4455;
+    --cv-panel-ink:#dde3ec;
+    --cv-plot-grid:#313847;
+    --cv-zero-line:#5a6479;
+    --cv-sel-v:#d7dde7;
+    --cv-sel-i:#f0a63c;
+    --cv-mcu-on:#e0a04a; --cv-mcu-off:#2b3140; --cv-mcu-on-ink:#111620;
+    /* Off segments must stay visible against --cv-body, or the display reads as
+       a floating glyph instead of a seven-segment digit. */
+    --cv-seg-on:#ff5546; --cv-seg-off:#353d4e;
+    --cv-highlight:#6b5a1f;
+    --cv-sel-body:#25334c;
+    --cv-charge-pos:#ff6b5e; --cv-charge-neg:#5b9cff;
+    --cv-v-high:#ff6b5e; --cv-v-low:#5b9cff;
+  }
+  :root[data-theme="dark"] ::selection{background:var(--accent-soft)}
+  :root[data-theme="dark"]{color-scheme:dark}
   *{box-sizing:border-box}
+  /* The UA's [hidden] rule is display:none at the lowest specificity, so any
+     author `display` (the .tool flex, the mobile .railgroup flex) silently
+     un-hides the element. The palette search relies on `hidden` meaning hidden. */
+  [hidden]{display:none!important}
   /* overscroll-behavior stops pull-to-refresh and rubber-banding from firing
      when a drag runs past the edge of the schematic on a phone. */
-  html,body{margin:0;height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--ink);overflow:hidden;overscroll-behavior:none}
+  html,body{margin:0;height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--ink);overflow:hidden;overscroll-behavior:none;
+    -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
   /* 100dvh tracks the dynamic viewport, so mobile browser chrome sliding in and
      out doesn't crop the canvas the way a fixed 100vh does. */
   /* SAFE-AREA INSETS. Android 15+ forces edge-to-edge for targetSdk 35, and
@@ -19,121 +132,732 @@
      inspector behind the gesture pill. env() resolves to 0px on desktop, so the
      desktop layout is unchanged. Requires viewport-fit=cover (set in
      index.html). */
-  #app{display:grid;grid-template-columns:64px 1fr 280px;
-    grid-template-rows:calc(48px + env(safe-area-inset-top,0px)) 1fr;height:100vh;height:100dvh}
-  /* The math panel needs room for a matrix; 280px turns it into a scrollbar. */
-  #app.mathmode{grid-template-columns:64px 1fr 400px}
-  header{grid-column:1/4;display:flex;align-items:center;gap:14px;
-    padding:env(safe-area-inset-top,0px) calc(16px + env(safe-area-inset-right,0px)) 0 calc(16px + env(safe-area-inset-left,0px));
-    background:var(--panel);border-bottom:1px solid var(--line)}
-  header .title{font-weight:700;letter-spacing:.5px;color:var(--accent);white-space:nowrap}
+  #app{display:grid;grid-template-columns:var(--rail) 1fr var(--inspector);
+    grid-template-rows:calc(var(--hdr) + env(safe-area-inset-top,0px)) 1fr;height:100vh;height:100dvh}
+  /* The math panel needs room for a matrix; 300px turns it into a scrollbar. */
+  #app.mathmode{grid-template-columns:var(--rail) 1fr var(--inspector-math)}
+  /* On a 1280-wide window a 184px rail plus a 300px inspector is 38% of the
+     screen given over to chrome, and the canvas — the thing the app exists to
+     show — gets what's left. Both columns give ground below 1320px. */
+  @media (max-width:1320px){
+    :root{--rail:156px; --inspector:268px; --inspector-math:380px}
+    .railgroup{padding:0 6px}
+    .tool svg{width:22px;height:22px}
+  }
+
+  /* ---- Icons ------------------------------------------------------------- */
+  /* All chrome iconography is one 24-grid stroke set, so weight and terminals
+     match across the toolbar no matter which glyph is in a button. */
+  .ic{width:17px;height:17px;flex:0 0 auto;fill:none;stroke:currentColor;
+    stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+  .ic.fill{fill:currentColor;stroke:none}
+
+  /* ---- Header ------------------------------------------------------------ */
+  /* min-width:0 lets this grid item be narrower than its content, and the
+     overflow keeps that content inside itself. Without both, a toolbar wider
+     than the window pushes <body> wider than the viewport: the page gains a
+     horizontal scrollbar and Run walks off the right-hand edge. */
+  header{grid-column:1/4;display:flex;align-items:center;gap:10px;min-width:0;
+    overflow-x:auto;overflow-y:hidden;scrollbar-width:none;
+    padding:env(safe-area-inset-top,0px) calc(14px + env(safe-area-inset-right,0px)) 0 calc(14px + env(safe-area-inset-left,0px));
+    background:var(--panel);border-bottom:1px solid var(--line);box-shadow:var(--shadow-1);z-index:10}
+  header::-webkit-scrollbar{display:none}
+  header>*{flex:0 0 auto}
+  /* Everything up to the theme toggle lives in here and scrolls together when
+     the window is too narrow for it. The cluster after it — About, theme,
+     Reset, Run — stays put, so the primary action is always where it was. */
+  .hscroll{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:10px;
+    overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+  .hscroll::-webkit-scrollbar{display:none}
+  .hscroll>*{flex:0 0 auto}
+  .brand{display:flex;align-items:center;gap:6px;font-weight:650;font-size:15px;
+    letter-spacing:-.01em;color:var(--ink);white-space:nowrap;padding-right:2px}
+  .brand .bolt{width:18px;height:18px;fill:var(--accent);stroke:none;
+    filter:drop-shadow(0 0 5px var(--wm-glow))}
+
+  /* ---- Wordmark ---------------------------------------------------------
+     The name, set as a mark rather than as a word: the heaviest face the
+     platform actually has, uppercase, tracked out, and filled with a live
+     gradient that sweeps like charge moving along a conductor.
+
+     No web font is loaded — this is an offline app, and a wordmark that
+     depends on a download is a wordmark that is missing on the plane. Arial
+     Black is the one genuinely heavy face present across macOS, Windows and
+     Android; the system stack behind it takes over elsewhere, where 900 gets
+     us SF Pro Black or the nearest weight available. */
+  .wordmark{
+    font-family:"Arial Black","Segoe UI Black","Helvetica Neue",
+                -apple-system,BlinkMacSystemFont,Roboto,sans-serif;
+    font-weight:900;font-size:1.08em;letter-spacing:.055em;
+    text-transform:uppercase;font-style:normal;
+    /* Two bright stops on a deeper base, over-wide so it can travel. */
+    background:linear-gradient(100deg,
+      var(--wm-a) 0%, var(--wm-a) 32%, var(--wm-b) 44%,
+      var(--wm-hot) 50%, var(--wm-b) 56%, var(--wm-a) 68%, var(--wm-a) 100%);
+    background-size:280% 100%;background-position:120% 0;
+    color:var(--accent);
+  }
+  /* Only go transparent where the clip is genuinely supported — the fallback
+     of this getting it wrong is an invisible brand. */
+  @supports ((-webkit-background-clip:text) or (background-clip:text)){
+    .wordmark{-webkit-background-clip:text;background-clip:text;
+      -webkit-text-fill-color:transparent;color:transparent;
+      filter:drop-shadow(0 0 6px var(--wm-glow));
+      animation:wm-charge 7s linear infinite}
+  }
+  @keyframes wm-charge{ to{background-position:-160% 0} }
+  @media (prefers-reduced-motion:reduce){ .wordmark{animation:none} }
+
+  /* Which page you are on, set quietly next to the mark so the name stays the
+     loudest thing in the corner. */
+  .brandsub{font-weight:500;font-size:13px;color:var(--muted);letter-spacing:0}
+  .brandsub::before{content:'';display:inline-block;width:1px;height:12px;
+    margin:0 8px -1px 2px;background:var(--line)}
   /* The toolbar has outgrown the wordmark on narrower desktops — drop the
      branding before the controls start wrapping or getting cut off. */
-  @media (max-width:1500px){ header .title{display:none} }
-  header .title b{color:var(--ink)}
+  /* Scoped to the editor's own toolbar: .galhead is a <header> as well, and the
+     full-screen pages have room for their wordmark even when the editor does
+     not. Unscoped, "Commons" and "About Volta" silently vanished below 1360px. */
+  @media (max-width:1360px){ #app>header .brand b{display:none} }
+  @media (max-width:1180px){ #app>header .brand{display:none} }
+  /* Below ~1200px the toolbar's intrinsic width exceeds the window, and a
+     non-wrapping flex row overflows its own right padding rather than
+     shrinking — which clipped Run off the edge. The four panel buttons drop
+     their labels to icons and win back the room. Not applied on phones: the
+     header scrolls there, so the labels cost nothing and a tooltip-less icon
+     on touch is a guess. */
+  @media (max-width:1400px) and (min-width:761px){
+    .hgroup .btn span{display:none}
+    .hgroup .btn{width:32px;padding:0;justify-content:center}
+    .selwrap select{max-width:118px}
+    /* The signed-in handle is an exception: it is identity, not a command, and
+       an unlabelled avatar is exactly the thing people hunt for. */
+    #accountBtn span{display:inline}
+    #accountBtn{width:auto;padding:0 10px}
+  }
+  /* A handle can be 20 characters; keep it from crowding the toolbar. */
+  #accountLabel{max-width:12ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   header .sep{flex:1}
-  .btn{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:7px 12px;cursor:pointer;font-size:13px;display:inline-flex;align-items:center;gap:6px;box-shadow:var(--shadow)}
-  .btn:hover{border-color:var(--accent);color:var(--accent)}
-  .btn.primary{background:var(--good);border-color:var(--good);color:#fff;font-weight:600}
-  .btn.primary.stop{background:var(--bad);border-color:var(--bad);color:#fff}
-  .btn.ghost{background:transparent}
-  /* Tool rail */
-  #rail{grid-row:2;background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 0;overflow-y:auto}
-  .tool{width:46px;height:46px;border-radius:10px;border:1px solid transparent;background:transparent;color:var(--muted);cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;font-size:9px}
-  .tool svg{width:24px;height:24px}
+  /* Related controls sit in a group with a hairline between groups, so the
+     toolbar reads as five short lists rather than one run of fourteen buttons. */
+  .hgroup{display:flex;align-items:center;gap:4px;padding-left:10px;
+    border-left:1px solid var(--line);height:26px}
+  .hgroup:first-of-type{border-left:none;padding-left:0}
+
+  .btn{background:var(--panel);color:var(--ink-soft);border:1px solid var(--line);
+    border-radius:var(--r);padding:0 10px;height:32px;cursor:pointer;font-size:13px;
+    font-weight:500;font-family:inherit;display:inline-flex;align-items:center;gap:6px;
+    box-shadow:var(--shadow-1);transition:background .12s,border-color .12s,color .12s,box-shadow .12s;
+    white-space:nowrap}
+  .btn:hover{border-color:var(--line-strong);background:var(--panel2);color:var(--ink)}
+  .btn:active{background:var(--panel3);box-shadow:none}
+  .btn:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+  .btn[disabled]{opacity:.38;pointer-events:none}
+  /* Icon-only buttons are square, and lose the border so a run of them reads as
+     one strip rather than a row of separate chips. */
+  .btn.icon{width:32px;padding:0;justify-content:center;border-color:transparent;box-shadow:none;background:transparent}
+  .btn.icon:hover{background:var(--panel2);border-color:transparent}
+  .btn.icon.danger:hover{background:var(--bad-soft);color:var(--bad)}
+  .btn.primary{background:var(--good);border-color:var(--good);color:var(--good-ink);font-weight:600;
+    box-shadow:0 1px 2px var(--good-glow), 0 2px 8px var(--good-glow);padding:0 14px}
+  .btn.primary:hover{background:var(--good-hover);border-color:var(--good-hover);color:var(--good-ink)}
+  /* Run is the exception to the amber primary. It pairs with Stop, and green/red
+     is the pair everyone already reads without being told; amber against red
+     is two warm colours arguing. Scoped by overriding the tokens on the button
+     itself, so .btn.primary keeps one definition. The .stop state below is
+     unaffected — it paints from --bad either way. */
+  #runBtn{--good:#1a7f45; --good-hover:#17703d; --good-glow:rgba(26,127,69,.28);
+    --good-ink:#ffffff}
+  :root[data-theme="dark"] #runBtn{--good:#2e9e5b; --good-hover:#35b066;
+    --good-glow:rgba(46,158,91,.3); --good-ink:#ffffff}
+  .btn.primary.stop{background:var(--bad);border-color:var(--bad);color:#fff;
+    box-shadow:0 1px 2px var(--bad-glow), 0 2px 8px var(--bad-glow)}
+  .btn.primary.stop:hover{background:var(--bad-hover);border-color:var(--bad-hover)}
+  .btn.ghost{background:transparent;box-shadow:none}
+  .btn.active-toggle{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+  .btn.icon.active-toggle{border-color:transparent}
+
+  /* The example picker keeps a native <select> for its dropdown behaviour but
+     wears the button's skin, so it doesn't sit in the toolbar as a stray OS
+     widget. */
+  .selwrap{position:relative;display:inline-flex;align-items:center}
+  .selwrap select{appearance:none;-webkit-appearance:none;background:var(--panel);
+    color:var(--ink-soft);border:1px solid var(--line);border-radius:var(--r);
+    height:32px;padding:0 28px 0 10px;font-size:13px;font-weight:500;font-family:inherit;
+    cursor:pointer;box-shadow:var(--shadow-1);max-width:150px;text-overflow:ellipsis}
+  .selwrap select:hover{border-color:var(--line-strong);background:var(--panel2)}
+  .selwrap select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+  .selwrap .chev{position:absolute;right:8px;width:14px;height:14px;color:var(--faint);
+    pointer-events:none;transform:rotate(90deg)}
+
+  .pill{display:inline-flex;align-items:center;white-space:nowrap;font-size:11px;
+    font-weight:500;padding:3px 9px;border-radius:20px;background:var(--panel2);
+    border:1px solid var(--line);color:var(--muted);font-variant-numeric:tabular-nums}
+
+  /* ---- Tool rail --------------------------------------------------------- */
+  /* Fifty parts in one flat column is a scroll-and-hunt exercise. They are
+     grouped by what they are, each group collapsible and the whole thing
+     searchable, so finding a JK flip-flop doesn't mean reading past every
+     passive first. */
+  #rail{grid-row:2;background:var(--panel);border-right:1px solid var(--line);
+    display:flex;flex-direction:column;overflow:hidden}
+  .railsearch{position:relative;display:flex;align-items:center;flex:0 0 auto;
+    padding:10px 10px 8px;border-bottom:1px solid var(--line)}
+  .railsearch .ic{position:absolute;left:19px;width:14px;height:14px;color:var(--faint);pointer-events:none}
+  .railsearch input{width:100%;height:30px;background:var(--bg);border:1px solid var(--line);
+    border-radius:var(--r);color:var(--ink);padding:0 8px 0 28px;font-size:12px;font-family:inherit;
+    appearance:none;-webkit-appearance:none}
+  .railsearch input::-webkit-search-cancel-button{appearance:none}
+  .railsearch input::placeholder{color:var(--faint)}
+  .railsearch input:focus{outline:none;border-color:var(--accent);background:var(--panel);
+    box-shadow:0 0 0 3px var(--accent-soft)}
+  #railGroups{flex:1 1 auto;overflow-y:auto;overscroll-behavior:contain;padding:6px 0 16px}
+  .railgroup{padding:0 8px}
+  .grouphead{display:flex;align-items:center;gap:5px;width:100%;background:none;border:none;
+    padding:8px 4px 5px;cursor:pointer;font-family:inherit;font-size:10px;font-weight:600;
+    letter-spacing:.07em;text-transform:uppercase;color:var(--faint)}
+  .grouphead:hover{color:var(--muted)}
+  .grouphead .ic{width:11px;height:11px;stroke-width:2.4;transition:transform .15s}
+  .railgroup.open .grouphead .ic{transform:rotate(90deg)}
+  .railgroup:not(.open) .grid{display:none}
+  .railgroup .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:2px}
+  .tool{aspect-ratio:1;border-radius:var(--r);border:1px solid transparent;background:transparent;
+    color:var(--muted);cursor:pointer;display:flex;flex-direction:column;align-items:center;
+    justify-content:center;gap:3px;font-size:8.5px;font-family:inherit;padding:2px 1px;
+    transition:background .1s,color .1s,border-color .1s;overflow:hidden}
+  .tool svg{width:24px;height:24px;flex:0 0 auto}
+  .tool span{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.1}
   .tool:hover{background:var(--panel2);color:var(--ink)}
-  .tool.active{background:var(--panel2);color:var(--accent);border-color:var(--accent)}
-  /* Canvas */
+  .tool.active{background:var(--accent-soft);color:var(--accent);border-color:var(--accent-ring);
+    box-shadow:inset 0 0 0 1px rgba(31,111,235,.12)}
+  .railempty{padding:16px 14px;font-size:12px;color:var(--faint);text-align:center}
+
+  /* ---- Canvas ------------------------------------------------------------ */
   /* touch-action:none hands every gesture over the schematic to the editor.
      Without it a drag on a phone scrolls or zooms the page instead of moving
      the part, and the pointermove stream is cancelled mid-drag. */
   #stage{grid-row:2;position:relative;overflow:hidden;background:var(--bg);touch-action:none;-webkit-user-select:none;user-select:none}
   canvas{display:block;position:absolute;top:0;left:0;touch-action:none}
-  #hint{position:absolute;left:12px;bottom:12px;background:rgba(255,255,255,.94);border:1px solid var(--line);border-radius:8px;padding:6px 10px;font-size:12px;color:var(--muted);pointer-events:none}
-  /* Inspector */
-  #inspector{grid-row:2;background:var(--panel);border-left:1px solid var(--line);padding:14px;overflow-y:auto}
-  #inspector h3{margin:0 0 10px;font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted)}
-  .field{margin-bottom:12px}
-  .field label{display:block;font-size:11px;color:var(--muted);margin-bottom:4px}
-  .field input{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--ink);padding:7px 8px;font-size:14px}
-  .field input:focus{outline:none;border-color:var(--accent)}
-  .readout{font-size:13px;line-height:1.7;color:var(--ink)}
+  /* Top-left, not bottom-left: the scope and Bode panels own the bottom of the
+     stage, and the hint used to sit on top of them. */
+  #hint{position:absolute;left:14px;top:14px;background:var(--hint-bg);
+    backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+    border:1px solid var(--line);border-radius:var(--r);padding:7px 11px;font-size:12px;
+    color:var(--muted);pointer-events:none;box-shadow:var(--shadow-2);max-width:min(420px,60%);
+    transition:border-color .3s}
+  #hint b{color:var(--ink-soft);font-weight:600}
+
+  /* ---- Inspector --------------------------------------------------------- */
+  #inspector{grid-row:2;background:var(--panel);border-left:1px solid var(--line);padding:16px;overflow-y:auto}
+  #inspector h3{margin:0 0 12px;font-size:10px;text-transform:uppercase;letter-spacing:.07em;
+    font-weight:600;color:var(--faint)}
+  .field{margin-bottom:14px}
+  .field label{display:block;font-size:11px;color:var(--muted);margin-bottom:5px;line-height:1.4}
+  .field input{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:var(--r-sm);
+    color:var(--ink);padding:8px 9px;font-size:14px;font-family:inherit;
+    font-variant-numeric:tabular-nums}
+  .field input:focus{outline:none;border-color:var(--accent);background:var(--panel);
+    box-shadow:0 0 0 3px var(--accent-soft)}
+  .field input[type=range]{padding:0;background:none;border:none;box-shadow:none;accent-color:var(--accent)}
+  .readout{font-size:13px;line-height:1.9;color:var(--ink)}
   .readout .k{color:var(--muted)}
-  .readout .v{float:right;font-variant-numeric:tabular-nums}
-  .pill{display:inline-block;white-space:nowrap;font-size:11px;padding:2px 8px;border-radius:20px;background:var(--panel2);border:1px solid var(--line);color:var(--muted)}
-  .empty{color:var(--muted);font-size:13px;line-height:1.6}
-  hr{border:none;border-top:1px solid var(--line);margin:14px 0}
-  .swatch-row{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);margin:4px 0}
-  .swatch{width:22px;height:10px;border-radius:3px}
+  .readout .v{float:right;font-variant-numeric:tabular-nums;font-weight:500}
+  .empty{color:var(--muted);font-size:12.5px;line-height:1.65}
+  hr{border:none;border-top:1px solid var(--line);margin:16px 0}
+  .swatch-row{display:flex;align-items:center;gap:9px;font-size:12px;color:var(--muted);margin:6px 0}
+  .swatch{width:22px;height:10px;border-radius:3px;flex:0 0 auto}
   table.probes{width:100%;font-size:12px;border-collapse:collapse}
-  table.probes td{padding:3px 2px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
-  table.probes td:last-child{text-align:right;color:var(--accent2);font-weight:500}
-  .kbd{font-family:ui-monospace,monospace;background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:0 5px;font-size:11px}
-  .btn.active-toggle{border-color:var(--accent);color:var(--accent)}
-  /* ---- AI assistant sheet ------------------------------------------------ */
-  #aiModal,#codeModal{position:fixed;inset:0;background:rgba(16,24,40,.35);z-index:50;
+  table.probes td{padding:5px 2px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums;color:var(--muted)}
+  table.probes tr:last-child td{border-bottom:none}
+  table.probes td:last-child{text-align:right;color:var(--accent2);font-weight:600}
+  .kbd{display:inline-block;font-family:ui-monospace,monospace;background:var(--panel2);
+    border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:1px 5px;
+    font-size:11px;color:var(--ink-soft);line-height:1.5}
+  /* Shortcut list: keycap column, then what it does — scannable in a way the
+     old inline "R rotate · Del remove" run of text was not. */
+  .shortcuts{margin-top:14px;display:grid;gap:7px;font-size:12px;color:var(--muted)}
+  .shortcuts div{display:grid;grid-template-columns:44px 1fr;align-items:center;gap:8px}
+  .shortcuts .kbd{justify-self:start}
+  .inspectoract{display:flex;gap:8px}
+  .inspectoract .btn{flex:1;justify-content:center}
+  .btn.danger:hover{background:var(--bad-soft);border-color:var(--bad-line);color:var(--bad)}
+
+  /* ---- Modal sheets ------------------------------------------------------ */
+  #aiModal,#codeModal{position:fixed;inset:0;background:var(--scrim);z-index:50;
+    backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);
     display:flex;align-items:center;justify-content:center;padding:20px}
   #aiModal[hidden],#codeModal[hidden]{display:none}
   #aiModal .sheet,#codeModal .sheet{background:var(--panel);border:1px solid var(--line);
-    border-radius:12px;padding:18px;width:min(560px,100%);max-height:86vh;overflow-y:auto}
-  #codeModal .sheet{width:min(640px,100%)}
-  #aiModal h3,#codeModal h3{margin:0 0 12px;font-size:12px;text-transform:uppercase;
-    letter-spacing:.6px;color:var(--muted)}
+    border-radius:var(--r-lg);padding:18px;width:min(560px,100%);max-height:86vh;overflow-y:auto;
+    box-shadow:var(--shadow-3)}
+  #codeModal .sheet{width:min(660px,100%)}
+  .sheethead{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+  #aiModal h3,#codeModal h3{display:flex;align-items:center;gap:7px;margin:0;font-size:11px;
+    text-transform:uppercase;letter-spacing:.07em;font-weight:600;color:var(--muted)}
+  #aiModal h3 .ic,#codeModal h3 .ic{width:15px;height:15px;color:var(--accent)}
+  .sheetfoot{display:flex;align-items:center;justify-content:flex-end;gap:8px;margin-top:4px}
   #aiModal textarea,#codeModal textarea{width:100%;background:var(--bg);border:1px solid var(--line);
-    border-radius:6px;color:var(--ink);padding:8px;font-size:13px;font-family:inherit;resize:vertical}
-  #codeModal textarea{font-family:ui-monospace,monospace;font-size:12px;line-height:1.5}
-  #aiModal textarea:focus,#codeModal textarea:focus{outline:none;border-color:var(--accent)}
+    border-radius:var(--r-sm);color:var(--ink);padding:9px;font-size:13px;font-family:inherit;resize:vertical}
+  #codeModal textarea{font-family:ui-monospace,monospace;font-size:12px;line-height:1.55;tab-size:2}
+  #aiModal textarea:focus,#codeModal textarea:focus{outline:none;border-color:var(--accent);
+    background:var(--panel);box-shadow:0 0 0 3px var(--accent-soft)}
+  #aiModal input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
   #codeStatus{font-size:12px;margin:0 0 10px;min-height:16px}
-  #aiOut{margin-top:12px;font-size:13px;line-height:1.6}
+  #aiOut{margin-top:14px;font-size:13px;line-height:1.65}
   .aitext{white-space:pre-wrap;color:var(--ink)}
   .aigood{color:var(--good)}
   .aibad{color:var(--bad)}
+
+  /* ---- Community -------------------------------------------------------- */
+  /* The commons is a full-screen layer over the editor rather than a route, so
+     closing it returns you to the exact circuit you left. */
+  #galleryView{position:fixed;inset:0;z-index:60;
+    background:
+      radial-gradient(54rem 38rem at 88% 6%,  var(--bloom-a), transparent 62%),
+      radial-gradient(48rem 36rem at 8% 34%,  var(--bloom-b), transparent 62%),
+      radial-gradient(44rem 32rem at 62% 94%, var(--bloom-c), transparent 62%),
+      var(--page);
+    display:flex;flex-direction:column;overflow:hidden}
+  #galleryView .galhead{background:var(--glass-chrome);
+    -webkit-backdrop-filter:blur(20px) saturate(1.4);backdrop-filter:blur(20px) saturate(1.4)}
+  /* The animated traces sit over the colour blooms and under everything else,
+     faint enough that a card's text never competes with a moving line. */
+  .commonsbg{position:absolute;inset:0;width:100%;height:100%;z-index:0;
+    pointer-events:none;opacity:.30}
+  :root[data-theme="dark"] .commonsbg{opacity:.42}
+  #galleryView .galhead,#galleryView .galnote,
+  #galleryView .galgrid,#galleryView .galempty{position:relative;z-index:1}
+  #galleryView[hidden]{display:none}
+  .galhead{display:flex;align-items:center;gap:10px;flex:0 0 auto;
+    padding:calc(10px + env(safe-area-inset-top,0px)) 16px 10px;
+    background:var(--panel);border-bottom:1px solid var(--line);box-shadow:var(--shadow-1)}
+  .galhead .sep{flex:1}
+  .galsearch{flex:0 1 320px;padding:0;border-bottom:none}
+  .galsearch .ic{left:9px}
+  .galnote{flex:0 0 auto;margin:0;padding:12px 16px 0;font-size:12.5px;color:var(--muted)}
+  .galnote a{color:var(--accent)}
+  .galgrid{flex:1 1 auto;overflow-y:auto;display:grid;gap:16px;padding:16px;
+    grid-template-columns:repeat(auto-fill,minmax(260px,1fr));
+    align-content:start}
+  .galcard{background:var(--card);border:1px solid var(--card-line);border-radius:var(--r-lg);
+    padding:12px;box-shadow:var(--shadow-2);display:flex;flex-direction:column;gap:6px;
+    transition:box-shadow .15s,border-color .15s}
+  .galcard:hover{box-shadow:var(--shadow-2);border-color:var(--line-strong)}
+  .galthumb{aspect-ratio:16/10;background:var(--bg);border:1px solid var(--card-line);
+    border-radius:var(--r-sm);overflow:hidden;display:flex;align-items:center;
+    justify-content:center;color:var(--faint);font-size:11px}
+  .galthumb img{width:100%;height:100%;object-fit:contain;display:block}
+  .galcard h4{margin:4px 0 0;font-size:14px;font-weight:600;color:var(--ink);
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .galby{margin:0;font-size:12px;color:var(--accent);font-weight:500}
+  .galdesc{margin:0;font-size:12px;color:var(--muted);line-height:1.5;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .galmeta{margin:0;font-size:11px;color:var(--faint);font-variant-numeric:tabular-nums}
+  .galact{display:flex;gap:6px;margin-top:auto;padding-top:8px}
+  .galact .btn.primary{flex:1;justify-content:center}
+  .galempty{padding:48px 16px;text-align:center;color:var(--muted);font-size:13px}
+
+  /* ---- About ------------------------------------------------------------ */
+  /* The About and Commons pages are places you READ, not chrome you work in,
+     and they want more light than the editor does. In dark mode the app
+     background and the panel colour sit one step apart — fine behind a
+     schematic, but it leaves a page of cards looking like one flat sheet. Both
+     views therefore lift onto their own surfaces: a page a shade brighter than
+     the app, and cards a clear step above that. Light mode is already bright
+     enough that only the card separation needed help. */
+  #aboutView,#galleryView{
+    --page:var(--bg);
+    --card:var(--panel);
+    --card-line:var(--line);
+    /* Glass: a translucent pane, a bright top edge where light would catch it,
+       and a soft drop. The blur is what makes it read as glass rather than as
+       a washed-out card — it refracts the collage behind instead of just
+       letting it through. */
+    --glass:rgba(255,255,255,.55);
+    --glass-edge:rgba(255,255,255,.80);
+    --glass-top:rgba(255,255,255,.95);
+    --glass-shadow:0 1px 2px rgba(16,24,40,.06), 0 14px 36px rgba(16,24,40,.11);
+    --glass-tint:rgba(232,240,254,.55);
+    --glass-tint-edge:rgba(188,212,251,.75);
+    --glass-chrome:rgba(255,255,255,.72);
+    --glass-amber:rgba(255,243,224,.72);
+    --glass-amber-edge:rgba(238,197,128,.72);
+    --bloom-a:rgba(31,111,235,.20);
+    --bloom-b:rgba(120,90,220,.16);
+    --bloom-c:rgba(224,149,42,.14);
+  }
+
+  /* The Commons gets the same treatment in a different key — a cooler family,
+     and no circuit collage, so the thumbnails on the cards are the only
+     circuits competing for attention. */
+  #galleryView{
+    --bloom-a:rgba(20,158,158,.17);
+    --bloom-b:rgba(58,172,112,.14);
+    --bloom-c:rgba(31,111,235,.13);
+  }
+  :root[data-theme="dark"] #aboutView,
+  :root[data-theme="dark"] #galleryView{
+    --page:#232a37;
+    --card:#2e3644;
+    --card-line:#3c4657;
+    /* Chrome glass matches the PAGE, not the cards: the header carries light
+       type, so frosting it with the cards' light pane would put white text on
+       a white slab. */
+    --glass-chrome:rgba(30,37,49,.72);
+    --glass-amber:rgba(255,240,214,.84);
+    --glass-amber-edge:rgba(255,232,190,.60);
+    --bloom-a:rgba(64,132,255,.30);
+    --bloom-b:rgba(140,110,255,.24);
+    --bloom-c:rgba(240,166,60,.16);
+  }
+  :root[data-theme="dark"] #galleryView{
+    --bloom-a:rgba(40,200,196,.24);
+    --bloom-b:rgba(70,200,140,.20);
+    --bloom-c:rgba(64,132,255,.20);
+  }
+
+  /* About's cards are LIGHT in both themes — paper laid on the page. In dark
+     mode that means a light surface carrying dark type, so it is not enough to
+     change the background: every colour token is redefined at the card
+     boundary and the whole subtree inherits the correction. Setting only the
+     background would leave light text on a light card, which is the usual way
+     this goes wrong. */
+  :root[data-theme="dark"] #aboutView .aboutgrid article,
+  :root[data-theme="dark"] #aboutView .aboutme,
+  :root[data-theme="dark"] #aboutView .aboutcta{
+    --card:#ffffff;
+    --card-line:#d9e1ec;
+    --ink:#1f2733;
+    --ink-soft:#445063;
+    --muted:#5c6a7e;
+    --faint:#8b98ab;
+    --accent:#1a63d8;
+    --accent-ring:#bcd4fb;
+    /* --good along with the rest: the dark theme's bright amber takes dark
+       ink, which on a white card leaves the primary button with no contrast
+       against the card behind it. */
+    --good:#a96e0e; --good-hover:#925e0b; --good-glow:rgba(169,110,14,.30);
+    --good-ink:#ffffff;
+    /* --panel too, not just the text tokens: a .btn paints its background from
+       it, so without this a button inside a light card stays dark-theme dark
+       and its label all but disappears. */
+    --panel:#ffffff;
+    --panel2:#eef2f8;
+    --panel3:#e3e9f2;
+    --line:#dbe2ec;
+    --line-strong:#c3ccda;
+    --glass:rgba(255,255,255,.74);
+    --glass-edge:rgba(255,255,255,.55);
+    --glass-top:rgba(255,255,255,.95);
+    --glass-shadow:0 2px 6px rgba(0,0,0,.34), 0 18px 44px rgba(0,0,0,.34);
+    --glass-tint:rgba(226,237,255,.72);
+    --glass-tint-edge:rgba(255,255,255,.5);
+  }
+  /* The call to action keeps its accent tint, just a light one. */
+
+
+  #aboutView{position:fixed;inset:0;z-index:60;
+    background:
+      radial-gradient(58rem 40rem at 10% 4%,  var(--bloom-a), transparent 62%),
+      radial-gradient(52rem 38rem at 92% 18%, var(--bloom-b), transparent 62%),
+      radial-gradient(46rem 34rem at 44% 96%, var(--bloom-c), transparent 62%),
+      var(--page);
+    display:flex;flex-direction:column;overflow:hidden}
+  #aboutView[hidden]{display:none}
+  /* The collage sits behind everything, faint enough that body text keeps its
+     contrast, with a scrim over it so the top of the page stays calm. */
+  .aboutmosaic{position:absolute;inset:0;z-index:0;opacity:0;
+    transition:opacity .9s ease}
+  .aboutmosaic canvas{position:absolute;inset:0;width:100%;height:100%}
+  /* Fainter than the Commons backdrop: this page is mostly text, and a
+     schematic behind a paragraph has to stay below the threshold where the eye
+     tries to read it instead. */
+  .aboutmosaic.ready{opacity:.20}
+  /* Dark needs more: a grey trace on a near-black page has far less contrast
+     to spend than the same trace on white. */
+  :root[data-theme="dark"] .aboutmosaic.ready{opacity:.34}
+  /* Clears the top of the page so the headline and the one block of running
+     prose sit on flat colour. Everything below is cards, which carry their own
+     background, so the circuits can come through at full strength there. */
+  .aboutmosaic::after{content:'';position:absolute;inset:0;
+    background:radial-gradient(ellipse 85% 55% at 50% 18%,
+      var(--page) 0%, var(--page) 26%, transparent 72%);
+    opacity:.82}
+  .aboutbody{position:relative;z-index:1;flex:1 1 auto;overflow-y:auto;padding:0 24px 64px}
+  #aboutView .galhead{position:relative;z-index:2}
+  .aboutopen{max-width:1040px;margin:36px auto 0;text-align:center}
+  .btn.big{font-size:15px;height:44px;padding:0 26px}
+  .aboutlede{max-width:720px;margin:0 auto;padding:40px 0 8px;text-align:center}
+  /* The mark at hero size. Tighter tracking than the toolbar version — letter
+     spacing that reads as deliberate at 15px reads as loose at 76px — and a
+     slower sweep, because the same speed over a longer word looks frantic. */
+  .aboutlede .hero{margin:0 0 10px;line-height:1;text-align:center}
+  .aboutlede .hero .wordmark{font-size:clamp(52px,8.5vw,88px);letter-spacing:.02em;
+    animation-duration:11s}
+  @supports ((-webkit-background-clip:text) or (background-clip:text)){
+    .aboutlede .hero .wordmark{filter:drop-shadow(0 0 22px var(--wm-glow))}
+  }
+  .aboutlede h1{margin:0 0 18px;font-size:clamp(28px,4vw,40px);line-height:1.15;
+    letter-spacing:-.02em;color:var(--ink);font-weight:650}
+  .aboutlede p{margin:0 0 14px;font-size:15px;line-height:1.7;color:var(--ink-soft)}
+  .aboutlede b{color:var(--ink);font-weight:600}
+
+  .aboutgrid{max-width:1040px;margin:36px auto 0;display:grid;gap:16px;
+    grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
+  .aboutgrid article{border-radius:var(--r-lg);padding:18px}
+  /* Every pane on the About page is glass. Grouped so the recipe lives once —
+     the blur, the caught top edge and the drop have to move together or it
+     stops looking like one material. */
+  .aboutgrid article,.aboutme{
+    background:var(--glass);
+    -webkit-backdrop-filter:blur(16px) saturate(1.6);
+    backdrop-filter:blur(16px) saturate(1.6);
+    border:1px solid var(--glass-edge);
+    box-shadow:var(--glass-shadow), inset 0 1px 0 var(--glass-top);
+  }
+  .aboutcta{
+    background:var(--glass-tint);
+    -webkit-backdrop-filter:blur(16px) saturate(1.6);
+    backdrop-filter:blur(16px) saturate(1.6);
+    border:1px solid var(--glass-tint-edge);
+    box-shadow:var(--glass-shadow), inset 0 1px 0 var(--glass-top);
+  }
+  /* Without backdrop-filter there is no refraction, so a translucent pane is
+     just thin. Fall back to something solid rather than something unreadable. */
+  @supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
+    .aboutgrid article,.aboutme{background:var(--card)}
+    .aboutcta{background:var(--accent-soft)}
+  }
+  /* The portrait card is amber — the one warm thing on a page of cool glass,
+     which is what makes it read as the personal card rather than a seventh
+     feature card. Stated once per theme and placed after the block that
+     re-colours every pane in dark mode, because that block names .aboutme too
+     and would otherwise win on specificity and put the white back. */
+  /* The developer card is the one card that does NOT take the light treatment.
+     It is a dark pane held by a gold hairline, with the gold repeated in the
+     eyebrow — the colour comes from the border and the type, not from filling
+     the card, which is what keeps it looking deliberate rather than
+     highlighted. */
+  #aboutView .aboutme,
+  :root[data-theme="dark"] #aboutView .aboutme{
+    /* Nearly opaque on the light page: a 70%-dark pane over a bright backdrop
+       reads as a smudge, not as a card that meant to be dark. In dark mode the
+       page behind is already dark, so it can stay properly translucent. */
+    --glass:rgba(24,31,44,.93);
+    --glass-edge:rgba(198,164,86,.55);
+    --glass-top:rgba(255,255,255,.08);
+    --ink:#f2f5fa;
+    --ink-soft:#c3ccda;
+    --muted:#9aa6b8;
+    --faint:#7d8899;
+    --accent:#d4b45f;
+    --panel:#232b3a;
+    --panel2:#2b3446;
+    --panel3:#333d51;
+    --line:#3a4457;
+    box-shadow:0 2px 8px rgba(0,0,0,.30), 0 18px 44px rgba(0,0,0,.34);
+  }
+  :root[data-theme="dark"] #aboutView .aboutme{ --glass:rgba(26,33,46,.72); }
+
+  /* Small gold label above the name. */
+  .abouteyebrow{margin:0 0 4px;font-size:11px;font-weight:600;letter-spacing:.14em;
+    text-transform:uppercase;color:var(--accent)}
+
+  /* Frosted panes over a busy backdrop are exactly what this preference is
+     asking us not to do. Honour it: solid surfaces, no blur. */
+  @media (prefers-reduced-transparency:reduce){
+    .aboutgrid article,.aboutme,.aboutcta,#aboutView .galhead{
+      -webkit-backdrop-filter:none;backdrop-filter:none}
+    .aboutgrid article,.aboutme{background:var(--card)}
+    .aboutcta{background:var(--accent-soft)}
+    #aboutView .galhead{background:var(--panel)}
+    .aboutmosaic{display:none}
+  }
+  /* The header floats over the collage too. */
+  #aboutView .galhead{
+    background:var(--glass-chrome);
+    -webkit-backdrop-filter:blur(20px) saturate(1.4);
+    backdrop-filter:blur(20px) saturate(1.4);
+  }
+  .aboutgrid h3{margin:0 0 8px;font-size:14px;font-weight:600;color:var(--accent)}
+  .aboutgrid p{margin:0;font-size:13px;line-height:1.65;color:var(--muted)}
+
+  /* The portrait card is amber — the one warm thing on a page of cool glass,
+     which is what makes it read as the personal one rather than a seventh
+     feature card. The accent inside it warms to match; a blue subtitle on
+     amber looks like a mistake. */
+  .aboutme{max-width:1040px;margin:48px auto 0;display:flex;gap:26px;
+    align-items:flex-end;border-radius:var(--r-lg);padding:22px 26px 0 26px;
+    overflow:hidden}
+  /* No circle and no plate: the cut-out stands on the card's floor and runs off
+     its bottom edge, which is what makes it read as a person in the card rather
+     than an avatar pasted onto it. */
+  .aboutphoto{position:relative;flex:0 0 190px;width:190px;align-self:flex-end;
+    margin-bottom:-2px}
+  /* Hidden until it actually decodes. Waiting for `load` rather than reacting
+     to `error` means a missing file shows the instruction immediately, and a
+     dev server that answers 404s with index.html cannot sneak a broken image
+     (or its alt text) into the circle. */
+  .aboutphoto img{width:100%;height:auto;display:none}
+  .aboutphoto img.ready{display:block}
+  .aboutphoto-fallback{display:flex;flex-direction:column;aspect-ratio:1;
+    align-items:center;justify-content:center;gap:8px;text-align:center;padding:12px;
+    font-size:11px;line-height:1.5;color:var(--faint);
+    border-radius:50%;background:var(--panel2);border:1px solid var(--line)}
+  .aboutphoto-fallback .ic{width:32px;height:32px}
+  .aboutphoto-fallback code{font-size:10px;background:var(--panel3);
+    border-radius:4px;padding:1px 4px;color:var(--muted)}
+  .aboutmetext{flex:1 1 auto;min-width:0;padding-bottom:24px}
+  .aboutmetext h2{margin:0;font-size:22px;font-weight:650;color:var(--ink);letter-spacing:-.01em}
+  .aboutrole{margin:2px 0 14px;font-size:13px;font-weight:600;color:var(--accent)}
+  .aboutmetext p{margin:0 0 12px;font-size:14px;line-height:1.7;color:var(--ink-soft)}
+
+  .aboutcta{max-width:1040px;margin:32px auto 0;text-align:center;
+    border-radius:var(--r-lg);padding:28px}
+  .aboutcta h3{color:var(--ink)}
+  .aboutcta p{color:var(--ink-soft)}
+  .aboutcta h3{margin:0 0 6px;font-size:18px;font-weight:650;color:var(--ink)}
+  .aboutcta p{margin:0 0 16px;font-size:13.5px;color:var(--ink-soft)}
+  .aboutctabtns{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+  .aboutfoot{max-width:1040px;margin:40px auto 0;text-align:center;
+    font-size:12px;color:var(--faint)}
+  .aboutfoot a{color:var(--muted)}
+
+  @media (max-width:700px){
+    .aboutbody{padding:0 14px 48px}
+    .aboutlede{padding-top:28px}
+    .aboutme{flex-direction:column;align-items:center;text-align:center;gap:18px}
+    .aboutphoto{flex-basis:auto}
+  }
+
+  #authModal,#publishModal{position:fixed;inset:0;background:var(--scrim);z-index:70;
+    backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);
+    display:flex;align-items:center;justify-content:center;padding:20px}
+  #authModal[hidden],#publishModal[hidden]{display:none}
+  #authModal .sheet,#publishModal .sheet{background:var(--panel);border:1px solid var(--line);
+    border-radius:var(--r-lg);padding:18px;width:min(480px,100%);max-height:88vh;
+    overflow-y:auto;box-shadow:var(--shadow-3)}
+  #authModal h3,#publishModal h3{display:flex;align-items:center;gap:7px;margin:0;
+    font-size:11px;text-transform:uppercase;letter-spacing:.07em;font-weight:600;color:var(--muted)}
+  #authModal h3 .ic,#publishModal h3 .ic{width:15px;height:15px;color:var(--accent)}
+  /* :not([type=checkbox]) matters — an id-qualified `input` selector outranks
+     `.check input`, so without it the tick box stretches to the full row width
+     and squeezes its own label to nothing. */
+  #authModal input:not([type=checkbox]),#publishModal input:not([type=checkbox]),
+  #publishModal textarea{width:100%;background:var(--bg);
+    border:1px solid var(--line);border-radius:var(--r-sm);color:var(--ink);padding:8px 9px;
+    font-size:14px;font-family:inherit}
+  #publishModal textarea{font-size:13px;resize:vertical}
+  #authModal input:not([type=checkbox]):focus,#publishModal input:not([type=checkbox]):focus,
+  #publishModal textarea:focus{
+    outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+  select.wide{width:100%;background:var(--bg);border:1px solid var(--line);
+    border-radius:var(--r-sm);color:var(--ink);padding:8px 9px;font-size:14px;font-family:inherit}
+  /* A checkbox whose label is a full sentence needs the box pinned to the first
+     line, not vertically centred against a wrapped paragraph. */
+  .check{display:flex;align-items:flex-start;gap:9px;font-size:13px;color:var(--ink-soft);
+    line-height:1.5;margin:10px 0;cursor:pointer}
+  .check input{width:16px;height:16px;flex:0 0 auto;margin-top:1px;accent-color:var(--accent)}
+  .empty.small{font-size:11.5px;margin-top:-4px}
+  .pubthumb{width:100%;border:1px solid var(--line);border-radius:var(--r-sm);
+    background:var(--bg);display:block;margin:4px 0 10px}
+
+  @media (max-width:760px){
+    .galhead{gap:6px;padding-left:10px;padding-right:10px;flex-wrap:wrap}
+    .galsearch{flex:1 1 100%;order:3}
+    .galgrid{grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;padding:12px}
+  }
+
   /* ---- Show the math panel ---------------------------------------------- */
-  .mathnote{font-size:11px;color:var(--muted);line-height:1.5;margin:10px 0 6px}
+  .mathnote{font-size:11px;color:var(--muted);line-height:1.55;margin:10px 0 6px}
   /* Equations wrap rather than scroll: a term hidden off the right edge is a
      term the reader never knows exists, which defeats the point. */
   .eqs{font-family:ui-monospace,monospace;font-size:11px;color:var(--ink);
-    background:var(--bg);border:1px solid var(--line);border-radius:6px;
-    padding:8px;line-height:1.6}
+    background:var(--bg);border:1px solid var(--line);border-radius:var(--r-sm);
+    padding:9px;line-height:1.65}
   .eqs div{padding:3px 0;padding-left:14px;text-indent:-14px}
   /* The matrix can be wider than the inspector; let it scroll rather than
      wrap, since a wrapped matrix stops being readable as a matrix. */
-  .mnawrap{overflow-x:auto;border:1px solid var(--line);border-radius:6px;background:var(--bg)}
+  .mnawrap{overflow-x:auto;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--bg)}
   table.mna{border-collapse:collapse;font-family:ui-monospace,monospace;font-size:10px}
-  table.mna th{color:var(--accent);font-weight:500;padding:3px 6px;text-align:right;white-space:nowrap}
-  table.mna td{padding:3px 6px;text-align:right;color:var(--ink);white-space:nowrap;font-variant-numeric:tabular-nums}
-  table.mna td.z{color:#b3bccb}
+  table.mna th{color:var(--accent);font-weight:600;padding:4px 6px;text-align:right;white-space:nowrap}
+  table.mna td{padding:4px 6px;text-align:right;color:var(--ink);white-space:nowrap;font-variant-numeric:tabular-nums}
+  table.mna td.z{color:var(--zero-cell)}
   table.mna .rhs{border-left:1px solid var(--line);color:var(--accent2)}
 
+  /* Scrollbars: the default macOS overlay bar is fine, but the always-on
+     Windows/Linux one is a heavy grey slab against these light panels. */
+  #railGroups::-webkit-scrollbar,#inspector::-webkit-scrollbar,.sheet::-webkit-scrollbar{width:10px}
+  #railGroups::-webkit-scrollbar-thumb,#inspector::-webkit-scrollbar-thumb,.sheet::-webkit-scrollbar-thumb{
+    background:var(--line);border-radius:6px;border:3px solid var(--panel)}
+  #railGroups::-webkit-scrollbar-thumb:hover,#inspector::-webkit-scrollbar-thumb:hover{background:var(--line-strong)}
+
   /* ---- Phone / narrow layout ------------------------------------------- */
-  /* The three-column desktop layout has a 64px rail and a 280px inspector at
-     fixed widths. On a 412px-wide phone that leaves 68px for the schematic —
-     the canvas the whole app exists to show. Below 760px the columns unstack
-     into rows: the tool rail becomes a horizontally scrolling strip, the
-     inspector becomes a panel along the bottom, and the canvas gets the full
-     width in between. This is what makes the Capacitor iOS/Android builds
-     worth shipping. */
+  /* The three-column desktop layout has a fixed rail and inspector. On a
+     412px-wide phone that leaves almost nothing for the schematic — the canvas
+     the whole app exists to show. Below 760px the columns unstack into rows:
+     the tool rail becomes a horizontally scrolling strip, the inspector becomes
+     a panel along the bottom, and the canvas gets the full width in between.
+     This is what makes the Capacitor iOS/Android builds worth shipping. */
   @media (max-width:760px){
     #app{grid-template-columns:1fr;
-      grid-template-rows:calc(48px + env(safe-area-inset-top,0px)) 58px 1fr 36vh}
-    header{grid-column:1;gap:8px;padding:0 10px;overflow-x:auto;overflow-y:hidden}
-    /* Ten controls can't fit 412px, so the header scrolls — but the primary
+      grid-template-rows:calc(var(--hdr) + env(safe-area-inset-top,0px)) 66px 1fr 36vh}
+    header{grid-column:1;gap:6px;padding:0 10px;overflow-x:auto;overflow-y:hidden}
+    header::-webkit-scrollbar{display:none}
+    /* The controls can't all fit 412px, so the header scrolls — but the primary
        actions must never be the ones off-screen. Order pulls them to the front
        and the wordmark gives up its space (the app icon carries branding on a
-       phone anyway). */
-    header .title{display:none}
-    header .sep{flex:0 0 4px}
-    header .btn,header select{flex:0 0 auto}
+       phone anyway). Scoped to the editor's toolbar for the same reason as the
+       desktop rules above: About and Commons are whole pages with four buttons
+       between them, and About is the landing page — the mark has to survive
+       there, on a phone most of all. */
+    #app>header .brand{display:none}
+    /* Page headers keep the mark but drop the page label, which the buttons
+       and the page itself already make obvious. */
+    .galhead .brandsub{display:none}
+
+    /* On a phone the prose fills the whole width, so there is no margin for the
+       backdrop to live in — it has to step back rather than run behind every
+       line of text. */
+    .aboutmosaic.ready{opacity:.10}
+    :root[data-theme="dark"] .aboutmosaic.ready{opacity:.20}
+    /* display:contents so the wrapper's children are laid out by the header
+       itself — the `order` rules below reorder direct children only. */
+    .hscroll{display:contents}
+    header .sep{flex:0 0 2px}
+    header .btn,.hgroup,.selwrap{flex:0 0 auto}
+    .hgroup{padding-left:6px;gap:2px}
     #runBtn{order:-3}
-    #bodeBtn{order:-2}
+    #resetBtn{order:-2}
     #nodeCount{order:-1}
+
+    /* One scrolling strip: the group headings and the collapse affordance are
+       desktop-only, but the search stays — it is the fastest way to reach one
+       of fifty parts on a screen this size. */
     #rail{grid-row:2;grid-column:1;flex-direction:row;align-items:center;
-      border-right:none;border-bottom:1px solid var(--line);
-      padding:6px 8px;overflow-x:auto;overflow-y:hidden}
-    .tool{flex:0 0 auto}
+      border-right:none;border-bottom:1px solid var(--line);overflow:hidden}
+    .railsearch{flex:0 0 128px;padding:0 8px;border-bottom:none;border-right:1px solid var(--line);align-self:stretch}
+    .railsearch .ic{left:17px}
+    .railsearch input{height:34px}
+    #railGroups{display:flex;flex-direction:row;align-items:center;padding:0 4px;
+      overflow-x:auto;overflow-y:hidden;height:100%}
+    #railGroups::-webkit-scrollbar{display:none}
+    .railgroup{display:flex;align-items:center;padding:0;
+      border-left:1px solid var(--line);padding-left:4px;margin-left:4px}
+    .railgroup:first-child{border-left:none;margin-left:0;padding-left:0}
+    .grouphead{display:none}
+    .railgroup:not(.open) .grid{display:flex}
+    .railgroup .grid{display:flex;flex-direction:row;gap:2px}
+    .tool{aspect-ratio:auto;width:50px;height:54px;flex:0 0 auto}
+    .railempty{padding:0 12px;white-space:nowrap;align-self:center}
+
     #stage{grid-row:3;grid-column:1}
     /* Bottom inset clears the gesture pill / navigation bar. */
     #inspector{grid-row:4;grid-column:1;border-left:none;border-top:1px solid var(--line);
       padding:12px 12px calc(12px + env(safe-area-inset-bottom,0px))}
-    #hint{bottom:calc(12px + env(safe-area-inset-bottom,0px))}
+    #hint{left:10px;right:10px;top:10px;max-width:none}
+  }
+
+  @media (prefers-reduced-motion:reduce){
+    *{transition:none!important;animation:none!important}
   }

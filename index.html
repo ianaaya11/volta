@@ -6,32 +6,135 @@
 <meta name="theme-color" content="#0c111a" />
 <link rel="icon" href="./icon.svg" type="image/svg+xml" />
 <link rel="apple-touch-icon" href="./icon.svg" />
-<title>Zuri — Live Circuit Simulator</title>
+<title>Volta — Live Circuit Simulator</title>
+<script>
+  // The app was called Zuri before it was called Volta. Copy anything saved
+  // under the old prefix across, once, so a rename does not silently reset
+  // everyone's theme, folded palette groups and stored API key. Keys are
+  // collected before any write — setItem may reorder the store, and iterating
+  // it by index while mutating it skips entries.
+  try {
+    if (!localStorage.getItem('volta.migrated')) {
+      var old = [];
+      for (var i = 0; i < localStorage.length; i++) {
+        var k = localStorage.key(i);
+        if (k && k.slice(0, 5) === 'zuri.') old.push(k);
+      }
+      for (var j = 0; j < old.length; j++) {
+        var to = 'volta.' + old[j].slice(5);
+        if (localStorage.getItem(to) === null) localStorage.setItem(to, localStorage.getItem(old[j]));
+      }
+      localStorage.setItem('volta.migrated', '1');
+    }
+  } catch (e) { /* private mode, quota, anything: the app still runs */ }
+
+  // Runs before first paint: the stylesheet and the canvas both key off
+  // data-theme, and picking it in the deferred module instead would show one
+  // frame of the wrong theme on every load. Saved choice wins over the OS.
+  try {
+    var saved = localStorage.getItem('volta.theme');
+    document.documentElement.dataset.theme = (saved === 'light' || saved === 'dark') ? saved
+      : (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  } catch (e) { document.documentElement.dataset.theme = 'light'; }
+</script>
 </head>
 <body>
+<!-- One sprite of stroke icons, referenced with <use>. Inline rather than a
+     file so the chrome never renders a frame of missing iconography, and
+     stroke="currentColor" lets each button colour its own icon. -->
+<svg id="icons" aria-hidden="true" width="0" height="0" style="position:absolute">
+  <defs>
+    <g id="i-undo"><path d="M9 14L4 9l5-5"/><path d="M4 9h9a6 6 0 010 12h-4"/></g>
+    <g id="i-redo"><path d="M15 14l5-5-5-5"/><path d="M20 9h-9a6 6 0 000 12h4"/></g>
+    <g id="i-save"><path d="M5 4h11l3 3v13H5z"/><path d="M8 4v6h7V4"/><path d="M8 20v-6h8v6"/></g>
+    <g id="i-open"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></g>
+    <g id="i-share"><path d="M10 14a5 5 0 007 0l3-3a5 5 0 00-7-7l-1 1"/><path d="M14 10a5 5 0 00-7 0l-3 3a5 5 0 007 7l1-1"/></g>
+    <g id="i-trash"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/></g>
+    <g id="i-rotate"><path d="M20 12a8 8 0 11-2.4-5.7"/><path d="M20 3v5h-5"/></g>
+    <g id="i-fit"><path d="M4 9V4h5"/><path d="M15 4h5v5"/><path d="M20 15v5h-5"/><path d="M9 20H4v-5"/></g>
+    <g id="i-chip"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M10 4v3M14 4v3M10 17v3M14 17v3M4 10h3M4 14h3M17 10h3M17 14h3"/></g>
+    <g id="i-spark"><path d="M12 3l1.7 4.8L18.5 9.5 13.7 11.2 12 16l-1.7-4.8L5.5 9.5l4.8-1.7z"/><path d="M18 16.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/></g>
+    <g id="i-sigma"><path d="M18 5H7l6 7-6 7h11"/></g>
+    <g id="i-chart"><path d="M4 4v16h16"/><path d="M7 15l4-5 3 3 5-7"/></g>
+    <g id="i-reset"><path d="M4 12a8 8 0 102.4-5.7"/><path d="M4 3v5h5"/></g>
+    <g id="i-play"><path d="M8 5.5l11 6.5-11 6.5z"/></g>
+    <g id="i-stop"><rect x="7" y="7" width="10" height="10" rx="1.5"/></g>
+    <g id="i-search"><circle cx="11" cy="11" r="6"/><path d="M15.5 15.5L20 20"/></g>
+    <g id="i-chevron"><path d="M9 6l6 6-6 6"/></g>
+    <g id="i-close"><path d="M6 6l12 12M18 6L6 18"/></g>
+    <g id="i-back"><path d="M19 12H5"/><path d="M11 18l-6-6 6-6"/></g>
+    <g id="i-info"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 7.5v.5"/></g>
+    <g id="i-commons"><rect x="3" y="4" width="8" height="7" rx="1"/><rect x="13" y="4" width="8" height="7" rx="1"/><rect x="3" y="13" width="8" height="7" rx="1"/><rect x="13" y="13" width="8" height="7" rx="1"/></g>
+    <g id="i-publish"><path d="M12 16V4"/><path d="M8 8l4-4 4 4"/><path d="M4 14v4a2 2 0 002 2h12a2 2 0 002-2v-4"/></g>
+    <g id="i-user"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0116 0"/></g>
+    <g id="i-selectall"><path d="M4 8V5a1 1 0 011-1h3M16 4h3a1 1 0 011 1v3M20 16v3a1 1 0 01-1 1h-3M8 20H5a1 1 0 01-1-1v-3"/><rect x="9" y="9" width="6" height="6" rx="1"/></g>
+    <g id="i-moon"><path d="M20 14.5A8.5 8.5 0 019.5 4a8.5 8.5 0 1010.5 10.5z"/></g>
+    <g id="i-sun"><circle cx="12" cy="12" r="4"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M19.1 4.9l-1.8 1.8M6.7 17.3l-1.8 1.8"/></g>
+  </defs>
+</svg>
+
 <div id="app">
   <header>
-    <div class="title">⚡ <b>Zuri</b> · live circuit simulator</div>
+    <!-- The crowded middle scrolls; the right-hand cluster does not. Run is the
+         one control that must never be somewhere else. -->
+    <div class="hscroll">
+    <div class="brand">
+      <svg class="bolt" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2L4 14h6l-1 8 9-12h-6z"/></svg>
+      <b class="wordmark">Volta</b>
+    </div>
     <span class="pill" id="nodeCount">0 nodes</span>
-    <div class="sep"></div>
-    <button class="btn ghost" id="undoBtn" title="Undo (⌘Z)" disabled>↶</button>
-    <button class="btn ghost" id="redoBtn" title="Redo (⇧⌘Z)" disabled>↷</button>
-    <select class="btn ghost" id="gallery" title="Load an example circuit"></select>
-    <button class="btn ghost" id="saveBtn" title="Save circuit as a .json file">💾 Save</button>
-    <button class="btn ghost" id="openBtn" title="Open a saved .json circuit">📂 Open</button>
-    <button class="btn ghost" id="shareBtn" title="Copy a shareable link to this circuit">🔗 Share</button>
-    <button class="btn ghost" id="clearBtn">Clear</button>
-    <button class="btn" id="rotateBtn" title="Rotate selected (R)">⟳ Rotate</button>
-    <button class="btn" id="fitBtn" title="Fit the circuit to the view (0)">⤢ Fit</button>
-    <button class="btn" id="codeBtn" title="Write MCU code that runs against the live circuit">🔌 Code</button>
-    <button class="btn" id="aiBtn" title="Build, explain or debug circuits in plain language">✨ Ask</button>
-    <button class="btn" id="mathBtn" title="Show the solver's own equations and matrix">∑ Math</button>
-    <button class="btn" id="bodeBtn" title="AC frequency sweep of probed nodes">📈 Bode</button>
-    <button class="btn" id="resetBtn" title="Restart the simulation from t=0 (keeps the circuit)">↺ Reset</button>
-    <button class="btn primary" id="runBtn">▶ Run</button>
+
+    <div class="hgroup">
+      <button class="btn icon" id="undoBtn" title="Undo (⌘Z)" disabled><svg class="ic" viewBox="0 0 24 24"><use href="#i-undo"/></svg></button>
+      <button class="btn icon" id="redoBtn" title="Redo (⇧⌘Z)" disabled><svg class="ic" viewBox="0 0 24 24"><use href="#i-redo"/></svg></button>
+    </div>
+
+    <div class="hgroup">
+      <div class="selwrap" title="Load an example circuit">
+        <select id="gallery"></select>
+        <svg class="ic chev" viewBox="0 0 24 24"><use href="#i-chevron"/></svg>
+      </div>
+      <button class="btn icon" id="saveBtn" title="Save circuit as a .json file"><svg class="ic" viewBox="0 0 24 24"><use href="#i-save"/></svg></button>
+      <button class="btn icon" id="openBtn" title="Open a saved .json circuit"><svg class="ic" viewBox="0 0 24 24"><use href="#i-open"/></svg></button>
+      <button class="btn icon" id="shareBtn" title="Copy a shareable link to this circuit"><svg class="ic" viewBox="0 0 24 24"><use href="#i-share"/></svg></button>
+      <button class="btn icon danger" id="clearBtn" title="Clear the schematic"><svg class="ic" viewBox="0 0 24 24"><use href="#i-trash"/></svg></button>
+    </div>
+
+    <div class="hgroup">
+      <button class="btn icon" id="selectAllBtn" title="Select the whole circuit (⌘A) — then drag to move it, or Delete to remove it"><svg class="ic" viewBox="0 0 24 24"><use href="#i-selectall"/></svg></button>
+      <button class="btn icon" id="rotateBtn" title="Rotate selected (R)"><svg class="ic" viewBox="0 0 24 24"><use href="#i-rotate"/></svg></button>
+      <button class="btn icon" id="fitBtn" title="Fit the circuit to the view (0)"><svg class="ic" viewBox="0 0 24 24"><use href="#i-fit"/></svg></button>
+    </div>
+
+    <div class="hgroup">
+      <button class="btn" id="codeBtn" title="Write MCU code that runs against the live circuit"><svg class="ic" viewBox="0 0 24 24"><use href="#i-chip"/></svg><span>Code</span></button>
+      <button class="btn" id="aiBtn" title="Build, explain or debug circuits in plain language"><svg class="ic fill" viewBox="0 0 24 24"><use href="#i-spark"/></svg><span>Ask</span></button>
+      <button class="btn" id="mathBtn" title="Show the solver's own equations and matrix"><svg class="ic" viewBox="0 0 24 24"><use href="#i-sigma"/></svg><span>Math</span></button>
+      <button class="btn" id="bodeBtn" title="AC frequency sweep of probed nodes"><svg class="ic" viewBox="0 0 24 24"><use href="#i-chart"/></svg><span>Bode</span></button>
+    </div>
+
+    <div class="hgroup" id="communityGroup" hidden>
+      <button class="btn" id="galleryBtn" title="Browse designs members have shared"><svg class="ic" viewBox="0 0 24 24"><use href="#i-commons"/></svg><span>Commons</span></button>
+      <button class="btn" id="publishBtn" title="Share this circuit with the commons"><svg class="ic" viewBox="0 0 24 24"><use href="#i-publish"/></svg><span>Share</span></button>
+      <button class="btn" id="accountBtn" title="Your member account"><svg class="ic" viewBox="0 0 24 24"><use href="#i-user"/></svg><span id="accountLabel">Sign in</span></button>
+    </div>
+
+    </div>
+
+    <button class="btn" id="aboutBtn" title="What Volta is, and who made it"><svg class="ic" viewBox="0 0 24 24"><use href="#i-info"/></svg><span>About</span></button>
+    <button class="btn icon" id="themeBtn" title="Switch to the dark theme"><svg class="ic" viewBox="0 0 24 24"><use href="#i-moon"/></svg></button>
+    <button class="btn icon" id="resetBtn" title="Restart the simulation from t=0 (keeps the circuit)"><svg class="ic" viewBox="0 0 24 24"><use href="#i-reset"/></svg></button>
+    <button class="btn primary" id="runBtn" title="Run the simulation (Space)"><svg class="ic fill" viewBox="0 0 24 24"><use href="#i-play"/></svg><span>Run</span></button>
   </header>
 
-  <div id="rail"></div>
+  <div id="rail">
+    <div class="railsearch">
+      <svg class="ic" viewBox="0 0 24 24"><use href="#i-search"/></svg>
+      <input id="partSearch" type="search" placeholder="Search parts" autocomplete="off" spellcheck="false" />
+    </div>
+    <div id="railGroups"></div>
+    <div id="railEmpty" class="railempty" hidden>No part matches.</div>
+  </div>
 
   <div id="stage">
     <canvas id="cv"></canvas>
@@ -42,9 +145,221 @@
     <div id="inspectorBody"></div>
   </aside>
 
+  <!-- ==== Community ==================================================== -->
+  <!-- The commons: a full-screen view rather than a route, so the editor
+       underneath keeps its state and closing the gallery returns you to
+       exactly the circuit you left. -->
+  <div id="galleryView" hidden>
+    <!-- Traces drawing themselves. Painted by src/circuit-bg.ts only while this
+         view is on screen. -->
+    <canvas id="commonsBg" class="commonsbg" aria-hidden="true"></canvas>
+    <header class="galhead">
+      <div class="brand"><svg class="bolt" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2L4 14h6l-1 8 9-12h-6z"/></svg><b class="wordmark">Volta</b><span class="brandsub">Commons</span></div>
+      <div class="railsearch galsearch">
+        <svg class="ic" viewBox="0 0 24 24"><use href="#i-search"/></svg>
+        <input id="gallerySearch" type="search" placeholder="Search shared designs" autocomplete="off" />
+      </div>
+      <div class="sep"></div>
+      <button class="btn" id="galleryMine">My designs</button>
+      <button class="btn" id="galleryAll">Everything</button>
+      <button class="btn" id="galleryAbout">About</button>
+      <button class="btn primary" id="galleryClose"><svg class="ic" viewBox="0 0 24 24"><use href="#i-back"/></svg><span>Back to the editor</span></button>
+    </header>
+    <p class="galnote">
+      Every design here is shared under <a id="licLink" target="_blank" rel="noopener">CC BY-SA 4.0</a> —
+      open one, build on it, and share yours back.
+    </p>
+    <div id="galleryGrid" class="galgrid"></div>
+    <div id="galleryEmpty" class="galempty" hidden></div>
+  </div>
+
+  <!-- ==== About ======================================================== -->
+  <div id="aboutView" hidden>
+    <!-- The built-in examples, drawing themselves. Same painter as the
+         Commons backdrop (src/circuit-bg.ts); the wrapper carries the vignette
+         that keeps the headline readable over the top of it. -->
+    <div id="aboutMosaic" class="aboutmosaic" aria-hidden="true">
+      <canvas id="aboutBg"></canvas>
+    </div>
+    <header class="galhead">
+      <div class="brand">
+        <svg class="bolt" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2L4 14h6l-1 8 9-12h-6z"/></svg>
+        <b class="wordmark">Volta</b><span class="brandsub">About</span>
+      </div>
+      <div class="sep"></div>
+      <button class="btn" id="aboutCommons" hidden><svg class="ic" viewBox="0 0 24 24"><use href="#i-commons"/></svg><span>Commons</span></button>
+      <button class="btn primary" id="aboutClose"><svg class="ic" viewBox="0 0 24 24"><use href="#i-back"/></svg><span>Open the editor</span></button>
+    </header>
+
+    <div class="aboutbody">
+      <section class="aboutlede">
+        <!-- The name at full size, over the circuits drawing themselves behind
+             it. The h1 stays the page's real heading — this is the mark. -->
+        <p class="hero" aria-hidden="true"><span class="wordmark">Volta</span></p>
+        <h1>A circuit you can watch working.</h1>
+        <p>
+          Volta is a live analog and digital circuit simulator that runs entirely in your
+          browser. Draw a schematic, press <b>Run</b>, and the circuit comes alive: current
+          flows as moving dots along the wires, wires take colour from their node voltage,
+          capacitors show which way they are charged, LEDs light, motors spin up against
+          their own back-EMF, and a built-in oscilloscope traces any node you point at.
+        </p>
+        <p>
+          It is not a picture of a circuit. Underneath is a real solver — modified nodal
+          analysis with Newton–Raphson for the non-linear parts — the same method the
+          industry-standard tools use. You can open the <b>Math</b> panel and read the
+          equations it built, the matrix it assembled, and how the iteration converged.
+        </p>
+      </section>
+
+      <section class="aboutgrid">
+        <article><h3>Everything in one place</h3><p>Around fifty parts: sources, passives,
+          diodes and transistors, op-amps, relays and motors, logic gates, latches and
+          flip-flops, a counter, a 7-segment display, a 555 timer, converters, and
+          voltmeters, ammeters, ohmmeters and wattmeters that read live on the schematic.</p></article>
+        <article><h3>Answers, not just pictures</h3><p>Transient simulation, AC sweeps with
+          Bode plots, an oscilloscope, and a math view that shows the solver's own working
+          so the result is something you can check rather than something you must trust.</p></article>
+        <article><h3>Code that drives the circuit</h3><p>Write an Arduino-style sketch and
+          run it against the live schematic in simulated time — <span class="kbd">pinMode</span>,
+          <span class="kbd">digitalWrite</span>, <span class="kbd">digitalRead</span>,
+          <span class="kbd">delay</span> — and watch the hardware respond.</p></article>
+        <article><h3>Ask in plain language</h3><p>Describe a circuit and have it built for
+          you, or ask why the one on screen is not behaving. The assistant reads the
+          schematic you are looking at.</p></article>
+        <article><h3>Works anywhere, offline</h3><p>An installable web app with no server
+          behind it. It runs on a laptop, a phone, or a school machine with a slow
+          connection, and it keeps working when the connection goes away entirely.</p></article>
+        <article><h3>A shared commons</h3><p>Members publish designs under CC BY-SA 4.0 so
+          anyone can open them, change them and share them back — with credit following the
+          work automatically.</p></article>
+      </section>
+
+      <!-- ==== EDIT ME ==================================================
+           Everything below is yours. Replace the photo by dropping a file at
+           public/about-photo.jpg, and rewrite the two paragraphs in your own
+           words — they are a starting point, not a biography I can write for
+           you.
+           ============================================================== -->
+      <section class="aboutme">
+        <div class="aboutphoto">
+          <img id="aboutImg" src="./about-photo.webp" alt="Mizzina" />
+          <div class="aboutphoto-fallback" id="aboutImgFallback">
+            <svg class="ic" viewBox="0 0 24 24"><use href="#i-user"/></svg>
+            <span>Drop a photo at<br><code>public/about-photo.webp</code></span>
+          </div>
+        </div>
+        <div class="aboutmetext">
+          <p class="abouteyebrow">Developed by</p>
+          <h2>Mizzina</h2>
+          <p class="aboutrole">Software / ML Engineer</p>
+          <p>
+            I build tools that make hard things legible. Volta came out of wanting a circuit
+            simulator that shows you what is happening rather than just what the answer is —
+            one that runs on whatever device a student already owns, needs no licence, no
+            install and no reliable internet connection, and is honest enough to show its own
+            working when you ask.
+          </p>
+          <p>
+            The commons is the other half of the idea: circuits are easier to learn from when
+            you can open someone else's, take it apart, and put it back together differently.
+          </p>
+        </div>
+      </section>
+
+      <section class="aboutcta" id="aboutCta" hidden>
+        <h3>Join the commons</h3>
+        <p>Publish your designs, and build on everyone else's. Free, and the editor works
+          fully without an account.</p>
+        <div class="aboutctabtns">
+          <button class="btn primary" id="aboutRegister">Create an account</button>
+          <button class="btn" id="aboutLogin">Sign in</button>
+        </div>
+      </section>
+
+      <section class="aboutopen">
+        <button class="btn primary big" id="aboutOpen">Open the editor</button>
+      </section>
+
+      <footer class="aboutfoot">
+        Volta · MIT-licensed source · designs in the commons shared under
+        <a id="aboutLicLink" target="_blank" rel="noopener">CC BY-SA 4.0</a>
+      </footer>
+    </div>
+  </div>
+
+  <div id="authModal" hidden>
+    <div class="sheet">
+      <div class="sheethead">
+        <h3><svg class="ic" viewBox="0 0 24 24"><use href="#i-user"/></svg> <span id="authTitle">Member account</span></h3>
+        <button class="btn icon ghost" id="authClose" title="Close"><svg class="ic" viewBox="0 0 24 24"><use href="#i-close"/></svg></button>
+      </div>
+
+      <div id="authSignedOut">
+        <p class="empty">Sign in to share your designs with the commons and build on other
+          members' work. Everything in the editor keeps working without an account.</p>
+        <div class="field"><label>Email</label><input id="authEmail" type="email" autocomplete="email" /></div>
+        <div class="field"><label>Password</label><input id="authPassword" type="password" autocomplete="current-password" /></div>
+        <div id="authStatus"></div>
+        <div class="sheetfoot">
+          <button class="btn ghost" id="authSignUp">Create account</button>
+          <button class="btn primary" id="authSignIn">Sign in</button>
+        </div>
+      </div>
+
+      <div id="authSignedIn" hidden>
+        <p class="empty">Signed in as <b id="authWho"></b>. This is how you appear on
+          anything you share.</p>
+        <div class="field"><label>Handle — lowercase letters, numbers and underscores</label>
+          <input id="profHandle" maxlength="20" placeholder="ada_k" /></div>
+        <div class="field"><label>Display name</label>
+          <input id="profName" maxlength="40" placeholder="Ada K." /></div>
+        <div class="field"><label>Country</label>
+          <select id="profCountry" class="wide"></select></div>
+        <div class="field"><label>School (optional)</label>
+          <input id="profSchool" maxlength="80" placeholder="Accra Academy" /></div>
+        <label class="check"><input type="checkbox" id="profShowSchool" />
+          <span>Show my school on my published designs</span></label>
+        <p class="empty small" id="schoolWarn">Leave this off if you'd rather not say where
+          you are. Your name and school together identify where to find you, so it stays
+          hidden unless you turn it on.</p>
+        <div id="profStatus"></div>
+        <div class="sheetfoot">
+          <button class="btn ghost" id="authSignOut">Sign out</button>
+          <button class="btn primary" id="profSave">Save profile</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="publishModal" hidden>
+    <div class="sheet">
+      <div class="sheethead">
+        <h3><svg class="ic" viewBox="0 0 24 24"><use href="#i-publish"/></svg> Share with the commons</h3>
+        <button class="btn icon ghost" id="publishClose" title="Close"><svg class="ic" viewBox="0 0 24 24"><use href="#i-close"/></svg></button>
+      </div>
+      <div class="field"><label>Title</label><input id="pubTitle" maxlength="80" /></div>
+      <div class="field"><label>What is it, and what should someone try changing?</label>
+        <textarea id="pubDesc" rows="3" maxlength="2000"></textarea></div>
+      <img id="pubThumb" class="pubthumb" alt="Preview of the circuit being shared" />
+      <p class="empty" id="pubForked" hidden></p>
+      <label class="check"><input type="checkbox" id="pubLicense" />
+        <span>I share this under <b>CC BY-SA 4.0</b></span></label>
+      <p class="empty small" id="pubLicenseText"></p>
+      <div id="pubStatus"></div>
+      <div class="sheetfoot">
+        <button class="btn ghost" id="publishCancel">Cancel</button>
+        <button class="btn primary" id="publishGo">Share it</button>
+      </div>
+    </div>
+  </div>
+
   <div id="codeModal" hidden>
     <div class="sheet">
-      <h3>🔌 MCU code</h3>
+      <div class="sheethead">
+        <h3><svg class="ic" viewBox="0 0 24 24"><use href="#i-chip"/></svg> MCU code</h3>
+        <button class="btn icon ghost" id="codeClose" title="Close"><svg class="ic" viewBox="0 0 24 24"><use href="#i-close"/></svg></button>
+      </div>
       <p class="empty">Runs against the live circuit in simulated time. Place
         <b>MCU pin</b> parts on the schematic and address them by number.
         Supported: <span class="kbd">setup</span> <span class="kbd">loop</span>
@@ -53,15 +368,19 @@
         <span class="kbd">millis</span>, plus int/float, if, while and for.</p>
       <div class="field"><textarea id="codeSrc" rows="14" spellcheck="false"></textarea></div>
       <div id="codeStatus"></div>
-      <button class="btn primary" id="codeSave">Save &amp; run</button>
-      <button class="btn ghost" id="codeBlink">Load blink example</button>
-      <button class="btn ghost" id="codeClose">Close</button>
+      <div class="sheetfoot">
+        <button class="btn ghost" id="codeBlink">Load blink example</button>
+        <button class="btn primary" id="codeSave">Save &amp; run</button>
+      </div>
     </div>
   </div>
 
   <div id="aiModal" hidden>
     <div class="sheet">
-      <h3>✨ Circuit assistant</h3>
+      <div class="sheethead">
+        <h3><svg class="ic fill" viewBox="0 0 24 24"><use href="#i-spark"/></svg> Circuit assistant</h3>
+        <button class="btn icon ghost" id="aiClose" title="Close"><svg class="ic" viewBox="0 0 24 24"><use href="#i-close"/></svg></button>
+      </div>
       <div id="aiKeySetup" hidden>
         <p class="empty">Paste an Anthropic API key to enable the assistant. It is stored in
           this browser's local storage and sent only to api.anthropic.com — which means any
@@ -76,11 +395,12 @@
           <textarea id="aiPrompt" rows="3"
             placeholder="e.g. build an RC low-pass with a 2 kHz cutoff — or — why is the transistor saturated?"></textarea>
         </div>
-        <button class="btn primary" id="aiSend">Ask</button>
-        <button class="btn ghost" id="aiForget" title="Remove the stored API key">Forget key</button>
+        <div class="sheetfoot">
+          <button class="btn ghost" id="aiForget" title="Remove the stored API key">Forget key</button>
+          <button class="btn primary" id="aiSend">Ask</button>
+        </div>
         <div id="aiOut"></div>
       </div>
-      <button class="btn ghost" id="aiClose">Close</button>
     </div>
   </div>
 </div>

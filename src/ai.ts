@@ -15,12 +15,12 @@ import Anthropic from '@anthropic-ai/sdk';
 /** Thinking counts against max_tokens on this model, so leave real headroom. */
 const MODEL = 'claude-opus-5';
 const MAX_TOKENS = 16000;
-const KEY_STORAGE = 'zuri.anthropic.key';
+const KEY_STORAGE = 'volta.anthropic.key';
 
 /** Part types the assistant is allowed to place. */
 export const AI_PART_TYPES = [
   'R', 'C', 'L', 'V', 'VS', 'SQ', 'I', 'D', 'QN', 'QP', 'MN', 'MP', 'OA', 'GND',
-  'LED', 'LAMP', 'CP', 'SW', 'PB', 'PBNC', 'POT',
+  'LED', 'LAMP', 'CP', 'SW', 'PB', 'PBNC', 'POT', 'VM', 'AM', 'OM', 'WM',
   'E', 'G', 'F', 'H', 'XF', 'RLY', 'MOT',
   'LOGIC', 'NOT', 'AND', 'OR', 'NAND', 'NOR', 'XOR', 'XNOR',
   'SRL', 'DL', 'DFF', 'JKFF', 'TFF', 'CNT4', 'SEG7', 'NE555', 'DAC4', 'ADC4',
@@ -103,7 +103,7 @@ export const BUILD_CIRCUIT_TOOL = {
 // The geometry rules are the whole ballgame: a model that gets pin positions
 // wrong produces a circuit that looks plausible and simulates as disconnected
 // junk, so they're spelled out concretely with a worked example.
-const SYSTEM = `You are the circuit assistant inside Zuri, a live analog circuit simulator.
+const SYSTEM = `You are the circuit assistant inside Volta, a live analog circuit simulator.
 You build, explain and debug circuits on an integer grid.
 
 GEOMETRY — get this exactly right or the circuit will not connect:
@@ -141,6 +141,16 @@ PART VALUES:
   resistance; the contact closes above about 20 mA of coil current. Put a diode
   across the coil, cathode to coil+, to catch the switch-off spike.
 - MOT is a DC motor with two pins; value is its armature resistance in ohms.
+- VM is a voltmeter and AM an ammeter, both 2-pin. Wire a VM ACROSS what you are
+  measuring and an AM IN SERIES with it. VM takes its input resistance as its
+  value (1e8 is a good default); AM takes 0. Add them when the user asks to
+  measure, meter or read a voltage or current — they display live on the
+  schematic, which a probe does not.
+- OM is an ohmmeter, 2-pin, value 0. It injects its own test current, so only
+  put one across an UNPOWERED part — never in a loop that a source is driving.
+- WM is a wattmeter with four pins, [current in, current out, sense+, sense-],
+  value 0. The first pair goes IN SERIES with the load and the second pair goes
+  ACROSS it, both connected, or it reads nothing.
 
 DIGITAL PARTS — all behavioural, with high-impedance inputs that read a 1 above
 2.5 V and outputs that drive 0 or 5 V. They carry their own 0 V reference, so a
