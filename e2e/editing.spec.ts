@@ -247,7 +247,7 @@ test.describe('AI assistant', () => {
   // the key-setup state machine, and that the SDK is not in the initial bundle.
   test('asks for a key first, then shows the prompt box', async ({ page }) => {
     await page.goto('/');
-    await page.evaluate(() => localStorage.removeItem('zuri.anthropic.key'));
+    await page.evaluate(() => localStorage.removeItem('volta.anthropic.key'));
     await page.click('#aiBtn');
 
     await expect(page.locator('#aiKeySetup')).toBeVisible();

@@ -1,4 +1,4 @@
-# Zuri — Live Circuit Simulator
+# Volta — Live Circuit Simulator
 
 A live, cross-platform analog circuit simulator: build a schematic on a grid,
 press **Run**, and watch currents flow and voltages change in real time — in the

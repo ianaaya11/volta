@@ -4,5 +4,5 @@
 fn main() {
     tauri::Builder::default()
         .run(tauri::generate_context!())
-        .expect("error while running Zuri");
+        .expect("error while running Volta");
 }

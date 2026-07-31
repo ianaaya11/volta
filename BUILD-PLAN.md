@@ -227,7 +227,7 @@ compiled, and it could not have been: `tauri.conf.json` pointed its bundle icon
 at `icons/icon.png` while `src-tauri/icons/` did not exist, so the build failed
 before touching Rust. The icon set is now generated from the app's own
 `public/icon.svg`. On macOS, cargo builds the release binary, Tauri bundles
-`Zuri.app`, and the app launches: registered as `com.zuri.livecircuit`, resident
+`Volta.app`, and the app launches: registered as `com.anaaya.volta`, resident
 at ~88 MB, with a WebKit content process — the webview really loaded the
 simulator rather than opening an empty shell.
 
@@ -237,7 +237,7 @@ stack is now on **Capacitor 7**: v8 requires Node ≥ 22 (this toolchain is on
 20), and v6 predates the target-SDK level Google Play now requires. Doing that
 upgrade before any native project existed cost no migration at all. The Android
 project scaffolds, `cap sync` embeds the production web build, and Gradle
-produces a 3.9 MB `app-debug.apk` whose manifest reads `com.zuri.livecircuit`
+produces a 3.9 MB `app-debug.apk` whose manifest reads `com.anaaya.volta`
 at **targetSdk 35** with the real JS bundle inside. Building needs a JDK 21
 specifically — the Android Gradle plugin rejects newer JDKs.
 
