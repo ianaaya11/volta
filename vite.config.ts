@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite';
+import { defineConfig } from 'vitest/config';
 import { VitePWA } from 'vite-plugin-pwa';
 
 // Base is './' so the built app works from any subpath — GitHub Pages, a file://
@@ -28,4 +28,7 @@ export default defineConfig({
     }),
   ],
   build: { target: 'es2020', outDir: 'dist' },
+  // Vitest owns tests/ (the engine suites); Playwright owns e2e/ and must not
+  // be picked up here — the two runners share a file extension, not a runtime.
+  test: { include: ['tests/**/*.test.ts'] },
 });

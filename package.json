@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:e2e": "playwright test",
     "cap:sync": "cap sync",
     "cap:add:ios": "cap add ios",
     "cap:add:android": "cap add android",
@@ -17,6 +18,7 @@
   },
   "devDependencies": {
     "@capacitor/cli": "^6.1.2",
+    "@playwright/test": "^1.62.1",
     "@tauri-apps/cli": "^2.0.0",
     "typescript": "^5.5.4",
     "vite": "^5.4.2",

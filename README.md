@@ -27,6 +27,8 @@ src/
 index.html    # Vite entry / markup.
 tests/        # one file per device, verified against closed-form theory:
   solver  diode  bjt  mosfet  opamp  transient  ac  format
+e2e/
+  app.spec.ts # browser smoke tests against the production build (Playwright).
 ```
 
 `engine.ts` takes a plain netlist (`{ id, type, nodes, value, ... }[]`) and
@@ -36,20 +38,20 @@ web, in a mobile shell, and in a desktop window unchanged. Every device model is
 verified in isolation against a hand calculation or a textbook transfer function
 before it ships (see `tests/`).
 
-`engine.ts` is fully typed and checked under `strict`: the netlist is a
+The whole project is typed and checked under `strict`. The netlist is a
 discriminated union (`Component`), so narrowing on `c.type` yields exactly the
-fields that device model uses.
-
-> Note: `main.ts` is ported from the original single-file prototype and currently
-> carries `// @ts-nocheck`; a full type pass over the UI is the tracked follow-up.
-> `engine.ts` is the authoritative typed module.
+fields that device model uses, and `main.ts` converts its looser editor model
+into that union in one place (`toDevice`) — the single boundary where a
+schematic becomes physics.
 
 ## Develop
 
 ```bash
 npm install
 npm run dev        # http://localhost:5173
-npm test           # run the engine test suite (Vitest)
+npm test           # engine suites, one file per device (Vitest)
+npm run test:e2e   # browser smoke tests against the production build (Playwright)
+npm run typecheck  # tsc --noEmit, strict
 npm run build      # production build -> dist/
 npm run preview    # serve the production build
 ```
@@ -85,8 +87,13 @@ divider and series/parallel networks, RC and RL time constants, diode drop and
 rectification, BJT β with active/saturation/cutoff regions and the PNP mirror,
 MOSFET region equations plus a common-source bias point and the PMOS mirror,
 op-amp gains with the virtual short and virtual ground, RC −3dB point and
-−20 dB/decade rolloff, RLC resonance, and SI formatting round-trips. Roadmap and
-phase history live in `BUILD-PLAN.md`.
+−20 dB/decade rolloff, RLC resonance, and SI formatting round-trips. On top of that, **9 Playwright specs**
+load the production build in a real browser and confirm the on-screen readouts
+match the engine. Roadmap and phase history live in `BUILD-PLAN.md`.
+
+> The e2e suite drives your installed Google Chrome (`channel: 'chrome'`). If
+> you'd rather use Playwright's own browser, run `npx playwright install chromium`
+> and drop the `channel` line from `playwright.config.ts`.
 
 ## License
 

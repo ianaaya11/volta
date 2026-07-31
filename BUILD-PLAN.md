@@ -28,7 +28,7 @@ already in place, so new semiconductors reuse it rather than reinventing it.
 | 3 | Instrumentation | Oscilloscope (probe nodes, live multi-trace) + sine source to drive it | Frequency-response test + UI capture | ✅ done |
 | 4 | Analyses | AC small-signal sweep + Bode plot (magnitude & phase) | RC/RLC transfer-function checks | ✅ done |
 | 5 | Persistence & sharing | Save/load circuits as JSON, shareable URLs, named example gallery | Round-trip serialize tests | ✅ done |
-| 6 | Cross-platform packaging | TypeScript port, Capacitor (iOS/Android), Tauri (desktop), PWA offline | Per-platform launch + touch tests | in progress |
+| 6 | Cross-platform packaging | TypeScript port, Capacitor (iOS/Android), Tauri (desktop), PWA offline | Per-platform launch + touch tests | ✅ web/PWA done; native launches pending |
 | 7 | Differentiators | "Show the math" learning mode, MCU co-sim, AI circuit assistant | Feature-specific | |
 
 ## Phase 1 — what was just delivered (reference implementation)
@@ -182,11 +182,32 @@ warning. Prefix parsing is now case-sensitive where it must be (`M` mega vs `m`
 milli) and case-forgiving where there's no ambiguity, with a round-trip test
 over every prefix `fmt` can emit.
 
-**Remaining in this phase.** (1) `main.ts` still carries `// @ts-nocheck` — the
-UI type pass. (2) Actual per-platform launches (Tauri window, iOS/Android via
-Capacitor) are still unverified on real devices. (3) The headless-browser smoke
-captures described below have not been ported either; the engine is covered, the
-UI is not.
+**The UI is typed too.** `main.ts` no longer carries `// @ts-nocheck`; the whole
+project compiles under `strict`. The part that mattered was the boundary between
+the editor's model and the engine's: a placed part (`Comp` — loose, with
+optional value and rotation because ground has neither) is now converted by a
+single `toDevice()` switch into the engine's discriminated `Component`. Each
+case builds exactly the fields that device model reads, so an absent value can
+no longer reach the solver as `undefined`. Two latent problems fell out of the
+pass: `TYPES` had no entries for PNP or PMOS even though the renderer draws them
+and a loaded circuit can contain them (an inspector click would have thrown),
+and `index.html` never linked its own icon, so every page load 404'd on
+`/favicon.ico`.
+
+**The browser smoke tests are back.** Nine Playwright specs in `e2e/` run
+against the *production build*, so what they exercise is what ships. They assert
+the same operating points the engine suites do, but read off the live inspector
+panel: the BJT amp's 4.09 V collector, the NMOS bias at Vg=2/Vd=3, op-amp gain
+2. They also check the canvas actually has ink on it (rather than merely
+existing), that Bode paints its panel, that placing a part updates the node
+count, and that Share round-trips a circuit through the URL and still solves to
+4.09 V after a reload. They drive the system Chrome via `channel: 'chrome'`
+rather than a Playwright-managed download.
+
+**Remaining in this phase.** Actual per-platform launches — a Tauri desktop
+window, and iOS/Android via Capacitor — are still unverified, because each needs
+a toolchain (Rust, Xcode, Android Studio) and a device or simulator to be
+meaningful. The web/PWA target is done and verified.
 
 ## Phase 7 — where you actually differentiate
 
@@ -210,9 +231,8 @@ adds one of each before it's considered done. This is why the current engine is
 trustworthy — **52 automated checks pass in the repo today** (6 solver, 4 diode,
 7 BJT, 10 MOSFET, 5 op-amp, 4 sine/transient, 6 AC/Bode, 10 formatter), run with
 `npm test` — and it's the cheapest insurance you have as complexity grows. The
-headless-browser captures of the scope, the Bode plot, and the worked examples
-existed in the prototype but have not been ported yet; that's the open half of
-this strategy.
+second layer is back too: **9 headless-browser specs** (`npm run test:e2e`) load
+the production build and confirm the on-screen numbers match the engine's.
 
 ## Suggested immediate next step
 

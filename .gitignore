@@ -7,6 +7,11 @@ dist-ssr/
 # Vite / PWA
 dev-dist/
 
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/
+
 # Capacitor (generated native projects)
 /ios/
 /android/

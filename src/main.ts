@@ -1,52 +1,87 @@
-// @ts-nocheck — ported UI glue; fuller typing tracked as a follow-up.
 import { Circuit } from './engine';
+import type { Component, NodeId, Pair, Solution, Triple } from './engine';
 import { fmt, parseVal } from './format';
 import './style.css';
 
 //  PART 2 — SCHEMATIC MODEL + EDITOR
 // ===========================================================================
+
+/** Every part the editor can hold. 'GND' is a marker, not an engine device. */
+export type PartType = 'R' | 'V' | 'I' | 'C' | 'L' | 'VS' | 'D'
+  | 'QN' | 'QP' | 'MN' | 'MP' | 'OA' | 'GND';
+/** Everything the tool rail can be set to: a part to place, or a mode. */
+type Tool = PartType | 'select' | 'wire' | 'probe' | 'delete';
+type Rot = 0 | 90 | 180 | 270;
+
+/** A placed part. (x,y) are grid coords of pin A (the anchor). */
+interface Comp {
+  id: string;
+  type: PartType;
+  x: number;
+  y: number;
+  rot?: Rot;        // absent on ground, which has no orientation
+  value?: number;   // absent on parts with no editable value (GND, D, transistors)
+  amp?: number;     // sine source only
+  freq?: number;
+  off?: number;
+}
+interface Wire { x1: number; y1: number; x2: number; y2: number }
+interface Probe { x: number; y: number; color: string }
+interface Pt { x: number; y: number }
+/** Maps a grid point to the colour of the node it sits on (null when idle). */
+type NodeColor = ((x: number, y: number) => string | null) | null;
+
 const GRID=26;               // pixels per grid unit
-const cv=document.getElementById('cv');
-const ctx=cv.getContext('2d');
-const stage=document.getElementById('stage');
+/** Non-null element lookup — every id here is declared in index.html. */
+const el=(id:string):HTMLElement=>{
+  const e=document.getElementById(id);
+  if(!e) throw new Error(`missing element #${id}`);
+  return e;
+};
+const cv=el('cv') as HTMLCanvasElement;
+const ctx=cv.getContext('2d')!;
+const stage=el('stage');
 
 // The document: a list of components and a list of wires.
-// Component: {id,type,x,y,rot,value}. (x,y)=grid coords of pin A (anchor).
 // A 2-terminal part spans 2 grid units; pinB is 2 units along `rot`.
 // Ground is 1-terminal (pin at x,y ties that point to node 0).
-let comps=[];
-let wires=[];                // {x1,y1,x2,y2}
+let comps:Comp[]=[];
+let wires:Wire[]=[];
 let uid=1;
-let tool='select';
-let selected=null;
+let tool:Tool='select';
+let selected:Comp|null=null;
 let running=false;
-let lastResult=null;
+let lastResult:Solution|null=null;
 let view={ox:0,oy:0};        // pan offset (grid-aligned drawing origin)
 
-const DIR={0:[1,0],90:[0,1],180:[-1,0],270:[0,-1]};
+const DIR:Record<Rot,[number,number]>={0:[1,0],90:[0,1],180:[-1,0],270:[0,-1]};
+const rotOf=(c:Comp):Rot=>c.rot??0;
 // rotate an integer grid offset by the component's rotation (screen y-down)
-function rotOff(dx,dy,rot){
+function rotOff(dx:number,dy:number,rot:Rot):[number,number]{
   if(rot===90) return [-dy,dx];
   if(rot===180) return [-dx,-dy];
   if(rot===270) return [dy,-dx];
   return [dx,dy];
 }
-function pinsOf(c){
+function pinsOf(c:Comp):Pt[]{
   if(c.type==='GND') return [{x:c.x,y:c.y}];
   if(c.type==='QN'||c.type==='QP'||c.type==='MN'||c.type==='MP'){
     // 3 pins, engine order [collector/drain, base/gate, emitter/source].
-    const offs=[[2,-2],[0,0],[2,2]]; // C/D, B/G (at anchor), E/S
-    return offs.map(([ox,oy])=>{ const [rx,ry]=rotOff(ox,oy,c.rot); return {x:c.x+rx,y:c.y+ry}; });
+    const offs:[number,number][]=[[2,-2],[0,0],[2,2]]; // C/D, B/G (at anchor), E/S
+    return offs.map(([ox,oy])=>{ const [rx,ry]=rotOff(ox,oy,rotOf(c)); return {x:c.x+rx,y:c.y+ry}; });
   }
   if(c.type==='OA'){
     // 3 pins, engine order [out, in+, in-]. Inputs on the left, output on right.
-    const offs=[[4,0],[0,-1],[0,1]]; // out, in+, in-
-    return offs.map(([ox,oy])=>{ const [rx,ry]=rotOff(ox,oy,c.rot); return {x:c.x+rx,y:c.y+ry}; });
+    const offs:[number,number][]=[[4,0],[0,-1],[0,1]]; // out, in+, in-
+    return offs.map(([ox,oy])=>{ const [rx,ry]=rotOff(ox,oy,rotOf(c)); return {x:c.x+rx,y:c.y+ry}; });
   }
-  const [dx,dy]=DIR[c.rot];
+  const [dx,dy]=DIR[rotOf(c)];
   return [{x:c.x,y:c.y},{x:c.x+dx*2,y:c.y+dy*2}];
 }
-const TYPES={
+interface TypeInfo { name:string; unit:string; def:number }
+// PNP and PMOS aren't on the tool rail, but a loaded or shared circuit can
+// contain them and the renderer draws them, so they need entries here too.
+const TYPES:Record<PartType,TypeInfo>={
   R:{name:'Resistor',unit:'Ω',def:1000},
   V:{name:'Voltage',unit:'V',def:5},
   I:{name:'Current',unit:'A',def:0.01},
@@ -55,7 +90,9 @@ const TYPES={
   VS:{name:'Sine source',unit:'V',def:5},
   D:{name:'Diode',unit:'',def:0},
   QN:{name:'NPN transistor',unit:'',def:0},
+  QP:{name:'PNP transistor',unit:'',def:0},
   MN:{name:'NMOS transistor',unit:'',def:0},
+  MP:{name:'PMOS transistor',unit:'',def:0},
   OA:{name:'Op-amp (ideal)',unit:'',def:0},
   GND:{name:'Ground',unit:'',def:0},
 };
@@ -64,32 +101,63 @@ const TYPES={
 // ===========================================================================
 //  PART 3 — NETLIST: turn geometry into electrical nodes (union-find)
 // ===========================================================================
-function buildNetlist(){
-  const parent=new Map();
-  const key=(x,y)=>x+','+y;
-  const find=(k)=>{ if(!parent.has(k)) parent.set(k,k);
-    while(parent.get(k)!==k){ parent.set(k,parent.get(parent.get(k))); k=parent.get(k);} return k; };
-  const union=(a,b)=>{ parent.set(find(a),find(b)); };
+interface Netlist {
+  netComps: Component[];
+  nodeOf: (x:number,y:number)=>NodeId;
+  nodeCount: number;
+  grounded: boolean;
+}
+
+// Turn one placed part into the engine device it represents. Ground returns
+// null — it only marks the reference node and has no equation of its own. The
+// switch is what earns the type safety: each case builds exactly the fields
+// that device model reads, so a missing value can't reach the solver as
+// `undefined`.
+function toDevice(c:Comp,nodes:NodeId[]):Component|null{
+  const pair:Pair=[nodes[0],nodes[1]];
+  const triple:Triple=[nodes[0],nodes[1],nodes[2]];
+  const value=c.value??TYPES[c.type].def;
+  switch(c.type){
+    case 'GND': return null;
+    case 'R': return {id:c.id,type:'R',nodes:pair,value};
+    case 'C': return {id:c.id,type:'C',nodes:pair,value};
+    case 'L': return {id:c.id,type:'L',nodes:pair,value};
+    case 'I': return {id:c.id,type:'I',nodes:pair,value};
+    case 'V': return {id:c.id,type:'V',nodes:pair,value};
+    case 'VS': return {id:c.id,type:'VS',nodes:pair,wave:'SIN',value,
+      amp:c.amp??0,freq:c.freq??0,off:c.off??0};
+    case 'D': return {id:c.id,type:'D',nodes:pair};
+    case 'QN': return {id:c.id,type:'QN',nodes:triple};
+    case 'QP': return {id:c.id,type:'QP',nodes:triple};
+    case 'MN': return {id:c.id,type:'MN',nodes:triple};
+    case 'MP': return {id:c.id,type:'MP',nodes:triple};
+    case 'OA': return {id:c.id,type:'OA',nodes:triple};
+  }
+}
+
+function buildNetlist():Netlist{
+  const parent=new Map<string,string>();
+  const key=(x:number,y:number)=>x+','+y;
+  const find=(k:string):string=>{ if(!parent.has(k)) parent.set(k,k);
+    while(parent.get(k)!==k){ parent.set(k,parent.get(parent.get(k)!)!); k=parent.get(k)!;} return k; };
+  const union=(a:string,b:string)=>{ parent.set(find(a),find(b)); };
   // Register every pin and wire endpoint.
   for(const c of comps) for(const p of pinsOf(c)) find(key(p.x,p.y));
   for(const w of wires){ find(key(w.x1,w.y1)); find(key(w.x2,w.y2)); }
   // Wires merge their endpoints into one node.
   for(const w of wires) union(key(w.x1,w.y1),key(w.x2,w.y2));
   // Assign integer node ids; grounded roots become node 0.
-  const grounded=new Set();
+  const grounded=new Set<string>();
   for(const c of comps) if(c.type==='GND') grounded.add(find(key(c.x,c.y)));
-  const rootToNode=new Map(); let next=1;
-  const nodeOf=(x,y)=>{ const r=find(key(x,y));
+  const rootToNode=new Map<string,number>(); let next=1;
+  const nodeOf=(x:number,y:number):NodeId=>{ const r=find(key(x,y));
     if(grounded.has(r)) return 0;
-    if(!rootToNode.has(r)) rootToNode.set(r,next++); return rootToNode.get(r); };
+    if(!rootToNode.has(r)) rootToNode.set(r,next++); return rootToNode.get(r)!; };
   // Emit engine components (skip GND — it only defines the reference).
-  const netComps=[];
+  const netComps:Component[]=[];
   for(const c of comps){
-    if(c.type==='GND') continue;
-    const ps=pinsOf(c);
-    netComps.push({id:c.id,type:c.type,value:c.value,
-      nodes:ps.map(p=>nodeOf(p.x,p.y)),
-      ...(c.type==='VS'?{wave:'SIN',amp:c.amp,freq:c.freq,off:c.off}:{})});
+    const d=toDevice(c,pinsOf(c).map(p=>nodeOf(p.x,p.y)));
+    if(d) netComps.push(d);
   }
   const nodeCount=next-1+(grounded.size?1:0);
   return {netComps,nodeOf,nodeCount,grounded:grounded.size>0};
@@ -98,13 +166,13 @@ function buildNetlist(){
 // ---- Wire-current resolver (for animation) --------------------------------
 // Within an equipotential node, wires still carry physical current. We solve
 // the flow on the wire graph by KCL leaf-pruning (unique for tree wiring).
-function solveWireCurrents(result){
-  const wc=new Map();               // wire index -> signed current (x1y1 -> x2y2)
+function solveWireCurrents(result:Solution|null):Map<number,number>{
+  const wc=new Map<number,number>();  // wire index -> signed current (x1y1 -> x2y2)
   if(!result) return wc;
-  const key=(x,y)=>x+','+y;
+  const key=(x:number,y:number)=>x+','+y;
   // Injection at each grid point from attached component pins.
-  const inject=new Map();
-  const add=(k,val)=>inject.set(k,(inject.get(k)||0)+val);
+  const inject=new Map<string,number>();
+  const add=(k:string,val:number)=>inject.set(k,(inject.get(k)||0)+val);
   for(const c of comps){
     if(c.type==='GND') continue;
     const ps=pinsOf(c);
@@ -121,16 +189,17 @@ function solveWireCurrents(result){
     }
   }
   // Adjacency of wires at each point.
-  const adj=new Map();               // point key -> [{wi, other, sign}]
+  interface Incident { wi:number; other:string; sign:number }
+  const adj=new Map<string,Incident[]>();
   wires.forEach((w,wi)=>{
     const ka=key(w.x1,w.y1), kb=key(w.x2,w.y2);
     if(!adj.has(ka)) adj.set(ka,[]); if(!adj.has(kb)) adj.set(kb,[]);
-    adj.get(ka).push({wi,other:kb,sign:+1}); // +current means flow ka->kb
-    adj.get(kb).push({wi,other:ka,sign:-1});
+    adj.get(ka)!.push({wi,other:kb,sign:+1}); // +current means flow ka->kb
+    adj.get(kb)!.push({wi,other:ka,sign:-1});
     wc.set(wi,0);
   });
-  const known=new Set();
-  const netAt=(k)=> (inject.get(k)||0);
+  const known=new Set<number>();
+  const netAt=(k:string)=> (inject.get(k)||0);
   // Iteratively resolve points that have exactly one unknown incident wire.
   for(let pass=0; pass<wires.length+2; pass++){
     let changed=false;
@@ -139,7 +208,7 @@ function solveWireCurrents(result){
       if(unknown.length===1){
         // KCL: sum of currents leaving k = injection at k.
         let flowOut=netAt(k);
-        for(const e of list){ if(known.has(e.wi)){ flowOut += e.sign*wc.get(e.wi); } }
+        for(const e of list){ if(known.has(e.wi)){ flowOut += e.sign*wc.get(e.wi)!; } }
         // remaining wire must carry -flowOut in its sign convention... define:
         const e=unknown[0];
         // currents leaving via known wires already counted with e.sign*wc.
@@ -147,7 +216,7 @@ function solveWireCurrents(result){
         // net leaving through wires = injection(k) ... we treat injection as current entering node.
         // Balance: sum(sign*wc) over all incident = inject(k)
         let sumKnown=0;
-        for(const g of list){ if(known.has(g.wi)) sumKnown += g.sign*wc.get(g.wi); }
+        for(const g of list){ if(known.has(g.wi)) sumKnown += g.sign*wc.get(g.wi)!; }
         const val=(netAt(k)-sumKnown)/e.sign;
         wc.set(e.wi,val); known.add(e.wi); changed=true;
       }
@@ -169,13 +238,13 @@ function resize(){
 }
 window.addEventListener('resize',resize);
 
-function gx(x){ return view.ox + x*GRID; }
-function gy(y){ return view.oy + y*GRID; }
-function toGrid(px,py){ return {x:Math.round((px-view.ox)/GRID), y:Math.round((py-view.oy)/GRID)}; }
+function gx(x:number){ return view.ox + x*GRID; }
+function gy(y:number){ return view.oy + y*GRID; }
+function toGrid(px:number,py:number):Pt{ return {x:Math.round((px-view.ox)/GRID), y:Math.round((py-view.oy)/GRID)}; }
 
 // Voltage -> color (blue low, grey mid, red high) scaled to present range.
 let vRange={min:-1,max:1};
-function voltColor(v){
+function voltColor(v:number):string{
   const {min,max}=vRange; const mid=(min+max)/2; const half=Math.max(1e-6,(max-min)/2);
   const t=Math.max(-1,Math.min(1,(v-mid)/half));
   if(t>=0){ const r=Math.round(90+165*t), g=Math.round(120-40*t), b=Math.round(130-90*t); return `rgb(${r},${g},${b})`; }
@@ -192,15 +261,15 @@ function draw(){
   for(let x=startX;x<W;x+=GRID) for(let y=startY;y<H;y+=GRID){ ctx.fillRect(x-0.5,y-0.5,1,1); }
 
   // node color lookup if running
-  let net=null;
+  let net:Netlist|null=null;
   if(lastResult){ net=buildNetlist(); }
-  const nodeColor=(x,y)=>{
+  const nodeColor:NodeColor=(x,y)=>{
     if(!net||!lastResult) return null;
     const nd=net.nodeOf(x,y); const v=lastResult.nodeVoltage[nd]??0; return voltColor(v);
   };
 
   // wires
-  const wc = running? solveWireCurrents(lastResult) : new Map();
+  const wc = running? solveWireCurrents(lastResult) : new Map<number,number>();
   wires.forEach((w,wi)=>{
     const col = lastResult? nodeColor(w.x1,w.y1) : '#6b7c96';
     ctx.strokeStyle=col||'#6b7c96'; ctx.lineWidth=3; ctx.lineCap='round';
@@ -222,8 +291,8 @@ function draw(){
 
   // pin junction dots
   ctx.fillStyle='#9fb0c8';
-  const pinCount=new Map();
-  const addPin=(x,y)=>pinCount.set(x+','+y,(pinCount.get(x+','+y)||0)+1);
+  const pinCount=new Map<string,number>();
+  const addPin=(x:number,y:number)=>pinCount.set(x+','+y,(pinCount.get(x+','+y)||0)+1);
   for(const c of comps) for(const p of pinsOf(c)) addPin(p.x,p.y);
   for(const w of wires){ addPin(w.x1,w.y1); addPin(w.x2,w.y2); }
   for(const [k,n] of pinCount){ if(n>=3){ const [x,y]=k.split(',').map(Number);
@@ -233,7 +302,7 @@ function draw(){
   if(tool==='wire'&&wireStart){ ctx.strokeStyle='#4dabf7'; ctx.setLineDash([5,4]); ctx.lineWidth=2;
     ctx.beginPath(); ctx.moveTo(gx(wireStart.x),gy(wireStart.y)); ctx.lineTo(mouse.px,mouse.py); ctx.stroke(); ctx.setLineDash([]); }
   // ghost for placing
-  if(PLACE_TYPES.includes(tool)&&mouse.gx!=null){ drawGhost(tool,mouse.gx,mouse.gy); }
+  if(isPlaceType(tool)&&mouse.gx!=null&&mouse.gy!=null){ drawGhost(tool,mouse.gx,mouse.gy); }
 
   // selection halo
   if(selected){ const ps=pinsOf(selected);
@@ -267,11 +336,12 @@ function drawScope(){
     ctx.textAlign='left'; return;
   }
   // vertical autoscale across every series
+  const buf=scopeBuf;
   let mn=Infinity,mx=-Infinity;
-  for(const s of scopeBuf.series) for(const v of s){ if(v<mn)mn=v; if(v>mx)mx=v; }
+  for(const s of buf.series) for(const v of s){ if(v<mn)mn=v; if(v>mx)mx=v; }
   if(mn===mx){ mn-=1; mx+=1; } const vp=(mx-mn)*0.1; mn-=vp; mx+=vp;
-  const t0=scopeBuf.t[0], t1=scopeBuf.t[scopeBuf.t.length-1], dt=(t1-t0)||1;
-  const X=t=>plotX+(t-t0)/dt*plotW, Y=v=>plotY+plotH-(v-mn)/(mx-mn)*plotH;
+  const t0=buf.t[0], t1=buf.t[buf.t.length-1], dt=(t1-t0)||1;
+  const X=(t:number)=>plotX+(t-t0)/dt*plotW, Y=(v:number)=>plotY+plotH-(v-mn)/(mx-mn)*plotH;
   // horizontal gridlines
   ctx.strokeStyle='#1c2636'; ctx.lineWidth=1;
   for(let i=0;i<=4;i++){ const yy=plotY+plotH*i/4; ctx.beginPath(); ctx.moveTo(plotX,yy); ctx.lineTo(plotX+plotW,yy); ctx.stroke(); }
@@ -281,8 +351,8 @@ function drawScope(){
   ctx.textAlign='right'; ctx.fillText(fmt(mx,'V'), plotX-5, plotY+8); ctx.fillText(fmt(mn,'V'), plotX-5, plotY+plotH);
   ctx.textAlign='center'; ctx.fillText(fmt(dt,'s')+' window', plotX+plotW/2, plotY+plotH+15);
   // traces
-  scopeBuf.series.forEach((s,i)=>{ ctx.strokeStyle=scopeProbes[i].color; ctx.lineWidth=1.5; ctx.beginPath();
-    for(let k=0;k<s.length;k++){ const xx=X(scopeBuf.t[k]), yy=Y(s[k]); k===0?ctx.moveTo(xx,yy):ctx.lineTo(xx,yy); } ctx.stroke(); });
+  buf.series.forEach((s,i)=>{ ctx.strokeStyle=scopeProbes[i].color; ctx.lineWidth=1.5; ctx.beginPath();
+    for(let k=0;k<s.length;k++){ const xx=X(buf.t[k]), yy=Y(s[k]); k===0?ctx.moveTo(xx,yy):ctx.lineTo(xx,yy); } ctx.stroke(); });
   ctx.textAlign='left';
 }
 
@@ -298,14 +368,14 @@ function drawBode(){
   const f=bodeData.freqs, f0=f[0], f1=f[f.length-1], lg=Math.log10;
   const plotX=px+54, plotW=pw-210;
   const magY=py+28, magH=(ph-52)*0.55, phY=magY+magH+16, phH=(ph-52)*0.45;
-  const Xf=fr=>plotX+(lg(fr)-lg(f0))/(lg(f1)-lg(f0))*plotW;
+  const Xf=(fr:number)=>plotX+(lg(fr)-lg(f0))/(lg(f1)-lg(f0))*plotW;
   let mn=Infinity,mx=-Infinity;
   for(const c of bodeData.curves) for(const v of c.mag){ if(isFinite(v)){ if(v<mn)mn=v; if(v>mx)mx=v; } }
   if(!isFinite(mn)){ mn=-40; mx=0; } if(mx-mn<6){ mx+=3; mn-=3; } const mp=(mx-mn)*0.08; mn-=mp; mx+=mp;
-  const Ym=db=>magY+magH-(db-mn)/(mx-mn)*magH;
+  const Ym=(db:number)=>magY+magH-(db-mn)/(mx-mn)*magH;
   let pmn=Infinity,pmx=-Infinity; for(const c of bodeData.curves) for(const v of c.phase){ if(v<pmn)pmn=v; if(v>pmx)pmx=v; }
   if(pmx-pmn<10){ pmx+=5; pmn-=5; }
-  const Yp=d=>phY+phH-(d-pmn)/(pmx-pmn)*phH;
+  const Yp=(d:number)=>phY+phH-(d-pmn)/(pmx-pmn)*phH;
   // decade gridlines + labels
   ctx.strokeStyle='#1c2636'; ctx.fillStyle='#6b7c96'; ctx.font='9px ui-monospace,monospace'; ctx.textAlign='center';
   for(let d=Math.ceil(lg(f0)); d<=Math.floor(lg(f1)); d++){ const fx=Xf(Math.pow(10,d));
@@ -330,7 +400,7 @@ function drawBode(){
 }
 
 // moving dots to show current (EveryCircuit-style)
-function drawFlow(x1,y1,x2,y2,cur){
+function drawFlow(x1:number,y1:number,x2:number,y2:number,cur:number){
   if(Math.abs(cur)<1e-12) return;
   const len=Math.hypot(x2-x1,y2-y1); if(len<1) return;
   const ux=(x2-x1)/len, uy=(y2-y1)/len;
@@ -345,10 +415,10 @@ function drawFlow(x1,y1,x2,y2,cur){
   }
 }
 
-function drawComponent(c,nodeColor){
+function drawComponent(c:Comp,nodeColor:NodeColor){
   const ps=pinsOf(c);
   ctx.lineWidth=2.4; ctx.lineJoin='round'; ctx.lineCap='round';
-  const col=(x,y)=> (lastResult&&nodeColor)? nodeColor(x,y):'#c7d3e3';
+  const col=(x:number,y:number):string=> ((lastResult&&nodeColor)? nodeColor(x,y):null)??'#c7d3e3';
   if(c.type==='GND'){
     const x=gx(c.x),y=gy(c.y);
     ctx.strokeStyle=col(c.x,c.y); ctx.beginPath();
@@ -444,7 +514,7 @@ function drawComponent(c,nodeColor){
   ctx.strokeStyle=col(B.x,B.y);
   ctx.beginPath(); ctx.moveTo(bx,by); ctx.lineTo(mx+ux*13,my+uy*13); ctx.stroke();
   ctx.strokeStyle='#c7d3e3'; ctx.fillStyle='#c7d3e3';
-  const P=(d,o)=>({x:mx+ux*d+nx*o, y:my+uy*d+ny*o});
+  const P=(d:number,o:number):Pt=>({x:mx+ux*d+nx*o, y:my+uy*d+ny*o});
   if(c.type==='R'){
     ctx.beginPath(); let first=true;
     for(let i=0;i<=6;i++){ const d=-13+ (26*i/6); const o=(i%2? 6:-6)*(i===0||i===6?0:1);
@@ -486,13 +556,13 @@ function drawComponent(c,nodeColor){
   // label
   ctx.fillStyle='#8b98a9'; ctx.font='10px ui-monospace,monospace'; ctx.textAlign='center';
   const lp=P(0,-16);
-  let valTxt = c.type==='D'?'':fmt(c.value,TYPES[c.type].unit);
-  if(c.type==='VS') valTxt = fmt(c.amp,'V')+' '+fmt(c.freq,'Hz');
+  let valTxt = c.type==='D'?'':fmt(c.value??TYPES[c.type].def,TYPES[c.type].unit);
+  if(c.type==='VS') valTxt = fmt(c.amp??0,'V')+' '+fmt(c.freq??0,'Hz');
   ctx.fillText(valTxt, lp.x, lp.y);
   ctx.textAlign='left';
 }
 
-function drawGhost(type,x,y){
+function drawGhost(type:PartType,x:number,y:number){
   ctx.globalAlpha=0.4;
   drawComponent({id:'ghost',type,x,y,rot:ghostRot,value:TYPES[type].def},null);
   ctx.globalAlpha=1;
@@ -501,15 +571,16 @@ function drawGhost(type,x,y){
 // ===========================================================================
 //  PART 5 — INTERACTION
 // ===========================================================================
-const PLACE_TYPES=['R','V','VS','I','C','L','D','QN','MN','OA','GND'];
-let mouse={px:0,py:0,gx:null,gy:null};
-let wireStart=null;
-let ghostRot=0;
-let dragging=null;
+const PLACE_TYPES:PartType[]=['R','V','VS','I','C','L','D','QN','MN','OA','GND'];
+const isPlaceType=(t:Tool):t is PartType=>(PLACE_TYPES as string[]).includes(t);
+let mouse:{px:number;py:number;gx:number|null;gy:number|null}={px:0,py:0,gx:null,gy:null};
+let wireStart:Pt|null=null;
+let ghostRot:Rot=0;
+let dragging:{c:Comp;dx:number;dy:number}|null=null;
 
-function hitComponent(gxu,gyu){
+function hitComponent(gxu:number,gyu:number):Comp|null{
   // nearest component whose centroid is close
-  let best=null,bd=1e9;
+  let best:Comp|null=null,bd=1e9;
   for(const c of comps){ const ps=pinsOf(c);
     const cxu=ps.reduce((s,p)=>s+p.x,0)/ps.length, cyu=ps.reduce((s,p)=>s+p.y,0)/ps.length;
     const d=Math.hypot(cxu-gxu,cyu-gyu); if(d<bd&&d<1.4){bd=d;best=c;} }
@@ -525,8 +596,8 @@ stage.addEventListener('mousemove',e=>{
 stage.addEventListener('mousedown',e=>{
   const r=cv.getBoundingClientRect(); const px=e.clientX-r.left, py=e.clientY-r.top;
   const g=toGrid(px,py);
-  if(PLACE_TYPES.includes(tool)){
-    const nc={id:tool+(uid++),type:tool,x:g.x,y:g.y,rot:ghostRot,value:TYPES[tool].def};
+  if(isPlaceType(tool)){
+    const nc:Comp={id:tool+(uid++),type:tool,x:g.x,y:g.y,rot:ghostRot,value:TYPES[tool].def};
     if(tool==='VS'){ nc.amp=5; nc.freq=1000; nc.off=0; }
     comps.push(nc);
     refreshMeta(); draw(); return;
@@ -558,13 +629,14 @@ stage.addEventListener('mousedown',e=>{
   draw();
 });
 window.addEventListener('mouseup',()=>{ if(dragging){ refreshMeta(); dragging=null; } });
-stage.addEventListener('dblclick',e=>{ if(wireStart){ wireStart=null; draw(); } });
+stage.addEventListener('dblclick',()=>{ if(wireStart){ wireStart=null; draw(); } });
+const turn=(r:Rot):Rot=>((r+90)%360) as Rot;
 window.addEventListener('keydown',e=>{
-  if(e.key==='r'||e.key==='R'){ ghostRot=(ghostRot+90)%360; if(selected){ selected.rot=(selected.rot+90)%360; refreshMeta(); } draw(); }
+  if(e.key==='r'||e.key==='R'){ ghostRot=turn(ghostRot); if(selected){ selected.rot=turn(rotOf(selected)); refreshMeta(); } draw(); }
   if(e.key==='Escape'){ wireStart=null; selected=null; setTool('select'); renderInspector(); draw(); }
   if((e.key==='Delete'||e.key==='Backspace')&&selected){ comps=comps.filter(k=>k!==selected); selected=null; refreshMeta(); renderInspector(); draw(); }
 });
-function distToSeg(x,y,w){
+function distToSeg(x:number,y:number,w:Wire){
   const x1=w.x1,y1=w.y1,x2=w.x2,y2=w.y2; const dx=x2-x1,dy=y2-y1;
   const t=Math.max(0,Math.min(1,((x-x1)*dx+(y-y1)*dy)/(dx*dx+dy*dy||1)));
   return Math.hypot(x-(x1+t*dx),y-(y1+t*dy));
@@ -573,19 +645,21 @@ function distToSeg(x,y,w){
 // ===========================================================================
 //  PART 6 — SIMULATION LOOP
 // ===========================================================================
-let circuit=null, simTime=0, simH=1e-5, rafId=null;
+let circuit:Circuit|null=null, simTime=0, simH=1e-5, rafId:number|null=null;
 // ---- Oscilloscope state ----
-let scopeProbes=[];         // {x,y,color} grid points to plot
-let scopeBuf=null;          // {t:[], series:[[]...]}
-let simNet=null;            // fixed netlist captured at Run (for probe node lookup)
+interface ScopeBuf { t:number[]; series:number[][] }
+interface BodeCurve { color:string; label:string; mag:number[]; phase:number[] }
+interface BodeData { freqs:number[]; curves:BodeCurve[] }
+let scopeProbes:Probe[]=[];       // grid points to plot
+let scopeBuf:ScopeBuf|null=null;
+let simNet:Netlist|null=null;     // netlist captured at Run (for probe node lookup)
 const SCOPE_COLORS=['#4dabf7','#ffd43b','#ff8787','#69db7c','#da77f2','#ffa94d'];
 const SCOPE_MAX=1400;
-function resetScope(){ scopeBuf={t:[],series:scopeProbes.map(()=>[])}; }
-let panelMode='scope';   // 'scope' (transient) or 'bode' (AC sweep)
-let bodeData=null;       // {freqs, curves:[{color,label,mag:[dB],phase:[deg]}]}
+function resetScope(){ scopeBuf={t:[],series:scopeProbes.map(()=>[] as number[])}; }
+let panelMode:'scope'|'bode'='scope';   // transient panel or AC sweep panel
+let bodeData:BodeData|null=null;
 function refreshMeta(){
-  const net=buildNetlist();
-  document.getElementById('nodeCount').textContent=(net.nodeCount||0)+' nodes';
+  el('nodeCount').textContent=(buildNetlist().nodeCount||0)+' nodes';
 }
 function startSim(){
   const net=buildNetlist();
@@ -596,14 +670,14 @@ function startSim(){
   circuit=new Circuit(net.netComps.map(c=>({...c})));
   simNet=net; resetScope(); panelMode='scope';
   simTime=0; running=true;
-  document.getElementById('runBtn').textContent='◼ Stop';
-  document.getElementById('runBtn').classList.add('stop');
+  el('runBtn').textContent='◼ Stop';
+  el('runBtn').classList.add('stop');
   loop();
 }
 function stopSim(){
   running=false; if(rafId) cancelAnimationFrame(rafId); rafId=null;
-  document.getElementById('runBtn').textContent='▶ Run';
-  document.getElementById('runBtn').classList.remove('stop');
+  el('runBtn').textContent='▶ Run';
+  el('runBtn').classList.remove('stop');
   draw();
 }
 function runBode(){
@@ -613,10 +687,10 @@ function runBode(){
   if(!scopeProbes.length){ flashHint('Place a Probe on the output node, then press Bode.'); return; }
   stopSim();
   const c2=new Circuit(net.netComps.map(c=>({...c})));
-  const stim=net.netComps.find(c=>c.type==='V'||c.type==='VS').id;
+  const stim=net.netComps.find(c=>c.type==='V'||c.type==='VS')!.id;
   const res=c2.ac(1,1e6,240,stim);
-  const curves=scopeProbes.map((p,i)=>{
-    const nd=net.nodeOf(p.x,p.y); const mag=[],phase=[];
+  const curves:BodeCurve[]=scopeProbes.map((p,i)=>{
+    const nd=net.nodeOf(p.x,p.y); const mag:number[]=[],phase:number[]=[];
     res.phasors.forEach(ph=>{ const Hc=ph[nd]||{re:0,im:0}; const m=Math.hypot(Hc.re,Hc.im);
       mag.push(20*Math.log10(Math.max(m,1e-9))); phase.push(Math.atan2(Hc.im,Hc.re)*180/Math.PI); });
     return {color:p.color,label:'probe '+(i+1),mag,phase};
@@ -626,25 +700,26 @@ function runBode(){
   flashHint('AC sweep 1 Hz–1 MHz. Solid = gain (dB), dashed = phase (°), per probe.');
   draw();
 }
-function chooseTimestep(nc){
+function chooseTimestep(nc:Component[]){
   let tau=1e-3;
   for(const c of nc){ if(c.type==='C') tau=Math.min(tau, Math.max(1e-7,c.value*1000));
     if(c.type==='L') tau=Math.min(tau, Math.max(1e-7,c.value/1000)); }
   let h=tau/50;
   // ensure at least ~200 steps per sine period for smooth waveforms
-  for(const c of nc){ if(c.type==='VS'&&c.freq>0) h=Math.min(h, 1/(c.freq*200)); }
+  for(const c of nc){ if(c.type==='VS'&&(c.freq??0)>0) h=Math.min(h, 1/(c.freq!*200)); }
   return h;
 }
 function loop(){
-  if(!running) return;
+  if(!running||!circuit) return;
   // advance a few timesteps per frame for smooth transient evolution
   for(let k=0;k<8;k++){ lastResult=circuit.step(simH); simTime+=simH; }
   // sample the scope once per frame
-  if(scopeProbes.length&&simNet&&scopeBuf){
-    scopeBuf.t.push(simTime);
-    scopeProbes.forEach((p,i)=>{ const nd=simNet.nodeOf(p.x,p.y);
-      scopeBuf.series[i].push(lastResult.nodeVoltage[nd]??0); });
-    if(scopeBuf.t.length>SCOPE_MAX){ scopeBuf.t.shift(); scopeBuf.series.forEach(s=>s.shift()); }
+  const net=simNet, buf=scopeBuf, res=lastResult;
+  if(scopeProbes.length&&net&&buf&&res){
+    buf.t.push(simTime);
+    scopeProbes.forEach((p,i)=>{ const nd=net.nodeOf(p.x,p.y);
+      buf.series[i].push(res.nodeVoltage[nd]??0); });
+    if(buf.t.length>SCOPE_MAX){ buf.t.shift(); buf.series.forEach(s=>s.shift()); }
   }
   updateVRange(); animPhase=(animPhase+0.02)%1;
   draw(); renderReadout();
@@ -653,7 +728,7 @@ function loop(){
 function updateVRange(){
   if(!lastResult) return;
   let mn=Infinity,mx=-Infinity;
-  for(const k in lastResult.nodeVoltage){ const v=lastResult.nodeVoltage[k]; mn=Math.min(mn,v); mx=Math.max(mx,v); }
+  for(const v of Object.values(lastResult.nodeVoltage)){ mn=Math.min(mn,v); mx=Math.max(mx,v); }
   if(mn===mx){ mn-=1; mx+=1; }
   vRange.min=vRange.min*0.8+mn*0.2; vRange.max=vRange.max*0.8+mx*0.2;
 }
@@ -662,9 +737,9 @@ function updateVRange(){
 //  PART 7 — INSPECTOR / UI CHROME
 // ===========================================================================
 function renderInspector(){
-  const el=document.getElementById('inspectorBody');
+  const body=el('inspectorBody');
   if(!selected){
-    el.innerHTML=`<h3>Inspector</h3><div class="empty">
+    body.innerHTML=`<h3>Inspector</h3><div class="empty">
       Select a component to edit its value.<br><br>
       <b>Shortcuts</b><br>
       <span class="kbd">R</span> rotate · <span class="kbd">Del</span> remove · <span class="kbd">Esc</span> deselect
@@ -675,54 +750,64 @@ function renderInspector(){
       <div class="swatch-row"><span class="swatch" style="background:#ffd86b"></span> current flow (moving dots)</div>`;
     renderReadout(); return;
   }
-  const t=TYPES[selected.type];
+  const sel=selected;                       // narrowed for the closures below
+  const t=TYPES[sel.type];
   let html=`<h3>${t.name}</h3>`;
-  const noValue=['GND','D','QN','QP','MN','MP','OA','VS'];
-  if(!noValue.includes(selected.type)){
+  const noValue:PartType[]=['GND','D','QN','QP','MN','MP','OA','VS'];
+  if(!noValue.includes(sel.type)){
     html+=`<div class="field"><label>Value (${t.unit}) — e.g. 4.7k, 100n, 12</label>
-      <input id="valInput" value="${fmt(selected.value,'').trim()}"/></div>`;
+      <input id="valInput" value="${fmt(sel.value??t.def,'').trim()}"/></div>`;
   }
-  if(selected.type==='VS'){
-    html+=`<div class="field"><label>Amplitude (V)</label><input id="ampInput" value="${fmt(selected.amp,'').trim()}"/></div>
-      <div class="field"><label>Frequency (Hz)</label><input id="freqInput" value="${fmt(selected.freq,'').trim()}"/></div>
-      <div class="field"><label>DC offset (V)</label><input id="offInput" value="${fmt(selected.off||0,'').trim()}"/></div>`;
+  if(sel.type==='VS'){
+    html+=`<div class="field"><label>Amplitude (V)</label><input id="ampInput" value="${fmt(sel.amp??0,'').trim()}"/></div>
+      <div class="field"><label>Frequency (Hz)</label><input id="freqInput" value="${fmt(sel.freq??0,'').trim()}"/></div>
+      <div class="field"><label>DC offset (V)</label><input id="offInput" value="${fmt(sel.off||0,'').trim()}"/></div>`;
   }
-  if(selected.type==='QN'||selected.type==='QP'){
+  if(sel.type==='QN'||sel.type==='QP'){
     html+=`<div class="field"><label>Terminals</label><div class="empty">Base = single-pin side; collector = upper pin, emitter = lower pin (arrow). β≈100.</div></div>`;
   }
-  if(selected.type==='MN'||selected.type==='MP'){
+  if(sel.type==='MN'||sel.type==='MP'){
     html+=`<div class="field"><label>Terminals</label><div class="empty">Gate = single-pin side; drain = upper pin, source = lower pin (arrow). Vth=1V, k=2mA/V².</div></div>`;
   }
-  if(selected.type==='OA'){
+  if(sel.type==='OA'){
     html+=`<div class="field"><label>Terminals</label><div class="empty">Two input pins on the left (+ upper, − lower); output on the right. Ideal gain. Needs feedback.</div></div>`;
   }
   html+=`<div class="field"><label>Orientation</label>
     <button class="btn" onclick="rotateSel()">⟳ Rotate 90°</button></div>`;
   html+=`<button class="btn" onclick="deleteSel()">🗑 Delete</button>`;
-  el.innerHTML=html;
-  const vi=document.getElementById('valInput');
-  if(vi){ vi.addEventListener('change',()=>{ const v=parseVal(vi.value); if(!isNaN(v)&&v>0){ selected.value=v; if(circuit&&running){ syncValues(); } draw(); } });
+  body.innerHTML=html;
+  const vi=document.getElementById('valInput') as HTMLInputElement|null;
+  if(vi){ vi.addEventListener('change',()=>{ const v=parseVal(vi.value); if(!isNaN(v)&&v>0){ sel.value=v; if(circuit&&running){ syncValues(); } draw(); } });
     vi.addEventListener('keydown',e=>{ if(e.key==='Enter') vi.blur(); }); }
-  const bindNum=(id,set)=>{ const e=document.getElementById(id); if(!e) return;
-    e.addEventListener('change',()=>{ const v=parseVal(e.value); if(!isNaN(v)){ set(v); if(circuit&&running) syncSine(); draw(); } });
-    e.addEventListener('keydown',ev=>{ if(ev.key==='Enter') e.blur(); }); };
-  bindNum('ampInput',v=>selected.amp=v);
-  bindNum('freqInput',v=>selected.freq=v);
-  bindNum('offInput',v=>selected.off=v);
+  const bindNum=(id:string,set:(v:number)=>void)=>{
+    const inp=document.getElementById(id) as HTMLInputElement|null; if(!inp) return;
+    inp.addEventListener('change',()=>{ const v=parseVal(inp.value); if(!isNaN(v)){ set(v); if(circuit&&running) syncSine(); draw(); } });
+    inp.addEventListener('keydown',ev=>{ if(ev.key==='Enter') inp.blur(); }); };
+  bindNum('ampInput',v=>sel.amp=v);
+  bindNum('freqInput',v=>sel.freq=v);
+  bindNum('offInput',v=>sel.off=v);
   renderReadout();
 }
 function syncValues(){ // push edited values into live sim without restarting
-  const net=buildNetlist(); const map=new Map(net.netComps.map(c=>[c.id,c]));
-  for(const c of circuit.components){ const n=map.get(c.id); if(n) c.value=n.value; }
+  if(!circuit) return;
+  const map=new Map(buildNetlist().netComps.map(c=>[c.id,c]));
+  for(const live of circuit.components){
+    const fresh=map.get(live.id);
+    if(fresh&&'value' in live&&'value' in fresh&&fresh.value!==undefined) live.value=fresh.value;
+  }
 }
 function syncSine(){ // push edited sine params into the live sim
-  for(const c of circuit.components){ const s=comps.find(k=>k.id===c.id);
-    if(s&&s.type==='VS'){ c.amp=s.amp; c.freq=s.freq; c.off=s.off; } }
+  if(!circuit) return;
+  for(const c of circuit.components){
+    if(c.type!=='VS') continue;
+    const s=comps.find(k=>k.id===c.id);
+    if(s&&s.type==='VS'){ c.amp=s.amp; c.freq=s.freq; c.off=s.off; }
+  }
 }
 function renderReadout(){
-  const el=document.getElementById('inspectorBody');
+  const body=el('inspectorBody');
   let host=document.getElementById('readoutHost');
-  if(!host){ host=document.createElement('div'); host.id='readoutHost'; el.appendChild(host); }
+  if(!host){ host=document.createElement('div'); host.id='readoutHost'; body.appendChild(host); }
   if(!lastResult){ host.innerHTML=''; return; }
   let rows='';
   if(selected&&selected.type!=='GND'){
@@ -734,20 +819,23 @@ function renderReadout(){
   }
   // node table
   rows+=`<hr><h3>Node voltages</h3><table class="probes">`;
-  const seen=new Set();
-  for(const k in lastResult.nodeVoltage){ if(seen.has(k))continue; seen.add(k);
-    rows+=`<tr><td>node ${k===''?0:k}</td><td>${fmt(lastResult.nodeVoltage[k],'V')}</td></tr>`; }
+  for(const [k,v] of Object.entries(lastResult.nodeVoltage)){
+    rows+=`<tr><td>node ${k===''?0:k}</td><td>${fmt(v,'V')}</td></tr>`; }
   rows+=`</table>`;
   host.innerHTML=rows;
 }
-window.rotateSel=()=>{ if(selected){ selected.rot=(selected.rot+90)%360; refreshMeta(); draw(); } };
+// Exposed on window because the inspector markup wires them with inline onclick.
+declare global {
+  interface Window { rotateSel:()=>void; deleteSel:()=>void }
+}
+window.rotateSel=()=>{ if(selected){ selected.rot=turn(rotOf(selected)); refreshMeta(); draw(); } };
 window.deleteSel=()=>{ if(selected){ comps=comps.filter(k=>k!==selected); selected=null; refreshMeta(); renderInspector(); draw(); } };
 
-function flashHint(msg){ const h=document.getElementById('hint'); h.innerHTML=msg; h.style.borderColor='var(--accent2)';
+function flashHint(msg:string){ const h=el('hint'); h.innerHTML=msg; h.style.borderColor='var(--accent2)';
   setTimeout(()=>{h.style.borderColor='';},2500); }
 
 // ---- Tool rail buttons ----
-const RAIL=[
+const RAIL:{t:Tool;label:string;icon?:string}[]=[
   {t:'select',label:'Select',icon:'M4 3l7 17 2-7 7-2z'},
   {t:'wire',label:'Wire',icon:'M3 12h6a3 3 0 003-3V6M21 12h-6a3 3 0 00-3 3v3'},
   {t:'probe',label:'Probe'},
@@ -765,7 +853,7 @@ const RAIL=[
   {t:'delete',label:'Delete',icon:'M6 7h12l-1 13H7zM9 7V4h6v3'},
 ];
 function buildRail(){
-  const rail=document.getElementById('rail');
+  const rail=el('rail');
   rail.innerHTML='';
   for(const item of RAIL){
     const b=document.createElement('button'); b.className='tool'; b.dataset.t=item.t;
@@ -775,8 +863,8 @@ function buildRail(){
   }
   updateRail();
 }
-function miniSymbol(t){
-  const s=(inner)=>`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">${inner}</svg>`;
+function miniSymbol(t:Tool){
+  const s=(inner:string)=>`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">${inner}</svg>`;
   switch(t){
     case 'select': return s('<path d="M5 3l6 15 2-6 6-2z"/>');
     case 'wire': return s('<path d="M3 16h6a3 3 0 003-3 3 3 0 013-3h6"/>');
@@ -796,15 +884,15 @@ function miniSymbol(t){
   }
   return '';
 }
-function setTool(t){ tool=t; wireStart=null; if(!PLACE_TYPES.includes(t)) ghostRot=ghostRot; updateRail();
-  const hints={select:'Click a part to select & drag. Edit its value on the right.',
+function setTool(t:Tool){ tool=t; wireStart=null; updateRail();
+  const hints:Partial<Record<Tool,string>>={select:'Click a part to select & drag. Edit its value on the right.',
     wire:'Click pin to pin to lay wire. Double-click to finish a run.',
     probe:'Click a node/wire to scope its voltage. Click again to remove. Then press Run.',
     delete:'Click a component or wire to remove it.'};
-  document.getElementById('hint').innerHTML=hints[t]||`Click the grid to place a <b>${TYPES[t]?TYPES[t].name:t}</b>. Press <span class="kbd">R</span> to rotate.`;
+  el('hint').innerHTML=hints[t]??`Click the grid to place a <b>${isPlaceType(t)?TYPES[t].name:t}</b>. Press <span class="kbd">R</span> to rotate.`;
   draw();
 }
-function updateRail(){ document.querySelectorAll('.tool').forEach(b=>b.classList.toggle('active',b.dataset.t===tool)); }
+function updateRail(){ document.querySelectorAll<HTMLElement>('.tool').forEach(b=>b.classList.toggle('active',b.dataset.t===tool)); }
 
 // ---- Example circuits -----------------------------------------------------
 const GALLERY=[
@@ -816,7 +904,7 @@ const GALLERY=[
   {name:'Non-inverting op-amp', fn:loadOpamp},
 ];
 function buildGallery(){
-  const sel=document.getElementById('gallery');
+  const sel=el('gallery') as HTMLSelectElement;
   sel.innerHTML='<option value="">Examples ▾</option>'+GALLERY.map((g,i)=>`<option value="${i}">${g.name}</option>`).join('');
   sel.onchange=()=>{ const i=sel.value; if(i!==''){ GALLERY[+i].fn(); } sel.value=''; };
 }
@@ -826,13 +914,14 @@ function buildGallery(){
 // ===========================================================================
 // A circuit is fully described by its parts, wires and probes — nothing else
 // needs to be stored. Runtime state (the solver, animation) is rebuilt on load.
-function serializeModel(){
+interface SavedModel { v:number; comps:Comp[]; wires:Wire[]; probes?:Probe[] }
+function serializeModel():SavedModel{
   return { v:1,
     comps: comps.map(c=>({...c})),
     wires: wires.map(w=>({...w})),
     probes: scopeProbes.map(p=>({x:p.x,y:p.y,color:p.color})) };
 }
-function applyModel(m){
+function applyModel(m:SavedModel){
   if(!m||!Array.isArray(m.comps)||!Array.isArray(m.wires)) throw new Error('not a Spark circuit');
   stopSim();
   comps=m.comps.map(c=>({...c}));
@@ -853,19 +942,19 @@ function saveFile(){
 }
 function openFile(){
   const inp=document.createElement('input'); inp.type='file'; inp.accept='.json,application/json';
-  inp.onchange=()=>{ const f=inp.files[0]; if(!f) return; const r=new FileReader();
-    r.onload=()=>{ try{ applyModel(JSON.parse(r.result)); flashHint('Loaded <b>'+f.name+'</b>.'); }
-      catch(e){ flashHint('Could not open that file — '+e.message); } };
+  inp.onchange=()=>{ const f=inp.files?.[0]; if(!f) return; const r=new FileReader();
+    r.onload=()=>{ try{ applyModel(JSON.parse(String(r.result))); flashHint('Loaded <b>'+f.name+'</b>.'); }
+      catch(e){ flashHint('Could not open that file — '+(e instanceof Error?e.message:String(e))); } };
     r.readAsText(f); };
   inp.click();
 }
 // Circuit <-> URL hash: JSON, then UTF-8-safe base64. Small circuits fit easily.
-function encodeModel(m){ return btoa(unescape(encodeURIComponent(JSON.stringify(m)))); }
-function decodeModel(s){ return JSON.parse(decodeURIComponent(escape(atob(s)))); }
+function encodeModel(m:SavedModel){ return btoa(unescape(encodeURIComponent(JSON.stringify(m)))); }
+function decodeModel(s:string):SavedModel{ return JSON.parse(decodeURIComponent(escape(atob(s)))); }
 function shareURL(){
   const code=encodeModel(serializeModel());
   const url=location.origin+location.pathname+'#c='+code;
-  try{ history.replaceState(null,'','#c='+code); }catch(e){}
+  try{ history.replaceState(null,'','#c='+code); }catch{ /* hash update is best-effort */ }
   if(navigator.clipboard&&navigator.clipboard.writeText){
     navigator.clipboard.writeText(url).then(()=>flashHint('Shareable link copied to your clipboard.'),
       ()=>flashHint('Link is in the address bar — copy it to share.'));
@@ -875,7 +964,7 @@ function loadFromHash(){
   const h=location.hash||''; const m=h.match(/#c=(.+)$/);
   if(!m) return false;
   try{ applyModel(decodeModel(m[1])); return true; }
-  catch(e){ return false; }
+  catch{ return false; }
 }
 
 // Series RLC bandpass (L=10mH, C=1µF -> f0≈1.6kHz), output across R. A probe
@@ -995,13 +1084,13 @@ function loadRC(){
   flashHint('Example loaded — press <b>Run</b> to watch it come alive.');
 }
 
-document.getElementById('runBtn').onclick=()=>{ running?stopSim():startSim(); };
-document.getElementById('clearBtn').onclick=()=>{ stopSim(); comps=[];wires=[];lastResult=null;selected=null; scopeProbes=[]; scopeBuf=null; bodeData=null; panelMode='scope'; refreshMeta(); renderInspector(); draw(); };
-document.getElementById('bodeBtn').onclick=runBode;
-document.getElementById('rotateBtn').onclick=()=>{ ghostRot=(ghostRot+90)%360; if(selected){selected.rot=(selected.rot+90)%360; refreshMeta();} draw(); };
-document.getElementById('saveBtn').onclick=saveFile;
-document.getElementById('openBtn').onclick=openFile;
-document.getElementById('shareBtn').onclick=shareURL;
+el('runBtn').onclick=()=>{ running?stopSim():startSim(); };
+el('clearBtn').onclick=()=>{ stopSim(); comps=[];wires=[];lastResult=null;selected=null; scopeProbes=[]; scopeBuf=null; bodeData=null; panelMode='scope'; refreshMeta(); renderInspector(); draw(); };
+el('bodeBtn').onclick=runBode;
+el('rotateBtn').onclick=()=>{ ghostRot=turn(ghostRot); if(selected){selected.rot=turn(rotOf(selected)); refreshMeta();} draw(); };
+el('saveBtn').onclick=saveFile;
+el('openBtn').onclick=openFile;
+el('shareBtn').onclick=shareURL;
 
 // ---- boot ----
 buildRail(); buildGallery(); setTool('select'); renderInspector();
