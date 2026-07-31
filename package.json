@@ -28,6 +28,7 @@
     "vitest": "^2.0.5"
   },
   "dependencies": {
-    "@capacitor/core": "^7.6.8"
+    "@capacitor/core": "^7.6.8",
+    "@capawesome/capacitor-android-edge-to-edge-support": "^7.2.3"
   }
 }
