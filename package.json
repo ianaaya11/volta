@@ -30,6 +30,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
     "@capacitor/core": "^7.6.8",
-    "@capawesome/capacitor-android-edge-to-edge-support": "^7.2.3"
+    "@capawesome/capacitor-android-edge-to-edge-support": "^7.2.3",
+    "@supabase/supabase-js": "^2.109.0"
   }
 }

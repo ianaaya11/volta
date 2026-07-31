@@ -24,3 +24,6 @@ dev-dist/
 .vscode/*
 !.vscode/extensions.json
 .idea/
+
+# Local Supabase credentials
+.env.local

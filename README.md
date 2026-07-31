@@ -114,6 +114,81 @@ reverts it like any other edit. Asking a question about the circuit on screen
 ("why is this transistor saturated?") just answers in text. The SDK is
 code-split, so the offline app doesn't download it unless you open the panel.
 
+## The commons — member accounts and shared designs
+
+Optional, and **off unless you configure it**. With no credentials in the build
+the community code is dead-code-eliminated: no toolbar group, no network calls,
+and the Supabase SDK is never fetched. Volta stays a static, offline-capable PWA
+— that is a supported mode, not a degraded one, and `e2e/community.spec.ts`
+asserts it.
+
+Switched on, members can sign up, publish a circuit to a shared gallery, and
+open anyone else's to build on. Forking records the lineage, so credit follows
+the work without anyone having to remember to add it.
+
+### Setting it up
+
+1. Create a project at [supabase.com](https://supabase.com). On the New project
+   screen, under **Security**:
+   - **Enable Data API** — leave **on**. `supabase-js` talks to PostgREST;
+     without it nothing here works.
+   - **Automatically expose new tables** — leave **off**, as Supabase
+     recommends. `schema.sql` grants access to its own tables explicitly, so
+     access is something the schema states rather than something a project
+     setting hands out to every table anyone adds later.
+   - **Enable automatic RLS** — turn **on**. The schema already enables RLS on
+     every table it creates, so this changes nothing today; it is there so a
+     table added later cannot ship world-writable by accident.
+
+   Pick the region closest to your members — it cannot be changed afterwards.
+   The database password is not used by the app (the browser authenticates with
+   the anon key), so generate a strong random one and put it in a password
+   manager.
+2. Run [`supabase/schema.sql`](supabase/schema.sql) in the SQL editor
+   (Dashboard → SQL → New query). It is idempotent.
+3. `cp .env.example .env.local` and fill in the URL and anon key from
+   Project Settings → API.
+4. Restart the dev server.
+
+The anon key belongs in the browser — it is public by design. What it can *do*
+is bounded by the schema, not by keeping it secret: a `GRANT` decides whether a
+role may touch a table at all, and a row-level security policy decides which
+rows. Both gates have to open, which is why `schema.sql` contains explicit
+grants as well as policies — perfect policies with no grant just return
+"permission denied". Every "only the author may edit this" is a Postgres policy, because the
+browser talks to the database directly and anything enforced only in client
+code is merely a suggestion.
+
+### What is public
+
+A published design shows a **display name** and a **country**. School is a
+separate, opt-in field, off by default.
+
+That default is deliberate. This is a schools tool, so a large share of members
+are minors, and a full name next to a school and a town is the combination that
+says where to find a child. The `gallery` view applies the rule in the database
+— it nulls `school` unless `show_school` is set — so a card cannot render what
+its author did not opt into, whatever the client asks for.
+
+There is a `reports` table and a Report button on every card. Reports are
+write-only from the client: a reporter can file one and can never read any,
+including their own, so the table cannot be used to enumerate what has been
+reported. Read them from the Supabase dashboard.
+
+### Licensing
+
+Every design carries **CC BY-SA 4.0**, agreed to explicitly at publish time —
+anyone may use, change and republish it, with credit, under the same terms.
+This is recorded per row and enforced by a `CHECK`, because without a licence
+captured at publish time the author keeps copyright by default and "open to all
+to use" would not be true however prominently the site said it.
+
+### Not built yet
+
+Subscriptions. Accounts and the commons are free, and there is no Stripe
+integration — a commons needs contributors before it needs a paywall. The
+schema has no billing tables; adding them later touches nothing here.
+
 ## Ship to each platform
 
 **Web (PWA).** `npm run build` produces an installable, offline-capable PWA in

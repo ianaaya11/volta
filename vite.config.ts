@@ -30,5 +30,10 @@ export default defineConfig({
   build: { target: 'es2020', outDir: 'dist' },
   // Vitest owns tests/ (the engine suites); Playwright owns e2e/ and must not
   // be picked up here — the two runners share a file extension, not a runtime.
-  test: { include: ['tests/**/*.test.ts'] },
+  // The unit suite runs against the *unconfigured* build — that is the state
+  // the tests assert, and it is the one real users get from a plain clone.
+  // Without this, a developer's own .env.local leaks in and community.test.ts
+  // starts testing their Supabase project instead of the offline default.
+  test: { include: ['tests/**/*.test.ts'],
+          env: { VITE_SUPABASE_URL: '', VITE_SUPABASE_ANON_KEY: '' } },
 });
