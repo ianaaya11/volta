@@ -295,7 +295,37 @@ rather than a new device. Verified in both physical regimes: it averages to its
 DC level through an RC whose time constant dwarfs the period, and follows the
 edges to both rails when it doesn't.
 
-## Phase 7 — where you actually differentiate
+## Phase 7 — delivered so far
+
+**Zoom and pan (prerequisite).** The canvas had neither: the view origin was
+set once at boot and never moved, there was no scale factor, and on a 1440px
+window the examples occupied about 8% of the viewport with no way to navigate.
+Drawing moved to world coordinates under a canvas transform, which matters
+because `drawComponent` is full of hardcoded pixel dimensions — under a
+transform they scale for free rather than each needing a zoom factor threaded
+through. Wheel/pinch zoom about the cursor, drag-to-pan, `Fit`, `+`/`-`/`0`.
+
+**"Show the math" ✅.** The differentiator this plan called out. The engine
+built an MNA system every step and discarded it; it now optionally records one
+(`captureTrace`, off by default since it costs an O(n²) copy). The panel shows
+the **KCL equation at each node** written from the netlist, the **matrix
+actually inverted** with every unknown labelled (`v2`, `i(V1)`), the **solution
+vector**, and how the solve went — Newton-Raphson iteration count, residual
+`max|A·x − z|`, and the timestep. It updates live while the simulation runs.
+
+The trace is verified against hand-derived stamps rather than merely existing:
+a divider's diagonal must equal 1/R1 and 1/R1+1/R2, the source value must land
+in `z` and not in `A`, and a diode circuit must report more than one Newton
+iteration. If the matrix shown to a learner isn't the matrix being solved, the
+feature is worse than useless.
+
+Two display rules earn their keep: matrix entries many orders below the largest
+are shown as the same dot used for structural zeros (a reverse-biased junction
+stamps values like 7e-71, which are numerically zero and would otherwise imply
+a precision that isn't there), and the inspector widens to 400px in math mode
+because a matrix squeezed into 280px becomes a scrollbar.
+
+## Phase 7 — the rest
 
 With the fundamentals solid, invest in the things the incumbents don't have. A
 **"show the math" learning mode** — exposing the live nodal equations, the MNA

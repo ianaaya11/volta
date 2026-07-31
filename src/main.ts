@@ -1,5 +1,5 @@
 import { Circuit } from './engine';
-import type { Component, NodeId, Pair, Solution, Triple } from './engine';
+import type { Component, NodeId, Pair, Solution, SolveTrace, Triple } from './engine';
 import { fmt, parseVal } from './format';
 import './style.css';
 
@@ -906,6 +906,7 @@ function startSim(){
   // choose timestep from smallest reactive time constant present
   simH=chooseTimestep(net.netComps);
   circuit=new Circuit(net.netComps.map(c=>({...c})));
+  circuit.captureTrace=mathMode;
   simNet=net; resetScope(); panelMode='scope';
   simTime=0; running=true;
   el('runBtn').textContent='◼ Stop';
@@ -982,6 +983,9 @@ function loop(){
     }
   }
   updateVRange(); animPhase=(animPhase+0.02)%1;
+  // The math panel rebuilds a chunk of DOM, so it updates a few times a second
+  // rather than every frame — fast enough to read, cheap enough not to matter.
+  if(mathMode&&(++mathTick%12===0)){ refreshMath(); }
   draw(); renderReadout();
   rafId=requestAnimationFrame(loop);
 }
@@ -1069,11 +1073,114 @@ function syncSine(){ // push edited sine params into the live sim
     if(s&&(s.type==='VS'||s.type==='SQ')){ c.amp=s.amp; c.freq=s.freq; c.off=s.off; c.duty=s.duty; }
   }
 }
+// ===========================================================================
+//  SHOW THE MATH — expose the solver's own working
+// ===========================================================================
+// The engine already computes an MNA system every step and throws it away.
+// This surfaces it: the KCL equation at each node, the matrix actually solved,
+// and how the Newton loop converged. It's the teaching advantage the annotated
+// engine was written for — the internals are the product here, not plumbing.
+let mathMode=false;
+let mathTrace:SolveTrace|null=null;
+let mathTick=0;
+
+/** Node label, with ground written as 0 so terms read like a textbook. */
+const vLabel=(nd:NodeId)=>nd===0?'0':`v${nd}`;
+
+/** Build the "sum of currents leaving this node = 0" statement per node. */
+function kclEquations(netComps:Component[]):string[]{
+  const nodes=new Set<NodeId>();
+  for(const c of netComps) for(const nd of c.nodes) if(nd!==0) nodes.add(nd);
+  const eqs:string[]=[];
+  for(const nd of [...nodes].sort((a,b)=>a-b)){
+    const terms:string[]=[];
+    for(const c of netComps){
+      const [a,b]=[c.nodes[0],c.nodes[1]];
+      const here=a===nd?1:b===nd?-1:0;
+      const other=a===nd?b:a;
+      if(c.type==='R'&&here){
+        const num=other===0?vLabel(nd):`(${vLabel(nd)} − ${vLabel(other)})`;
+        terms.push(`${num}/${fmt(c.value,'Ω')}`);
+      } else if(c.type==='I'&&here){
+        terms.push(`${here>0?'+':'−'}${fmt(c.value,'A')}`);
+      } else if((c.type==='V'||c.type==='VS'||c.type==='L')&&here){
+        terms.push(`${here>0?'+':'−'}i(${c.id})`);
+      } else if(c.type==='C'&&here){
+        const num=other===0?vLabel(nd):`(${vLabel(nd)} − ${vLabel(other)})`;
+        terms.push(`${fmt(c.value,'F')}/h·${num} − hist`);
+      } else if(c.nodes.length===3&&c.nodes.includes(nd)){
+        terms.push(`i(${c.id})`);            // linearized each Newton pass
+      }
+    }
+    if(terms.length) eqs.push(`${vLabel(nd)}:  ${terms.join('  +  ')}  =  0`);
+  }
+  return eqs;
+}
+
+/** Recompute the trace: from the live solver when running, else a DC solve. */
+function refreshMath(){
+  if(!mathMode){ mathTrace=null; return; }
+  if(running&&circuit){ mathTrace=circuit.lastTrace; return; }
+  const net=buildNetlist();
+  if(!net.grounded||!net.netComps.length){ mathTrace=null; return; }
+  const c=new Circuit(net.netComps.map(x=>({...x})));
+  c.captureTrace=true;
+  try{ c.dc(); mathTrace=c.lastTrace; }catch{ mathTrace=null; }
+}
+
+function renderMath(){
+  const body=el('inspectorBody');
+  let host=document.getElementById('mathHost');
+  if(!mathMode){ if(host) host.remove(); return; }
+  if(!host){ host=document.createElement('div'); host.id='mathHost'; body.appendChild(host); }
+  const t=mathTrace;
+  if(!t){
+    host.innerHTML=`<hr><h3>Show the math</h3><div class="empty">
+      Add a ground and at least one component — the solver needs a 0 V reference
+      before there are equations to show.</div>`;
+    return;
+  }
+  const eqs=kclEquations(buildNetlist().netComps);
+  // Entries many orders below the largest one are numerically zero — a
+  // reverse-biased junction stamps things like 7e-71. Printing them in full
+  // makes the matrix unreadable and implies a precision that isn't there, so
+  // they're shown as the same dot used for structural zeros.
+  let scale=0;
+  for(const row of t.A) for(const v of row) scale=Math.max(scale,Math.abs(v));
+  const tiny=scale*1e-12;
+  const num=(v:number)=>Math.abs(v)<=tiny?'·':fmt(v,'').trim();
+  let m='<table class="mna"><tr><td></td>';
+  for(const l of t.rowLabels) m+=`<th>${l}</th>`;
+  m+='<th class="rhs">=</th></tr>';
+  t.A.forEach((row,i)=>{
+    m+=`<tr><th>${t.rowLabels[i]}</th>`;
+    for(const v of row) m+=`<td${v===0?' class="z"':''}>${num(v)}</td>`;
+    m+=`<td class="rhs">${num(t.z[i])}</td></tr>`;
+  });
+  m+='</table>';
+
+  host.innerHTML=`<hr><h3>Show the math</h3>
+    <div class="mathnote">Kirchhoff's current law at each node — the sum of
+      currents leaving is zero:</div>
+    <div class="eqs">${eqs.map(e=>`<div>${e}</div>`).join('')}</div>
+    <div class="mathnote">Written as a matrix, this is the system the solver
+      actually inverts (A·x = z). Blank cells are zero — nodes that don't touch:</div>
+    <div class="mnawrap">${m}</div>
+    <div class="mathnote">Solution x:</div>
+    <table class="probes">${t.rowLabels.map((l,i)=>
+      `<tr><td>${l}</td><td>${fmt(t.x[i], l.startsWith('i')?'A':'V')}</td></tr>`).join('')}</table>
+    <div class="mathnote">${t.nonlinear
+      ? `Nonlinear: Newton-Raphson relinearized the diodes/transistors <b>${t.iterations}</b> ${t.iterations===1?'time':'times'} until the step fell below tolerance.`
+      : `Linear: solved in a single pass (no Newton iteration needed).`}
+      Residual max|A·x − z| = <b>${t.residual.toExponential(1)}</b>.
+      ${t.h!=null?`Timestep h = ${fmt(t.h,'s')} at t = ${fmt(t.t,'s')}.`:'DC operating point (caps open, inductors shorted).'}</div>`;
+}
+
 function renderReadout(){
   const body=el('inspectorBody');
   let host=document.getElementById('readoutHost');
   if(!host){ host=document.createElement('div'); host.id='readoutHost'; body.appendChild(host); }
-  if(!lastResult){ host.innerHTML=''; return; }
+  if(!lastResult){ host.innerHTML=''; renderMath(); return; }
   let rows='';
   if(selected&&selected.type!=='GND'){
     const v=lastResult.voltageAcross[selected.id], i=lastResult.current[selected.id];
@@ -1088,6 +1195,7 @@ function renderReadout(){
     rows+=`<tr><td>node ${k===''?0:k}</td><td>${fmt(v,'V')}</td></tr>`; }
   rows+=`</table>`;
   host.innerHTML=rows;
+  renderMath();   // the math panel sits below the live readout
 }
 // Exposed on window because the inspector markup wires them with inline onclick.
 declare global {
@@ -1413,6 +1521,17 @@ el('clearBtn').onclick=()=>{ stopSim(); comps=[];wires=[];lastResult=null;select
 el('bodeBtn').onclick=runBode;
 el('resetBtn').onclick=resetSim;
 el('fitBtn').onclick=fitView;
+el('mathBtn').onclick=()=>{
+  mathMode=!mathMode;
+  el('mathBtn').classList.toggle('active-toggle',mathMode);
+  el('app').classList.toggle('mathmode',mathMode);
+  if(circuit) circuit.captureTrace=mathMode;
+  resize();                       // the canvas just changed width
+  refreshMath(); renderInspector();
+  flashHint(mathMode
+    ? 'Showing the solver\'s working: the KCL equation per node, the MNA matrix it builds, and how Newton-Raphson converged.'
+    : 'Math view off.');
+};
 el('undoBtn').onclick=undo;
 el('redoBtn').onclick=redo;
 el('rotateBtn').onclick=()=>{ ghostRot=turn(ghostRot); if(selected){selected.rot=turn(rotOf(selected)); refreshMeta(); commit();} draw(); };

@@ -80,6 +80,29 @@ export interface AcSweep {
 /** Backward-Euler history for one component: voltage across / current through. */
 interface History { v: number; i: number }
 
+/**
+ * A record of one solved system, for the "show the math" mode. The solver
+ * throws this away normally, so it is only captured when `captureTrace` is on.
+ * `rowLabels[i]` names unknown i — `v2` for a node voltage, `i(V1)` for a
+ * branch current — so the matrix can be displayed with meaningful axes.
+ */
+export interface SolveTrace {
+  size: number;
+  rowLabels: string[];
+  /** The system actually solved: A·x = z, from the final Newton iteration. */
+  A: number[][];
+  z: number[];
+  x: number[];
+  /** Newton-Raphson iterations used; 1 for a linear circuit. */
+  iterations: number;
+  /** max |A·x − z| — how well the returned x satisfies the system. */
+  residual: number;
+  nonlinear: boolean;
+  /** Timestep this system was built for; null for a DC solve. */
+  h: number | null;
+  t: number;
+}
+
 // ---- Linear solver: Gaussian elimination with partial pivoting -------------
 // Solves A x = b for x. A is n-by-n (array of rows), b is length n.
 // Partial pivoting (swapping in the largest pivot) keeps it numerically stable.
@@ -228,6 +251,12 @@ export class Circuit {
   size!: number;
   /** Per-element transient history, keyed by component id. */
   state!: Map<string, History>;
+  /** Human-readable name for each unknown, index-aligned with the matrix. */
+  rowLabels!: string[];
+
+  /** Turn on to record each solve into `lastTrace` (costs an O(n²) copy). */
+  captureTrace = false;
+  lastTrace: SolveTrace | null = null;
 
   constructor(components: Component[]) {
     this.components = components;
@@ -259,6 +288,11 @@ export class Circuit {
     // Per-element history for transient analysis (previous v / i).
     this.state = new Map<string, History>();
     for (const c of this.components) this.state.set(c.id, { v: 0, i: 0 });
+
+    // Name every unknown, so a displayed matrix has meaningful row/column axes.
+    this.rowLabels = new Array<string>(this.size);
+    for (const [nd, idx] of this.nodeIndex) this.rowLabels[idx] = `v${nd}`;
+    for (const [id, idx] of this.branchIndex) this.rowLabels[idx] = `i(${id})`;
   }
 
   // Matrix row for a node. -1 means ground (or an unknown node): stamps skip it.
@@ -293,9 +327,12 @@ export class Circuit {
     const bjtLim = new Map<string, { vbe: number; vbc: number }>();
     for (const c of this.components) if (c.type === 'QN' || c.type === 'QP') bjtLim.set(c.id, { vbe: 0, vbc: 0 });
 
+    let lastA: number[][] = [], lastZ: number[] = [], iterations = 0;
     for (let iter = 0; iter < 100; iter++) {
+      iterations = iter + 1;
       const A: number[][] = Array.from({ length: N }, () => new Array<number>(N).fill(0));
       const z: number[] = new Array<number>(N).fill(0);
+      lastA = A; lastZ = z;
 
       for (const c of this.components) {
         const a = this._ni(c.nodes[0]);
@@ -456,6 +493,28 @@ export class Circuit {
       for (let i = 0; i < N; i++) maxd = Math.max(maxd, Math.abs(xNew[i] - x[i]));
       x = xNew;
       if (!nonlinear || maxd < 1e-9) break;
+    }
+
+    if (this.captureTrace) {
+      // Residual of the system actually solved: how well x satisfies A·x = z.
+      let residual = 0;
+      for (let i = 0; i < N; i++) {
+        let s = 0;
+        for (let j = 0; j < N; j++) s += lastA[i][j] * x[j];
+        residual = Math.max(residual, Math.abs(s - lastZ[i]));
+      }
+      this.lastTrace = {
+        size: N,
+        rowLabels: this.rowLabels.slice(),
+        A: lastA.map((r) => r.slice()),
+        z: lastZ.slice(),
+        x: x.slice(),
+        iterations,
+        residual,
+        nonlinear,
+        h,
+        t,
+      };
     }
     return x;
   }

@@ -14,6 +14,9 @@ spirit of EveryCircuit, but open and built on a from-scratch SPICE-style engine.
   the simulation from t=0 without touching the schematic.
 - **Zoom & pan** — wheel or pinch to zoom, drag empty grid to pan, **Fit** (or
   `0`) to frame the circuit; `+` / `-` zoom, space-drag pans over anything.
+- **Show the math** — press **∑ Math** to watch the solver work: the KCL
+  equation at each node, the MNA matrix it actually inverts, the solution
+  vector, and how Newton-Raphson converged — live, as the circuit runs.
 - **AC / Bode analysis** — complex-valued sweep with magnitude & phase plots.
 - **Save / open / share** — circuits serialize to JSON and to shareable URLs.
 - **Touch-ready** — pointer-based input and a phone layout, so the same build

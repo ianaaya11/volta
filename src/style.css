@@ -17,6 +17,8 @@
      index.html). */
   #app{display:grid;grid-template-columns:64px 1fr 280px;
     grid-template-rows:calc(48px + env(safe-area-inset-top,0px)) 1fr;height:100vh;height:100dvh}
+  /* The math panel needs room for a matrix; 280px turns it into a scrollbar. */
+  #app.mathmode{grid-template-columns:64px 1fr 400px}
   header{grid-column:1/4;display:flex;align-items:center;gap:14px;
     padding:env(safe-area-inset-top,0px) calc(16px + env(safe-area-inset-right,0px)) 0 calc(16px + env(safe-area-inset-left,0px));
     background:var(--panel);border-bottom:1px solid var(--line)}
@@ -60,6 +62,23 @@
   table.probes td{padding:3px 2px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
   table.probes td:last-child{text-align:right;color:var(--accent2)}
   .kbd{font-family:ui-monospace,monospace;background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:0 5px;font-size:11px}
+  .btn.active-toggle{border-color:var(--accent);color:var(--accent)}
+  /* ---- Show the math panel ---------------------------------------------- */
+  .mathnote{font-size:11px;color:var(--muted);line-height:1.5;margin:10px 0 6px}
+  /* Equations wrap rather than scroll: a term hidden off the right edge is a
+     term the reader never knows exists, which defeats the point. */
+  .eqs{font-family:ui-monospace,monospace;font-size:11px;color:var(--ink);
+    background:var(--bg);border:1px solid var(--line);border-radius:6px;
+    padding:8px;line-height:1.6}
+  .eqs div{padding:3px 0;padding-left:14px;text-indent:-14px}
+  /* The matrix can be wider than the inspector; let it scroll rather than
+     wrap, since a wrapped matrix stops being readable as a matrix. */
+  .mnawrap{overflow-x:auto;border:1px solid var(--line);border-radius:6px;background:var(--bg)}
+  table.mna{border-collapse:collapse;font-family:ui-monospace,monospace;font-size:10px}
+  table.mna th{color:var(--accent);font-weight:500;padding:3px 6px;text-align:right;white-space:nowrap}
+  table.mna td{padding:3px 6px;text-align:right;color:var(--ink);white-space:nowrap;font-variant-numeric:tabular-nums}
+  table.mna td.z{color:#39424f}
+  table.mna .rhs{border-left:1px solid var(--line);color:var(--accent2)}
 
   /* ---- Phone / narrow layout ------------------------------------------- */
   /* The three-column desktop layout has a 64px rail and a 280px inspector at

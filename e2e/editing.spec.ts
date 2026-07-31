@@ -205,6 +205,43 @@ test.describe('zoom & pan', () => {
   });
 });
 
+test.describe('show the math', () => {
+  test('exposes the KCL equations, the MNA matrix and the solve', async ({ page }) => {
+    await page.goto('/');
+    await page.click('#mathBtn');
+    const panel = page.locator('#mathHost');
+    await expect(panel).toContainText("Kirchhoff's current law");
+
+    // The matrix is labelled with the real unknowns, and the RC example's
+    // 1 kΩ resistor appears as a term in the node equation.
+    await expect(panel.locator('table.mna')).toBeVisible();
+    await expect(panel).toContainText('i(V1)');
+    await expect(panel).toContainText('1 kΩ');
+
+    // Solving reports how it converged. The default example has a diode, so
+    // it must take more than one Newton pass.
+    await expect(panel).toContainText(/Nonlinear|Linear/);
+    await expect(panel).toContainText('Residual');
+  });
+
+  test('tracks the live simulation and turns off again', async ({ page }) => {
+    await page.goto('/');
+    await page.click('#mathBtn');
+    await page.click('#runBtn');
+    await expect(page.locator('#mathHost')).toContainText('Timestep h');
+
+    await page.click('#mathBtn');
+    await expect(page.locator('#mathHost')).toHaveCount(0);
+  });
+
+  test('says what is missing when the circuit has no reference', async ({ page }) => {
+    await page.goto('/');
+    await page.click('#clearBtn');
+    await page.click('#mathBtn');
+    await expect(page.locator('#mathHost')).toContainText('needs a 0 V reference');
+  });
+});
+
 test.describe('square-wave source', () => {
   test('is on the rail and carries a duty cycle', async ({ page }) => {
     await page.goto('/');
