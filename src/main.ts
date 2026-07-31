@@ -620,12 +620,22 @@ function drawComponent(c:Comp,nodeColor:NodeColor){
   }
   // moving current dots through the body
   if(running&&lastResult){ drawFlow(ax,ay,bx,by, lastResult.current[c.id]||0); }
-  // label
-  ctx.fillStyle='#8b98a9'; ctx.font='10px ui-monospace,monospace'; ctx.textAlign='center';
-  const lp=P(0,-16);
+  // Label. The anchor sits one step along the component's normal, which points
+  // up for a horizontal part and sideways for a vertical one. A centred label
+  // is only right in the first case — on a vertical part it would straddle the
+  // symbol — so side-anchored labels are aligned away from the body instead.
+  ctx.fillStyle='#8b98a9'; ctx.font='10px ui-monospace,monospace';
+  const lp=P(0,-18);
   let valTxt = c.type==='D'?'':fmt(c.value??TYPES[c.type].def,TYPES[c.type].unit);
   if(c.type==='VS'||c.type==='SQ') valTxt = fmt(c.amp??0,'V')+' '+fmt(c.freq??0,'Hz');
-  ctx.fillText(valTxt, lp.x, lp.y);
+  const offX=lp.x-mx, offY=lp.y-my;
+  if(Math.abs(offX)>Math.abs(offY)){
+    ctx.textAlign = offX>0?'left':'right';
+    ctx.fillText(valTxt, lp.x+(offX>0?2:-2), lp.y+3);
+  } else {
+    ctx.textAlign='center';
+    ctx.fillText(valTxt, lp.x, lp.y);
+  }
   ctx.textAlign='left';
 }
 
