@@ -78,8 +78,9 @@ regenerate them, render that SVG to a 1024×1024 PNG and run
 
 **Mobile (Capacitor 7).** Requires a JDK 21 and the Android SDK (Android
 Studio, or the command-line tools) for Android; Xcode and CocoaPods for iOS.
-Android is verified: `assembleDebug` produces a 3.9 MB APK
-(`com.zuri.livecircuit`, targetSdk 35) with the web build embedded.
+Both are verified: `assembleDebug` produces a 3.9 MB APK
+(`com.zuri.livecircuit`, targetSdk 35) that runs on a physical Pixel, and the
+iOS build runs in the Simulator with the full UI.
 
 ```bash
 npm run build
@@ -99,6 +100,12 @@ export ANDROID_HOME="$HOME/Library/Android/sdk"
 export JAVA_HOME=/opt/homebrew/opt/openjdk@21   # macOS/Homebrew
 cd android && ./gradlew assembleDebug           # -> app/build/outputs/apk/debug/
 ```
+
+For iOS, the **first** build must be run from Xcode (`npx cap open ios`, then
+press ▶) and you must answer the keychain prompt with **Always Allow**. Until
+then `codesign` fails with `errSecInternalComponent` from any non-GUI shell,
+because the keychain will not release the signing key without a prompt. After
+that one time, command-line builds work.
 
 > Capacitor is pinned to 7.x deliberately: 8.x requires Node ≥ 22, and 6.x
 > predates the target-SDK level Google Play now requires. The generated

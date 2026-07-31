@@ -28,7 +28,7 @@ already in place, so new semiconductors reuse it rather than reinventing it.
 | 3 | Instrumentation | Oscilloscope (probe nodes, live multi-trace) + sine source to drive it | Frequency-response test + UI capture | ✅ done |
 | 4 | Analyses | AC small-signal sweep + Bode plot (magnitude & phase) | RC/RLC transfer-function checks | ✅ done |
 | 5 | Persistence & sharing | Save/load circuits as JSON, shareable URLs, named example gallery | Round-trip serialize tests | ✅ done |
-| 6 | Cross-platform packaging | TypeScript port, Capacitor (iOS/Android), Tauri (desktop), PWA offline | Per-platform launch + touch tests | ✅ web/PWA + desktop launched, Android packaged; iOS pending |
+| 6 | Cross-platform packaging | TypeScript port, Capacitor (iOS/Android), Tauri (desktop), PWA offline | Per-platform launch + touch tests | ✅ launched on web, macOS, Android hardware, iOS simulator |
 | 7 | Differentiators | "Show the math" learning mode, MCU co-sim, AI circuit assistant | Feature-specific | |
 
 ## Phase 1 — what was just delivered (reference implementation)
@@ -241,11 +241,33 @@ produces a 3.9 MB `app-debug.apk` whose manifest reads `com.zuri.livecircuit`
 at **targetSdk 35** with the real JS bundle inside. Building needs a JDK 21
 specifically — the Android Gradle plugin rejects newer JDKs.
 
-**Remaining in this phase.** (1) Running the Android APK on a device or
-emulator — the APK is verified correct but has not been launched; that needs a
-plugged-in phone or an emulator system image. (2) iOS, which needs CocoaPods and
-full Xcode (~15 GB, Apple ID); neither is installed here and both are the
-developer's own install to make.
+**Android — running on hardware.** Installed and launched on a physical Pixel
+Fold (Android 16): the schematic renders, tools respond to touch, tapping a part
+opens the inspector and its value field takes keyboard input. Running on real
+hardware immediately exposed a defect nothing else caught — the header rendered
+*underneath* the system status bar, because targetSdk 35 forces edge-to-edge on
+Android 15+. See the safe-area note below.
+
+**iOS — running in the simulator.** Xcode 26.6, CocoaPods 1.17, and the iOS 26.5
+platform (8.5 GB) are installed; `cap add ios` scaffolds and `pod install`
+succeeds; the app compiles for both simulator and device, and runs correctly on
+an iPhone 17 simulator with the full UI and the phone layout applied.
+
+**Safe areas are not portable — this cost two rounds to get right.**
+`env(safe-area-inset-*)` is the entire fix on iOS, where the insets describe the
+notch and status bar. On **Android** the same CSS silently does nothing: WebView
+reports display *cutouts* only, so the status-bar height is absent and env()
+resolves to `0px` on a screen without a notch. Android needs the insets applied
+natively, via the edge-to-edge support plugin declared in `capacitor.config.ts`
+(so it survives `android/` being regenerated). Both halves now ship.
+
+**Remaining in this phase.** (1) Installing to the physical iPhone is blocked on
+one interactive step: `codesign` fails with `errSecInternalComponent` when
+driven from a non-GUI shell, because the keychain won't release the signing key
+without a prompt. Pressing ▶ once in Xcode and choosing "Always Allow" clears
+it permanently. (2) On iOS the header still crowds the Dynamic Island slightly —
+`env(safe-area-inset-top)` is not taking full effect inside Capacitor's
+WKWebView. Cosmetic, but unfinished.
 
 ## Phase 7 — where you actually differentiate
 
