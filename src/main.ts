@@ -7,6 +7,8 @@ import { fmt, parseVal } from './format';
 // is erased at compile time.
 import type { AiCircuit } from './ai';
 import { Mcu, checkSketch, type McuHost } from './mcu';
+import { DIGITAL, initialState, isDigital, LOGIC_HIGH, LOGIC_INPUT_Z, SINK_OFF,
+  type DigitalState, type DigitalType } from './digital';
 import './style.css';
 
 //  PART 2 — SCHEMATIC MODEL + EDITOR
@@ -20,7 +22,11 @@ export type PartType = 'R' | 'V' | 'I' | 'C' | 'L' | 'VS' | 'SQ' | 'D'
   // Dependent sources and the transformer, straight through to the new stamps.
   | 'E' | 'G' | 'F' | 'H' | 'XF'
   // Electromechanical: state the editor integrates, driving ordinary devices.
-  | 'RLY' | 'MOT';
+  | 'RLY' | 'MOT'
+  // Digital. Every one of these is behavioural — see digital.ts — with
+  // high-impedance inputs and driven outputs. LOGIC is the source that feeds
+  // them: a switchable level, or a clock when given a frequency.
+  | 'LOGIC' | DigitalType;
 /** Everything the tool rail can be set to: a part to place, or a mode. */
 type Tool = PartType | 'select' | 'wire' | 'probe' | 'delete';
 type Rot = 0 | 90 | 180 | 270;
@@ -96,6 +102,7 @@ let tool:Tool='select';
 let selected:Comp|null=null;
 let running=false;
 let mechanics=false;      // does the running circuit contain a relay or a motor?
+let digital=false;        // ...or anything the digital evaluator must drive?
 let lastResult:Solution|null=null;
 let view={ox:0,oy:0,scale:1};  // pan offset (screen px) and zoom factor
 
@@ -129,7 +136,29 @@ const PIN_OFFSETS:Partial<Record<PartType,[number,number][]>>={
   H:[[4,-1],[4,1],[0,-1],[0,1]],
   XF:[[0,-1],[0,1],[4,-1],[4,1]],  // primary +/-, secondary +/-
   RLY:[[0,-1],[0,1],[4,-1],[4,1]], // coil +/-, contact A/B
+  LOGIC:[[0,0]],                   // one pin; the return path is ground
+  ...Object.fromEntries(Object.keys(DIGITAL).map(t=>[t,digitalPins(t)])),
 };
+
+/**
+ * Pin layout for a digital part: inputs down the left edge, outputs down the
+ * right, both centred on the anchor. Two grid units apart so a wire can be
+ * routed between adjacent pins, which is the whole reason not to pack them
+ * tighter.
+ */
+function digitalPins(t:string):[number,number][]{
+  const spec=DIGITAL[t];
+  const row=(i:number,n:number)=> n<=1?0:(2*i-(n-1));
+  const w=digitalWidth(t);
+  return [
+    ...spec.in.map((_,i)=>[0,row(i,spec.in.length)] as [number,number]),
+    ...spec.out.map((_,j)=>[w,row(j,spec.out.length)] as [number,number]),
+  ];
+}
+/** Body width in grid units: gates are drawn to a fixed outline, chips need
+ *  room for their pin labels. A declaration, not a `const` arrow — PIN_OFFSETS
+ *  is built at module load and calls this, which a `const` wouldn't survive. */
+function digitalWidth(t:string):number{ return DIGITAL[t].gate?4:6; }
 function pinsOf(c:Comp):Pt[]{
   const offs=PIN_OFFSETS[c.type];
   if(offs) return offs.map(([ox,oy])=>{ const [rx,ry]=rotOff(ox,oy,rotOf(c)); return {x:c.x+rx,y:c.y+ry}; });
@@ -169,7 +198,30 @@ const TYPES:Record<PartType,TypeInfo>={
   XF:{name:'Transformer',unit:'H',def:1},
   RLY:{name:'Relay (SPST-NO)',unit:'Ω',def:200},
   MOT:{name:'DC motor',unit:'Ω',def:5},
+  // A logic source's value is the clock frequency; 0 means it is a switch you
+  // click rather than an oscillator.
+  LOGIC:{name:'Logic source',unit:'Hz',def:0},
+  ...Object.fromEntries(Object.entries(DIGITAL).map(([t,spec])=>
+    [t,{name:spec.name,unit:'',def:0}])) as Record<DigitalType,TypeInfo>,
 };
+
+// ---- Digital co-simulation state -------------------------------------------
+// Kept beside the schematic rather than on it: this is simulation state, not
+// something the user drew, so it must not end up in a saved file or a shared
+// URL. Both maps are cleared on Run, which is what makes a flip-flop power up
+// in a known state instead of wherever the last run left it.
+const digState=new Map<string,DigitalState>();   // per part: q, prev inputs, count
+const digDrive=new Map<string,number[]>();       // per part: what each output drives
+/** What a part's outputs drive right now — its power-on state if it hasn't run. */
+function digDrivenOf(c:Comp):number[]{
+  const cached=digDrive.get(c.id);
+  if(cached) return cached;
+  const spec=DIGITAL[c.type];
+  const s=initialState(spec.out.length,spec.in.length);
+  // Evaluate once with every input at 0 V. That is the honest power-on state:
+  // a NAND with both inputs low really does come up with its output high.
+  return spec.step(new Array<number>(spec.in.length).fill(0),s).out;
+}
 
 // ---- Electromechanical model constants ------------------------------------
 // A relay coil is an inductor in series with its winding resistance, and the
@@ -240,8 +292,34 @@ function toDevices(c:Comp,nodes:NodeId[],alloc:()=>NodeId):Component[]{
   const triple:Triple=[nodes[0],nodes[1],nodes[2]];
   const quad:Quad=[nodes[0],nodes[1],nodes[2],nodes[3]];
   const value=c.value??TYPES[c.type].def;
+  // Digital parts all map the same way: every input is a high-impedance leak
+  // to ground, every output a source driving whatever the behavioural model
+  // last decided. Nothing here is solved as logic — see digital.ts for why.
+  if(isDigital(c.type)){
+    const spec=DIGITAL[c.type];
+    const drive=digDrivenOf(c);
+    const devs:Component[]=spec.in.map((_,i)=>
+      ({id:`${c.id}:i${i}`,type:'R',nodes:[nodes[i],0],value:LOGIC_INPUT_Z}));
+    spec.out.forEach((_,j)=>{
+      const nd=nodes[spec.in.length+j];
+      // An open-drain pin is a resistor that switches; everything else is a
+      // voltage source. Both are value-only updates, so neither costs a
+      // rebuild when the logic changes state.
+      devs.push((spec.kind?.[j]??'level')==='sink'
+        ? {id:`${c.id}:o${j}`,type:'R',nodes:[nd,0],value:drive[j]??SINK_OFF}
+        : {id:`${c.id}:o${j}`,type:'V',nodes:[nd,0],value:drive[j]??0});
+    });
+    return devs;
+  }
   switch(c.type){
     case 'GND': return [];
+    case 'LOGIC':
+      // With a frequency it is a clock, which the engine's square wave already
+      // models exactly; without one it is a level you toggle by clicking it.
+      return [value>0
+        ? {id:c.id,type:'VS',nodes:[nodes[0],0],wave:'SQR',value:LOGIC_HIGH,
+           amp:LOGIC_HIGH/2,freq:value,off:LOGIC_HIGH/2,duty:c.duty??0.5}
+        : {id:c.id,type:'V',nodes:[nodes[0],0],value:c.on?LOGIC_HIGH:0}];
     case 'MCU': {
       // Referenced to ground, so a pin pad needs no second terminal drawn.
       const p=c.pin??13;
@@ -316,6 +394,10 @@ function toDevices(c:Comp,nodes:NodeId[],alloc:()=>NodeId):Component[]{
     case 'MP': return [{id:c.id,type:'MP',nodes:triple}];
     case 'OA': return [{id:c.id,type:'OA',nodes:triple}];
   }
+  // Unreachable: every digital type left the function above, and the switch
+  // covers the rest. It exists only because `isDigital` narrows a value, not
+  // the union, so the compiler can't see that the switch is exhaustive.
+  return [];
 }
 
 // The single voltage and current to show for a part — what the inspector reads
@@ -341,7 +423,12 @@ function partVI(c:Comp,result:Solution):{v:number;i:number}{
 function pinCurrents(c:Comp,result:Solution):number[]{
   const cur=(id:string)=>result.current[id]||0;
   if(c.type==='GND') return [0];
-  if(c.type==='MCU') return [cur(c.id)];
+  if(c.type==='MCU'||c.type==='LOGIC') return [cur(c.id)];
+  if(isDigital(c.type)){
+    const spec=DIGITAL[c.type];
+    return [...spec.in.map((_,i)=>cur(`${c.id}:i${i}`)),
+      ...spec.out.map((_,j)=>cur(`${c.id}:o${j}`))];
+  }
   if(c.type==='POT'){
     const ia=cur(c.id+':a'), ib=cur(c.id+':b');   // each flows first node -> second
     return [ia, ib-ia, -ib];
@@ -396,8 +483,14 @@ function buildNetlist():Netlist{
   let internal=INTERNAL_NODE_BASE;
   const alloc=():NodeId=>internal++;
   for(const c of comps) netComps.push(...toDevices(c,pinsOf(c).map(p=>nodeOf(p.x,p.y)),alloc));
-  const nodeCount=next-1+(grounded.size?1:0);
-  return {netComps,nodeOf,nodeCount,grounded:grounded.size>0};
+  // Digital parts, MCU pads and logic sources all reference node 0 directly —
+  // their inputs leak to it and their outputs drive against it — so a circuit
+  // made of them already has a 0 V reference and shouldn't be made to carry a
+  // ground symbol that connects to nothing just to satisfy the Run check.
+  const implicitGround=comps.some(c=>isDigital(c.type)||c.type==='MCU'||c.type==='LOGIC');
+  const hasGround=grounded.size>0||implicitGround;
+  const nodeCount=next-1+(hasGround?1:0);
+  return {netComps,nodeOf,nodeCount,grounded:hasGround};
 }
 
 // ---- Wire-current resolver (for animation) --------------------------------
@@ -488,11 +581,27 @@ function zoomAt(px:number,py:number,f:number){
   view.scale=s; view.ox=px-w.x*s; view.oy=py-w.y*s;
   draw();
 }
+/**
+ * Grid points a part's SYMBOL covers beyond its pins. Fit frames the circuit by
+ * its pins, which is right for everything whose body sits between them — but a
+ * display has all four pins down its left edge and a body six units wide, so
+ * framing by pins alone crops it off the screen.
+ */
+function bodyExtent(c:Comp):Pt[]{
+  if(isDigital(c.type)){
+    const [dx,dy]=DIR[rotOf(c)], w=digitalWidth(c.type);
+    return [{x:c.x+dx*w,y:c.y+dy*w}];
+  }
+  // These two draw a pad above their single pin.
+  if(c.type==='MCU'||c.type==='LOGIC') return [{x:c.x,y:c.y-1}];
+  return [];
+}
+
 /** Frame the whole circuit in the viewport, or recentre an empty grid. */
 function fitView(){
   const W=cv.width/devicePixelRatio, H=cv.height/devicePixelRatio;
   const pts:Pt[]=[];
-  for(const c of comps) pts.push(...pinsOf(c));
+  for(const c of comps) pts.push(...pinsOf(c),...bodyExtent(c));
   for(const w of wires){ pts.push({x:w.x1,y:w.y1},{x:w.x2,y:w.y2}); }
   if(!pts.length){ view={ox:40,oy:40,scale:1}; draw(); return; }
   const xs=pts.map(p=>p.x), ys=pts.map(p=>p.y);
@@ -802,6 +911,125 @@ function fourPinLabel(c:Comp):string{
   return `${fmt(v,'').trim()} ${TYPES[c.type].unit}`;
 }
 
+// ---- Digital symbols --------------------------------------------------------
+// Gates are drawn with their proper outlines — a schematic reader identifies an
+// AND from its shape long before reading any label — and everything else as a
+// labelled box, which is how real schematics draw an IC anyway. The body is
+// drawn inside a rotated canvas transform, since these outlines are all arcs
+// and curves that would be painful to express as rotated point maths; the text
+// is placed afterwards, upright, so a part rotated 90° still reads normally.
+const SEG7_GLYPHS:number[]=[
+  //  bits are segments a,b,c,d,e,f,g (clockwise from the top, then the middle)
+  0b0111111,0b0000110,0b1011011,0b1001111,0b1100110,0b1101101,0b1111101,0b0000111,
+  0b1111111,0b1101111,0b1110111,0b1111100,0b0111001,0b1011110,0b1111001,0b1110001,
+];
+function drawDigital(c:Comp,ps:Pt[],col:(x:number,y:number)=>string){
+  const spec=DIGITAL[c.type];
+  const nIn=spec.in.length, nOut=spec.out.length;
+  const w=digitalWidth(c.type)*GRID;
+  const rows=Math.max(nIn,nOut);
+  const halfW=w/2-20, halfH=Math.max(20,(rows-1)*GRID+16);
+  // Frame: the anchor is the input edge, so the body centre is half a width in.
+  const [ux,uy]=DIR[rotOf(c)];
+  const ax=gx(c.x), ay=gy(c.y);
+  const cxp=ax+ux*w/2, cyp=ay+uy*w/2;
+  const ang=Math.atan2(uy,ux);
+  const P=(d:number,o:number):Pt=>({x:cxp+ux*d-uy*o, y:cyp+uy*d+ux*o});
+
+  // Leads from each pin to the body edge.
+  ctx.lineWidth=2.4;
+  ps.forEach((p,i)=>{
+    const side=i<nIn?-1:1;
+    const o=(i<nIn? (nIn<=1?0:(2*i-(nIn-1))) : (nOut<=1?0:(2*(i-nIn)-(nOut-1))))*GRID;
+    ctx.strokeStyle=col(p.x,p.y);
+    const e=P(side*halfW,o);
+    ctx.beginPath(); ctx.moveTo(gx(p.x),gy(p.y)); ctx.lineTo(e.x,e.y); ctx.stroke();
+  });
+
+  ctx.save();
+  ctx.translate(cxp,cyp); ctx.rotate(ang);
+  ctx.strokeStyle=T.ink; ctx.fillStyle=T.panelBg; ctx.lineWidth=2;
+  const bubble=(x:number)=>{ ctx.beginPath(); ctx.arc(x+5,0,5,0,7); ctx.fillStyle='#fff'; ctx.fill(); ctx.stroke(); };
+  if(spec.gate){
+    const inv=c.type==='NAND'||c.type==='NOR'||c.type==='XNOR'||c.type==='NOT';
+    const nose=inv?halfW-10:halfW;      // an inverting gate gives up its nose to the bubble
+    if(c.type==='AND'||c.type==='NAND'){
+      // An ELLIPTICAL front, not a circular one: a tall gate with a circular
+      // arc of radius halfH would bulge past the body width and swallow its
+      // own output lead.
+      ctx.beginPath();
+      ctx.moveTo(-halfW,-halfH); ctx.lineTo(0,-halfH);
+      ctx.ellipse(0,0,nose,halfH,0,-Math.PI/2,Math.PI/2);
+      ctx.lineTo(-halfW,halfH); ctx.closePath(); ctx.fill(); ctx.stroke();
+    } else if(c.type==='NOT'){
+      ctx.beginPath();
+      ctx.moveTo(-halfW,-halfH*0.8); ctx.lineTo(nose,0); ctx.lineTo(-halfW,halfH*0.8);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+    } else {
+      // The shield outline shared by OR, NOR, XOR and XNOR: a concave back and
+      // two curves meeting at a point.
+      const back=(off:number)=>{ ctx.moveTo(-halfW+off,-halfH); ctx.quadraticCurveTo(-halfW+22+off,0,-halfW+off,halfH); };
+      ctx.beginPath();
+      back(0);
+      ctx.quadraticCurveTo(nose-18,halfH*0.85,nose,0);
+      ctx.quadraticCurveTo(nose-18,-halfH*0.85,-halfW,-halfH);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+      if(c.type==='XOR'||c.type==='XNOR'){   // the extra back arc that makes it exclusive
+        ctx.beginPath(); back(-7); ctx.stroke();
+      }
+    }
+    if(inv) bubble(nose);
+  } else {
+    ctx.beginPath(); ctx.rect(-halfW,-halfH,halfW*2,halfH*2); ctx.fill(); ctx.stroke();
+    if(c.type==='SEG7'){
+      // Draw the digit itself, as seven segments, so the schematic shows the
+      // value rather than a label you have to decode.
+      const n=(digState.get(c.id)?.count)??0;
+      const g=SEG7_GLYPHS[n&15];
+      // Segments are inset by `gap` from their nominal cell so the digit reads
+      // as seven separate bars; butted up against each other they merge into
+      // one blob and stop looking like a display at all.
+      const sw=26, sh=32, t=5, gap=4;
+      const hw=sw-gap, hh=sh/2-gap;                  // half-length of a bar
+      const seg:[number,number,number,number][]=[
+        [0,-sh,hw,t],[sw,-sh/2,t,hh],[sw,sh/2,t,hh],
+        [0,sh,hw,t],[-sw,sh/2,t,hh],[-sw,-sh/2,t,hh],[0,0,hw,t]];
+      seg.forEach(([sx,sy,bw,bh],i)=>{
+        ctx.fillStyle=(g>>i)&1?'#d8382c':'#e9edf3';
+        ctx.fillRect(sx-bw,sy-bh,bw*2,bh*2);
+      });
+    }
+  }
+  ctx.restore();
+
+  // Labels, upright. Pin names inside the body edge, and the part name across
+  // the middle for anything that isn't a gate (a gate's shape is its name).
+  ctx.font='9px ui-monospace,monospace'; ctx.fillStyle=T.label;
+  if(!spec.gate){
+    [...spec.in,...spec.out].forEach((label,i)=>{
+      const side=i<nIn?-1:1;
+      const o=(i<nIn? (nIn<=1?0:(2*i-(nIn-1))) : (nOut<=1?0:(2*(i-nIn)-(nOut-1))))*GRID;
+      const q=P(side*(halfW-7),o);
+      ctx.textAlign=side<0?'left':'right';
+      // Horizontal parts read left-to-right; rotated ones would collide, so
+      // just centre the label on the pin instead.
+      if(rotOf(c)===0||rotOf(c)===180) ctx.fillText(label,q.x,q.y+3);
+      else { ctx.textAlign='center'; ctx.fillText(label,q.x,q.y+3); }
+    });
+    if(c.type!=='SEG7'){
+      ctx.textAlign='center'; ctx.font='10px ui-monospace,monospace'; ctx.fillStyle=T.ink;
+      ctx.fillText(c.type,cxp,cyp+4);
+    }
+  }
+  // Current dots from the input edge to the output edge, so a live gate shows
+  // which way it is driving.
+  if(running&&lastResult&&nOut>0){
+    const o=P(halfW,0), i0=P(-halfW,0);
+    drawFlow(i0.x,i0.y,o.x,o.y, -(lastResult.current[`${c.id}:o0`]??0));
+  }
+  ctx.textAlign='left';
+}
+
 function drawComponent(c:Comp,nodeColor:NodeColor){
   const ps=pinsOf(c);
   ctx.lineWidth=2.4; ctx.lineJoin='round'; ctx.lineCap='round';
@@ -905,6 +1133,25 @@ function drawComponent(c:Comp,nodeColor:NodeColor){
     ctx.textAlign='left';
     return;
   }
+  if(c.type==='LOGIC'){
+    // A single pad, like the MCU pin, showing the level it is driving. With a
+    // frequency it's a clock and shows that instead of a 0/1.
+    const x=gx(c.x), y=gy(c.y);
+    const clk=(c.value??0)>0;
+    const on=clk? (running&&lastResult ? (lastResult.nodeVoltage[simNet?simNet.nodeOf(c.x,c.y):0]??0)>LOGIC_HIGH/2 : false)
+      : c.on===true;
+    ctx.strokeStyle=col(c.x,c.y);
+    ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x,y-9); ctx.stroke();
+    ctx.fillStyle=on?T.mcuOn:T.mcuOff; ctx.strokeStyle=T.ink; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.roundRect(x-17,y-27,34,18,4); ctx.fill(); ctx.stroke();
+    ctx.fillStyle=on?T.mcuOnInk:T.ink;
+    ctx.font='10px ui-monospace,monospace'; ctx.textAlign='center';
+    ctx.fillText(clk?'CLK':(on?'1':'0'), x, y-14);
+    if(clk){ ctx.fillStyle=T.label; ctx.fillText(fmt(c.value??0,'Hz'), x, y-32); }
+    ctx.textAlign='left';
+    return;
+  }
+  if(isDigital(c.type)){ drawDigital(c,ps,col); return; }
   // ---- Four-terminal parts -------------------------------------------------
   // All of them share one footprint: a body with a two-pin port on each side.
   // Which pins form which port differs (a dependent source is controlled on
@@ -1194,7 +1441,8 @@ function drawGhost(type:PartType,x:number,y:number){
 //  PART 5 — INTERACTION
 // ===========================================================================
 const PLACE_TYPES:PartType[]=['R','POT','V','VS','SQ','I','C','CP','L','XF','D','LED','LAMP',
-  'SW','PB','PBNC','RLY','MOT','QN','QP','MN','MP','OA','E','G','F','H','GND','MCU'];
+  'SW','PB','PBNC','RLY','MOT','QN','QP','MN','MP','OA','E','G','F','H','GND','MCU',
+  'LOGIC',...(Object.keys(DIGITAL) as DigitalType[])];
 const isPlaceType=(t:Tool):t is PartType=>(PLACE_TYPES as string[]).includes(t);
 let mouse:{px:number;py:number;gx:number|null;gy:number|null}={px:0,py:0,gx:null,gy:null};
 let wireStart:Pt|null=null;
@@ -1211,12 +1459,26 @@ const pointerPos=(e:PointerEvent):Pt=>{
   return {x:e.clientX-r.left, y:e.clientY-r.top};
 };
 
+// Nearest part whose FOOTPRINT the point falls in or near. The centroid of the
+// pins used to serve, but a digital chip has all its inputs down one edge, so
+// its pin centroid sits off the body entirely and the middle of the symbol —
+// the obvious place to click — missed it.
 function hitComponent(gxu:number,gyu:number):Comp|null{
-  // nearest component whose centroid is close
-  let best:Comp|null=null,bd=1e9;
-  for(const c of comps){ const ps=pinsOf(c);
-    const cxu=ps.reduce((s,p)=>s+p.x,0)/ps.length, cyu=ps.reduce((s,p)=>s+p.y,0)/ps.length;
-    const d=Math.hypot(cxu-gxu,cyu-gyu); if(d<bd&&d<1.4){bd=d;best=c;} }
+  let best:Comp|null=null, bd=1e9, bc=1e9;
+  for(const c of comps){
+    const ps=pinsOf(c);
+    const xs=ps.map(p=>p.x), ys=ps.map(p=>p.y);
+    const x0=Math.min(...xs), x1=Math.max(...xs), y0=Math.min(...ys), y1=Math.max(...ys);
+    const cxu=(x0+x1)/2, cyu=(y0+y1)/2;
+    // Distance outside the footprint, padded so the leads count as part of it.
+    const dx=Math.max(0,Math.abs(gxu-cxu)-((x1-x0)/2+0.7));
+    const dy=Math.max(0,Math.abs(gyu-cyu)-((y1-y0)/2+0.7));
+    const d=Math.hypot(dx,dy);
+    if(d>=0.7) continue;
+    // Overlapping parts all score 0, so break the tie on which centre is nearer.
+    const cd=Math.hypot(cxu-gxu,cyu-gyu);
+    if(d<bd-1e-9||(Math.abs(d-bd)<1e-9&&cd<bc)){ bd=d; bc=cd; best=c; }
+  }
   return best;
 }
 
@@ -1282,6 +1544,7 @@ stage.addEventListener('pointerdown',e=>{
     if(tool==='XF'){ nc.l2=1; nc.k=0.99; }
     if(tool==='RLY') nc.on=false;
     if(tool==='MOT'){ nc.omega=0; nc.angle=0; }
+    if(tool==='LOGIC') nc.on=false;
     comps.push(nc);
     refreshMeta(); commit(); draw(); return;
   }
@@ -1316,6 +1579,9 @@ stage.addEventListener('pointerdown',e=>{
   // While the simulation runs, the schematic doubles as a control panel:
   // tapping a switch throws it and holding a push button presses it, which is
   // what these parts are for. Stopped, the same tap just selects the part.
+  if(c&&running&&c.type==='LOGIC'&&!(c.value??0)){
+    c.on=!c.on; selected=c; renderInspector(); syncValues(); draw(); return;
+  }
   if(c&&running&&isContact(c.type)){
     if(c.type==='SW'){ c.on=!c.on; }
     else { c.on=true; heldButton=c; try{ stage.setPointerCapture(e.pointerId); }catch{ /* best-effort */ } }
@@ -1449,6 +1715,9 @@ function startSim(){
     if(c.type==='MOT'){ c.omega=0; c.angle=0; }
     if(c.type==='RLY') c.on=false;
   }
+  // Likewise the digital state: a flip-flop must power up in a known state
+  // rather than wherever the previous run happened to leave it.
+  digState.clear(); digDrive.clear();
   if(sketch.trim()){
     const err=checkSketch(sketch);
     if(err){ mcuStatus='Compile error — '+err; flashHint('Sketch error: '+err); }
@@ -1461,7 +1730,7 @@ function startSim(){
   // choose timestep from smallest reactive time constant present
   simH=chooseTimestep(net.netComps);
   circuit=new Circuit(net.netComps.map(c=>({...c}))); liveIndex=null;
-  mechanics=hasMechanics();
+  mechanics=hasMechanics(); digital=hasDigital();
   circuit.captureTrace=mathMode;
   simNet=net; resetScope(); panelMode='scope';
   simTime=0; running=true;
@@ -1544,6 +1813,7 @@ function loop(){
     // writes back takes effect on the next step — a relay contact can't close
     // in the same instant its coil reaches the pull-in current.
     if(mechanics) stepMechanics(lastResult,simH);
+    if(digital) stepDigital(lastResult);
   }
   // sample the scope once per frame
   const net=simNet, buf=scopeBuf, res=lastResult;
@@ -1600,7 +1870,7 @@ function renderInspector(){
   const t=TYPES[sel.type];
   let html=`<h3>${t.name}</h3>`;
   const noValue:PartType[]=['GND','D','LED','QN','QP','MN','MP','OA','VS','SQ','MCU',
-    'SW','PB','PBNC'];
+    'SW','PB','PBNC',...(Object.keys(DIGITAL) as PartType[])];
   if(!noValue.includes(sel.type)){
     html+=`<div class="field"><label>Value (${t.unit}) — e.g. 4.7k, 100n, 12</label>
       <input id="valInput" value="${fmt(sel.value??t.def,'').trim()}"/></div>`;
@@ -1628,6 +1898,29 @@ function renderInspector(){
       <div class="field"><div class="empty">${sel.type==='SW'
         ? 'Click the switch on the schematic while running to throw it.'
         : 'Hold the button on the schematic while running to press it; it springs back on release.'}</div></div>`;
+  }
+  if(sel.type==='LOGIC'){
+    const clock=(sel.value??0)>0;
+    html+=`<div class="field"><label>Clock frequency (Hz) — 0 makes it a manual switch</label>
+      <input id="valInput2" value="${fmt(sel.value??0,'').trim()}"/></div>`;
+    if(!clock){
+      html+=`<div class="field"><label>Level — currently <b>${sel.on?'1':'0'}</b></label>
+        <button class="btn" id="logicBtn">Drive ${sel.on?'0':'1'}</button></div>
+        <div class="field"><div class="empty">Click it on the schematic while running to toggle it.</div></div>`;
+    } else {
+      html+=`<div class="field"><div class="empty">A ${fmt(sel.value??0,'Hz')} square wave between 0 and
+        ${LOGIC_HIGH} V. Changing between clock and switch changes the device, so it takes
+        effect on the next Run.</div></div>`;
+    }
+  }
+  if(isDigital(sel.type)){
+    const spec=DIGITAL[sel.type];
+    html+=`<div class="field"><label>Pins</label><div class="empty">
+      In: ${spec.in.join(', ')||'—'}<br>Out: ${spec.out.join(', ')||'—'}</div></div>
+      <div class="field"><div class="empty">Behavioural, not solved as transistors: inputs are
+      high-impedance (${fmt(LOGIC_INPUT_Z,'Ω')}) and read a 1 above 2.5 V; outputs drive
+      0 or ${LOGIC_HIGH} V. One timestep of propagation delay, which is what lets a
+      flip-flop feed back into itself.</div></div>`;
   }
   if(sel.type==='E'||sel.type==='G'||sel.type==='F'||sel.type==='H'){
     const senses=(sel.type==='F'||sel.type==='H')
@@ -1697,6 +1990,11 @@ function renderInspector(){
   bindNum('dutyInput',v=>sel.duty=Math.max(0.01,Math.min(0.99,v)));
   bindNum('pinInput',v=>sel.pin=Math.max(0,Math.round(v)));
   bindNum('l2Input',v=>sel.l2=Math.max(1e-12,v));
+  bindNum('valInput2',v=>sel.value=Math.max(0,v));
+  const lb=document.getElementById('logicBtn');
+  if(lb) lb.addEventListener('click',()=>{
+    sel.on=!sel.on; commit(); if(running) syncValues(); renderInspector(); draw();
+  });
   bindNum('kInput',v=>sel.k=Math.max(0,Math.min(0.9999,v)));
   // The wiper streams on `input`, not `change`: sweeping a pot and watching the
   // circuit follow is most of the point of having one.
@@ -1750,6 +2048,29 @@ function stepMechanics(res:Solution,h:number){
 }
 /** True when the document holds anything the mechanical integrator must run for. */
 const hasMechanics=()=>comps.some(c=>c.type==='RLY'||c.type==='MOT');
+
+// Evaluate every digital part against the solution just computed and drive its
+// outputs for the next step. One step of delay is not an artefact to apologise
+// for — it IS the propagation delay, and it's what lets a ring of inverters
+// oscillate and a flip-flop feed back into its own input without the solver
+// having to resolve a combinational loop.
+function stepDigital(res:Solution){
+  const net=simNet; if(!net) return;
+  for(const c of comps){
+    if(!isDigital(c.type)) continue;
+    const spec=DIGITAL[c.type];
+    const ps=pinsOf(c);
+    const v=spec.in.map((_,i)=>res.nodeVoltage[net.nodeOf(ps[i].x,ps[i].y)]??0);
+    const s=digState.get(c.id)??initialState(spec.out.length,spec.in.length);
+    const r=spec.step(v,s);
+    digState.set(c.id,r.s);
+    const prev=digDrive.get(c.id);
+    digDrive.set(c.id,r.out);
+    r.out.forEach((val,j)=>{ if(!prev||prev[j]!==val) pokeLive(`${c.id}:o${j}`,val); });
+  }
+}
+/** True when the document holds anything the digital evaluator must run for. */
+const hasDigital=()=>comps.some(c=>isDigital(c.type));
 
 function syncValues(){ // push edited values into live sim without restarting
   if(!circuit) return;
@@ -1943,6 +2264,24 @@ const RAIL:{t:Tool;label:string;icon?:string}[]=[
   {t:'H',label:'CCVS'},
   {t:'GND',label:'Ground'},
   {t:'MCU',label:'MCU pin'},
+  {t:'LOGIC',label:'Logic'},
+  {t:'NOT',label:'NOT'},
+  {t:'AND',label:'AND'},
+  {t:'OR',label:'OR'},
+  {t:'NAND',label:'NAND'},
+  {t:'NOR',label:'NOR'},
+  {t:'XOR',label:'XOR'},
+  {t:'XNOR',label:'XNOR'},
+  {t:'SRL',label:'SR latch'},
+  {t:'DL',label:'D latch'},
+  {t:'DFF',label:'D flip-flop'},
+  {t:'JKFF',label:'JK flip-flop'},
+  {t:'TFF',label:'T flip-flop'},
+  {t:'CNT4',label:'Counter'},
+  {t:'SEG7',label:'7-seg'},
+  {t:'NE555',label:'555'},
+  {t:'DAC4',label:'DAC'},
+  {t:'ADC4',label:'ADC'},
   {t:'delete',label:'Delete',icon:'M6 7h12l-1 13H7zM9 7V4h6v3'},
 ];
 function buildRail(){
@@ -1987,6 +2326,17 @@ function miniSymbol(t:Tool){
     case 'MN': return s('<path d="M3 12h4M7 6v12M10 6v12M10 8h8M10 16h8M18 4v6M18 14v6"/>');
     case 'MP': return s('<path d="M3 12h4M7 6v12M10 6v12M10 8h8M10 16h8M18 4v6M18 14v6M13 15l-2.5 1"/>');
     case 'OA': return s('<path d="M4 5v14l14-7zM2 9h2M2 15h2"/>');
+    case 'LOGIC': return s('<path d="M3 8h5v8h5v-8h5v8h3M3 20h18"/>');
+    case 'NOT': return s('<path d="M6 5v14l10-7zM17 12h1M2 12h4M19 12h3"/><circle cx="17.5" cy="12" r="1.6"/>');
+    case 'AND': return s('<path d="M6 5h5a7 7 0 010 14H6zM2 8h4M2 16h4M18 12h4"/>');
+    case 'OR': return s('<path d="M5 5q5 7 0 14q9 1 13-7q-4-8-13-7zM2 8h4M2 16h4M18 12h4"/>');
+    case 'NAND': return s('<path d="M6 5h5a6 6 0 010 14H6zM2 8h4M2 16h4M20 12h2"/><circle cx="18.4" cy="12" r="1.6"/>');
+    case 'NOR': return s('<path d="M5 5q5 7 0 14q8 1 12-7q-4-8-12-7zM2 8h4M2 16h4M20 12h2"/><circle cx="18.4" cy="12" r="1.6"/>');
+    case 'XOR': return s('<path d="M7 5q5 7 0 14q9 1 13-7q-4-8-13-7zM3 5q5 7 0 14M2 8h3M2 16h3M20 12h2"/>');
+    case 'XNOR': return s('<path d="M6 5q5 7 0 14q8 1 11-7q-3-8-11-7zM2 5q5 7 0 14M19 12h3"/><circle cx="18" cy="12" r="1.4"/>');
+    case 'SEG7': case 'DFF': case 'DL': case 'SRL': case 'JKFF': case 'TFF':
+    case 'CNT4': case 'NE555': case 'DAC4': case 'ADC4':
+      return s(`<rect x="5" y="4" width="14" height="16" rx="1"/><path d="M2 8h3M2 16h3M19 8h3M19 16h3"/><text x="12" y="14.5" font-size="6" fill="currentColor" stroke="none" text-anchor="middle">${DIGITAL[t]?.out.length?'\u2b1a':'8'}</text>`);
     case 'GND': return s('<path d="M12 4v8M6 12h12M8 16h8M10 20h4"/>');
     case 'MCU': return s('<rect x="4" y="7" width="16" height="10" rx="2"/><path d="M12 17v4"/>');
     case 'delete': return s('<path d="M5 7h14M9 7V4h6v3M7 7l1 13h8l1-13"/>');
@@ -2016,6 +2366,9 @@ const GALLERY=[
   {name:'Switch, pot & LED (click to play)', fn:loadPanel},
   {name:'Relay drives a DC motor', fn:loadRelay},
   {name:'Transformer steps 10 V up to 20 V', fn:loadXfmr},
+  {name:'Digital: clock → counter → display', fn:loadCounter},
+  {name:'Digital: gates on two switches', fn:loadGates},
+  {name:'555 astable blinks an LED', fn:load555},
 ];
 // A circuit you operate rather than watch: throw the switch to power the rail,
 // hold the button for the lamp, and sweep the pot to dim the LED. Every part
@@ -2103,6 +2456,92 @@ function loadXfmr(){
   scopeProbes=[{x:2,y:2,color:SCOPE_COLORS[0]},{x:10,y:2,color:SCOPE_COLORS[1]}];
   selected=null; refreshMeta(); renderInspector(); fitView(); draw();
   flashHint('Press <b>Run</b>: the scope shows 10 V in on the primary and 20 V out on the secondary — √(L₂/L₁) = 2.');
+}
+
+// The digital library end to end: a clock drives a counter and the counter
+// drives a display, so you can watch it count 0–F and wrap.
+function loadCounter(){
+  comps=[]; wires=[]; uid=1;
+  // No ground symbol: every part here is digital, and digital parts carry
+  // their own 0 V reference.
+  comps.push({id:'LOGIC'+(uid++),type:'LOGIC',x:2,y:3,rot:0,value:5});   // 5 Hz clock
+  comps.push({id:'CNT4'+(uid++),type:'CNT4',x:6,y:4,rot:0});
+  // CLK (6,3), RST (6,5); Q0..Q3 at (12,1),(12,3),(12,5),(12,7)
+  wires.push({x1:2,y1:3,x2:6,y2:3});
+  comps.push({id:'SEG7'+(uid++),type:'SEG7',x:18,y:4,rot:0});
+  // D0..D3 at (18,1),(18,3),(18,5),(18,7)
+  for(let i=0;i<4;i++) wires.push({x1:12,y1:1+i*2,x2:18,y2:1+i*2});
+  selected=null; refreshMeta(); renderInspector(); fitView(); draw();
+  flashHint('Press <b>Run</b>: the clock ticks the counter and the display shows it count 0–F and wrap.');
+}
+
+// Two switchable inputs into three gates at once, so the truth tables are
+// something you read off the schematic rather than take on trust. The two
+// sources fan out on a pair of vertical buses, which is how you would draw it
+// on paper and keeps every run orthogonal.
+function loadGates(){
+  comps=[]; wires=[]; uid=1;
+  comps.push({id:'GND'+(uid++),type:'GND',x:0,y:20});
+  comps.push({id:'LOGIC'+(uid++),type:'LOGIC',x:2,y:2,rot:0,value:0,on:true});   // A
+  comps.push({id:'LOGIC'+(uid++),type:'LOGIC',x:2,y:4,rot:0,value:0,on:false});  // B
+  // A runs down x=6, B down x=4; each gate taps both on its way past.
+  wires.push({x1:2,y1:2,x2:6,y2:2});
+  wires.push({x1:6,y1:2,x2:6,y2:8},{x1:6,y1:8,x2:6,y2:14});
+  wires.push({x1:2,y1:4,x2:4,y2:4});
+  wires.push({x1:4,y1:4,x2:4,y2:10},{x1:4,y1:10,x2:4,y2:16});
+  const gates:PartType[]=['AND','OR','XOR'];
+  gates.forEach((g,row)=>{
+    const y=3+row*6;                       // inputs at (10,y-1) and (10,y+1)
+    comps.push({id:g+(uid++),type:g,x:10,y,rot:0});
+    wires.push({x1:6,y1:y-1,x2:10,y2:y-1});
+    wires.push({x1:4,y1:y+1,x2:10,y2:y+1});
+    comps.push({id:'LED'+(uid++),type:'LED',x:14,y,rot:0});            // (14,y)-(16,y)
+    comps.push({id:'R'+(uid++),type:'R',x:16,y,rot:0,value:470});      // (16,y)-(18,y)
+    wires.push({x1:18,y1:y,x2:18,y2:20});
+  });
+  wires.push({x1:0,y1:20,x2:18,y2:20});
+  selected=null; refreshMeta(); renderInspector(); fitView(); draw();
+  flashHint('Press <b>Run</b>, then click either <b>logic source</b> to toggle it and watch which LEDs light.');
+}
+
+// The classic astable: the capacitor charges through R1+R2 to two thirds of the
+// supply, the 555 flips and dumps it through R2 back to one third, and round
+// again. It exercises both comparators, the latch, and the open-drain discharge
+// pin at once — the whole part in one circuit.
+function load555(){
+  comps=[]; wires=[]; uid=1;
+  comps.push({id:'V'+(uid++),type:'V',x:0,y:2,rot:90,value:9});    // (0,2)+ .. (0,4)-
+  comps.push({id:'GND'+(uid++),type:'GND',x:0,y:18});
+  wires.push({x1:0,y1:4,x2:0,y2:18});
+  comps.push({id:'NE555'+(uid++),type:'NE555',x:8,y:4,rot:0});
+  // VCC (8,0), TRIG (8,2), THR (8,4), RST (8,6), CTRL (8,8); OUT (14,3), DIS (14,5)
+  // Supply rail across the top, with a branch down to hold RESET high.
+  wires.push({x1:0,y1:2,x2:0,y2:0},{x1:0,y1:0,x2:2,y2:0});
+  wires.push({x1:2,y1:0,x2:8,y2:0});
+  wires.push({x1:2,y1:0,x2:2,y2:6},{x1:2,y1:6,x2:8,y2:6});
+  // Timing network: R1 from the supply to DISCHARGE, R2 on down to the cap.
+  comps.push({id:'R'+(uid++),type:'R',x:20,y:0,rot:0,value:10000});   // R1 (20,0)-(22,0)
+  wires.push({x1:8,y1:0,x2:20,y2:0});
+  wires.push({x1:22,y1:0,x2:22,y2:5});
+  wires.push({x1:14,y1:5,x2:22,y2:5});                               // DISCHARGE taps the junction
+  comps.push({id:'R'+(uid++),type:'R',x:22,y:5,rot:90,value:47000});  // R2 (22,5)-(22,7)
+  comps.push({id:'C'+(uid++),type:'C',x:22,y:9,rot:90,value:1e-6});   // C (22,9)-(22,11)
+  wires.push({x1:22,y1:7,x2:22,y2:9});
+  wires.push({x1:22,y1:11,x2:22,y2:18});
+  // The cap voltage is what both comparators watch, so it feeds THR and TRIG.
+  // Routed under the chip at y=10, clear of the body.
+  wires.push({x1:22,y1:9,x2:22,y2:10},{x1:22,y1:10,x2:6,y2:10});
+  wires.push({x1:6,y1:10,x2:6,y2:4},{x1:6,y1:4,x2:8,y2:4});
+  wires.push({x1:6,y1:4,x2:6,y2:2},{x1:6,y1:2,x2:8,y2:2});
+  // The output drives an LED.
+  comps.push({id:'R'+(uid++),type:'R',x:16,y:3,rot:0,value:470});     // (16,3)-(18,3)
+  wires.push({x1:14,y1:3,x2:16,y2:3});
+  comps.push({id:'LED'+(uid++),type:'LED',x:18,y:3,rot:90});          // (18,3)-(18,5)
+  wires.push({x1:18,y1:5,x2:18,y2:18});
+  wires.push({x1:0,y1:18,x2:18,y2:18},{x1:18,y1:18,x2:22,y2:18});
+  scopeProbes=[{x:22,y:9,color:SCOPE_COLORS[0]},{x:14,y:3,color:SCOPE_COLORS[1]}];
+  selected=null; refreshMeta(); renderInspector(); fitView(); draw();
+  flashHint('Press <b>Run</b>: the scope shows the capacitor ramping between one third and two thirds of the supply while the output squares off.');
 }
 
 function buildGallery(){

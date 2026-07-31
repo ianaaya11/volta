@@ -22,6 +22,8 @@ export const AI_PART_TYPES = [
   'R', 'C', 'L', 'V', 'VS', 'SQ', 'I', 'D', 'QN', 'QP', 'MN', 'MP', 'OA', 'GND',
   'LED', 'LAMP', 'CP', 'SW', 'PB', 'PBNC', 'POT',
   'E', 'G', 'F', 'H', 'XF', 'RLY', 'MOT',
+  'LOGIC', 'NOT', 'AND', 'OR', 'NAND', 'NOR', 'XOR', 'XNOR',
+  'SRL', 'DL', 'DFF', 'JKFF', 'TFF', 'CNT4', 'SEG7', 'NE555', 'DAC4', 'ADC4',
 ] as const;
 export type AiPartType = (typeof AI_PART_TYPES)[number];
 
@@ -139,6 +141,28 @@ PART VALUES:
   resistance; the contact closes above about 20 mA of coil current. Put a diode
   across the coil, cathode to coil+, to catch the switch-off spike.
 - MOT is a DC motor with two pins; value is its armature resistance in ohms.
+
+DIGITAL PARTS — all behavioural, with high-impedance inputs that read a 1 above
+2.5 V and outputs that drive 0 or 5 V. They carry their own 0 V reference, so a
+purely digital circuit needs no GND symbol. All take value 0 except LOGIC.
+- Their pins run down the two edges: inputs on the left, outputs on the right,
+  two grid cells apart and centred on (x,y). A part with n pins on a side puts
+  pin i at row (2i - (n-1)) relative to y. Gates are 4 cells wide, everything
+  else 6. So an AND at (6,3) has A at (6,2), B at (6,4) and Q at (10,3).
+- LOGIC is the source that drives them, one pin, referenced to ground. Its
+  value is a clock frequency in Hz; value 0 makes it a switch the user clicks.
+- Gates: NOT (A), and AND, OR, NAND, NOR, XOR, XNOR (A, B) -> Q.
+- SRL (S,R) and DL (D,EN) are level-sensitive latches -> Q, Q-bar.
+- DFF (D,CLK), TFF (T,CLK) and JKFF (J,CLK,K) are rising-edge triggered
+  -> Q, Q-bar.
+- CNT4 (CLK,RST) -> Q0..Q3, a 4-bit counter that wraps at 16.
+- SEG7 (D0..D3) shows that nibble as a hex digit. It has no outputs.
+- NE555 (VCC,TRIG,THR,RST,CTRL) -> OUT, DIS. Thresholds are a third and two
+  thirds of whatever VCC is given. RESET is active low, so tie it to VCC. DIS
+  is open-drain: it shorts to ground while the output is low. For an astable,
+  run R1 from VCC to DIS, R2 from DIS to the capacitor, and tie the capacitor's
+  top to both TRIG and THR.
+- DAC4 (VREF,D0..D3) -> OUT, an analog voltage. ADC4 (VREF,VIN) -> D0..D3.
 - VS is a sine source and SQ a square source: set amp (peak volts), freq (Hz),
   off (DC offset). SQ also takes duty (0-1, use 0.5 for a symmetric square).
   A 0-to-5 V pulse is off 2.5 with amp 2.5.
