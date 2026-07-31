@@ -19,7 +19,8 @@ const KEY_STORAGE = 'zuri.anthropic.key';
 
 /** Part types the assistant is allowed to place. */
 export const AI_PART_TYPES = [
-  'R', 'C', 'L', 'V', 'VS', 'SQ', 'I', 'D', 'QN', 'MN', 'OA', 'GND',
+  'R', 'C', 'L', 'V', 'VS', 'SQ', 'I', 'D', 'QN', 'QP', 'MN', 'MP', 'OA', 'GND',
+  'LED', 'LAMP', 'CP', 'SW', 'PB', 'PBNC', 'POT',
 ] as const;
 export type AiPartType = (typeof AI_PART_TYPES)[number];
 
@@ -117,7 +118,15 @@ GEOMETRY — get this exactly right or the circuit will not connect:
   are not already touching. Prefer horizontal or vertical runs.
 
 PART VALUES:
-- R ohms, C farads, L henries, V volts, I amps. D, QN, MN, OA and GND take value 0.
+- R ohms, C farads, L henries, V volts, I amps. D, LED, QN, QP, MN, MP, OA, GND,
+  SW, PB and PBNC take value 0.
+- LED is a diode that lights — always give it a series resistor. LAMP is a
+  filament bulb; its value is its resistance in ohms. CP is a polarized
+  capacitor (value in farads); its first pin is the + plate.
+- SW is a latching switch, PB a push button that is open until held, PBNC one
+  that is closed until held. All three start in their resting state.
+- POT is a 3-pin potentiometer: value is the whole track in ohms, and its pins
+  are [one end, wiper, the other end] in that order.
 - VS is a sine source and SQ a square source: set amp (peak volts), freq (Hz),
   off (DC offset). SQ also takes duty (0-1, use 0.5 for a symmetric square).
   A 0-to-5 V pulse is off 2.5 with amp 2.5.

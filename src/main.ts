@@ -14,7 +14,9 @@ import './style.css';
 
 /** Every part the editor can hold. 'GND' is a marker, not an engine device. */
 export type PartType = 'R' | 'V' | 'I' | 'C' | 'L' | 'VS' | 'SQ' | 'D'
-  | 'QN' | 'QP' | 'MN' | 'MP' | 'OA' | 'GND' | 'MCU';
+  | 'QN' | 'QP' | 'MN' | 'MP' | 'OA' | 'GND' | 'MCU'
+  // Batch 1 — parts built out of the devices the engine already models.
+  | 'LED' | 'LAMP' | 'CP' | 'SW' | 'PB' | 'PBNC' | 'POT';
 /** Everything the tool rail can be set to: a part to place, or a mode. */
 type Tool = PartType | 'select' | 'wire' | 'probe' | 'delete';
 type Rot = 0 | 90 | 180 | 270;
@@ -32,6 +34,8 @@ interface Comp {
   off?: number;
   duty?: number;    // square source only: fraction of the period spent high
   pin?: number;     // MCU pin only: which digital pin this pad is
+  on?: boolean;     // switches and push buttons: contact currently closed
+  pos?: number;     // potentiometer wiper, 0..1 from pin A to pin B
 }
 interface Wire { x1: number; y1: number; x2: number; y2: number }
 interface Probe { x: number; y: number; color: string }
@@ -93,18 +97,22 @@ function rotOff(dx:number,dy:number,rot:Rot):[number,number]{
   if(rot===270) return [dy,-dx];
   return [dx,dy];
 }
+// Pin geometry, as grid offsets from the part's anchor, in the SAME order the
+// engine device expects its nodes. Anything absent here is a plain 2-terminal
+// part spanning 2 units along its rotation, which is the common case.
+const PIN_OFFSETS:Partial<Record<PartType,[number,number][]>>={
+  GND:[[0,0]],
+  MCU:[[0,0]],
+  QN:[[2,-2],[0,0],[2,2]],   // C, B (at anchor), E
+  QP:[[2,-2],[0,0],[2,2]],
+  MN:[[2,-2],[0,0],[2,2]],   // D, G, S
+  MP:[[2,-2],[0,0],[2,2]],
+  OA:[[4,0],[0,-1],[0,1]],   // out, in+, in-
+  POT:[[0,0],[1,-2],[2,0]],  // end A, wiper (tapped off the side), end B
+};
 function pinsOf(c:Comp):Pt[]{
-  if(c.type==='GND'||c.type==='MCU') return [{x:c.x,y:c.y}];
-  if(c.type==='QN'||c.type==='QP'||c.type==='MN'||c.type==='MP'){
-    // 3 pins, engine order [collector/drain, base/gate, emitter/source].
-    const offs:[number,number][]=[[2,-2],[0,0],[2,2]]; // C/D, B/G (at anchor), E/S
-    return offs.map(([ox,oy])=>{ const [rx,ry]=rotOff(ox,oy,rotOf(c)); return {x:c.x+rx,y:c.y+ry}; });
-  }
-  if(c.type==='OA'){
-    // 3 pins, engine order [out, in+, in-]. Inputs on the left, output on right.
-    const offs:[number,number][]=[[4,0],[0,-1],[0,1]]; // out, in+, in-
-    return offs.map(([ox,oy])=>{ const [rx,ry]=rotOff(ox,oy,rotOf(c)); return {x:c.x+rx,y:c.y+ry}; });
-  }
+  const offs=PIN_OFFSETS[c.type];
+  if(offs) return offs.map(([ox,oy])=>{ const [rx,ry]=rotOff(ox,oy,rotOf(c)); return {x:c.x+rx,y:c.y+ry}; });
   const [dx,dy]=DIR[rotOf(c)];
   return [{x:c.x,y:c.y},{x:c.x+dx*2,y:c.y+dy*2}];
 }
@@ -127,7 +135,29 @@ const TYPES:Record<PartType,TypeInfo>={
   OA:{name:'Op-amp (ideal)',unit:'',def:0},
   GND:{name:'Ground',unit:'',def:0},
   MCU:{name:'MCU pin',unit:'',def:0},
+  LED:{name:'LED',unit:'',def:0},
+  LAMP:{name:'Lamp',unit:'Ω',def:100},
+  CP:{name:'Capacitor (polarized)',unit:'F',def:100e-6},
+  SW:{name:'Switch (SPST)',unit:'',def:0},
+  PB:{name:'Push button (NO)',unit:'',def:0},
+  PBNC:{name:'Push button (NC)',unit:'',def:0},
+  POT:{name:'Potentiometer',unit:'Ω',def:10000},
 };
+
+// ---- Mechanical contacts ---------------------------------------------------
+// A switch is modelled as a resistor that changes value rather than as a device
+// that appears and disappears: an open contact is a 1 GΩ resistor and a closed
+// one is a milliohm. That keeps the MNA matrix the same size and the same
+// shape whichever way the contact is thrown, so flipping a switch mid-run only
+// has to poke a value — no rebuild, no re-solve from scratch, and no chance of
+// a floating subnet making the matrix singular.
+const CONTACT_OPEN=1e9, CONTACT_CLOSED=1e-3;
+/** Is this part's contact closed right now? NC buttons read inverted. */
+function contactClosed(c:Comp):boolean{
+  const held=c.on===true;
+  return c.type==='PBNC' ? !held : held;
+}
+const isContact=(t:PartType)=>t==='SW'||t==='PB'||t==='PBNC';
 
 // ---- MCU pin electrical model ---------------------------------------------
 // An output pin is an ideal 0/5 V source; an input is high-impedance. A truly
@@ -149,43 +179,84 @@ interface Netlist {
   grounded: boolean;
 }
 
-// Turn one placed part into the engine device it represents. Ground returns
-// null — it only marks the reference node and has no equation of its own. The
-// switch is what earns the type safety: each case builds exactly the fields
-// that device model reads, so a missing value can't reach the solver as
-// `undefined`.
-function toDevice(c:Comp,nodes:NodeId[]):Component|null{
+// Turn one placed part into the engine devices it represents. Most parts are
+// one device, but some — a potentiometer is two resistors sharing a wiper — are
+// several, so this returns a list; ground returns an empty one, since it only
+// marks the reference node and has no equation of its own. The switch is what
+// earns the type safety: each case builds exactly the fields that device model
+// reads, so a missing value can't reach the solver as `undefined`.
+//
+// A part that expands into several devices names them `<id>:<suffix>`. That
+// keeps ids unique for the solver while staying recoverable, which is what
+// `pinCurrents` below relies on to animate current through the part.
+function toDevices(c:Comp,nodes:NodeId[]):Component[]{
   const pair:Pair=[nodes[0],nodes[1]];
   const triple:Triple=[nodes[0],nodes[1],nodes[2]];
   const value=c.value??TYPES[c.type].def;
   switch(c.type){
-    case 'GND': return null;
+    case 'GND': return [];
     case 'MCU': {
       // Referenced to ground, so a pin pad needs no second terminal drawn.
       const p=c.pin??13;
-      return mcuMode.get(p)
+      return [mcuMode.get(p)
         ? {id:c.id,type:'V',nodes:[nodes[0],0],value:mcuOut.get(p)?MCU_HIGH_V:0}
-        : {id:c.id,type:'R',nodes:[nodes[0],0],value:MCU_INPUT_Z};
+        : {id:c.id,type:'R',nodes:[nodes[0],0],value:MCU_INPUT_Z}];
     }
-    case 'R': return {id:c.id,type:'R',nodes:pair,value};
-    case 'C': return {id:c.id,type:'C',nodes:pair,value};
-    case 'L': return {id:c.id,type:'L',nodes:pair,value};
-    case 'I': return {id:c.id,type:'I',nodes:pair,value};
-    case 'V': return {id:c.id,type:'V',nodes:pair,value};
+    case 'R': return [{id:c.id,type:'R',nodes:pair,value}];
+    case 'C': return [{id:c.id,type:'C',nodes:pair,value}];
+    case 'CP': return [{id:c.id,type:'C',nodes:pair,value}];
+    case 'L': return [{id:c.id,type:'L',nodes:pair,value}];
+    case 'I': return [{id:c.id,type:'I',nodes:pair,value}];
+    case 'V': return [{id:c.id,type:'V',nodes:pair,value}];
     // Both wave sources map onto the engine's single 'VS' device; only the
     // wave shape differs, so the editor keeps them as separate parts (distinct
     // symbols and rail entries) while the solver sees one model.
-    case 'VS': return {id:c.id,type:'VS',nodes:pair,wave:'SIN',value,
-      amp:c.amp??0,freq:c.freq??0,off:c.off??0};
-    case 'SQ': return {id:c.id,type:'VS',nodes:pair,wave:'SQR',value,
-      amp:c.amp??0,freq:c.freq??0,off:c.off??0,duty:c.duty??0.5};
-    case 'D': return {id:c.id,type:'D',nodes:pair};
-    case 'QN': return {id:c.id,type:'QN',nodes:triple};
-    case 'QP': return {id:c.id,type:'QP',nodes:triple};
-    case 'MN': return {id:c.id,type:'MN',nodes:triple};
-    case 'MP': return {id:c.id,type:'MP',nodes:triple};
-    case 'OA': return {id:c.id,type:'OA',nodes:triple};
+    case 'VS': return [{id:c.id,type:'VS',nodes:pair,wave:'SIN',value,
+      amp:c.amp??0,freq:c.freq??0,off:c.off??0}];
+    case 'SQ': return [{id:c.id,type:'VS',nodes:pair,wave:'SQR',value,
+      amp:c.amp??0,freq:c.freq??0,off:c.off??0,duty:c.duty??0.5}];
+    case 'D': return [{id:c.id,type:'D',nodes:pair}];
+    // An LED is a diode the renderer lights up. Electrically it is one, so it
+    // shares the model rather than duplicating it.
+    case 'LED': return [{id:c.id,type:'D',nodes:pair}];
+    // A filament lamp is a resistor that glows with the power it dissipates.
+    case 'LAMP': return [{id:c.id,type:'R',nodes:pair,value}];
+    case 'SW': case 'PB': case 'PBNC':
+      return [{id:c.id,type:'R',nodes:pair,value:contactClosed(c)?CONTACT_CLOSED:CONTACT_OPEN}];
+    case 'POT': {
+      // Two resistors in series across the track, tapped at the wiper. The
+      // floor keeps either half from hitting 0 Ω at the end of travel, which
+      // would short the wiper to an end and make the matrix singular.
+      const pos=Math.max(0,Math.min(1,c.pos??0.5));
+      return [
+        {id:c.id+':a',type:'R',nodes:[nodes[0],nodes[1]],value:Math.max(1e-3,value*pos)},
+        {id:c.id+':b',type:'R',nodes:[nodes[1],nodes[2]],value:Math.max(1e-3,value*(1-pos))},
+      ];
+    }
+    case 'QN': return [{id:c.id,type:'QN',nodes:triple}];
+    case 'QP': return [{id:c.id,type:'QP',nodes:triple}];
+    case 'MN': return [{id:c.id,type:'MN',nodes:triple}];
+    case 'MP': return [{id:c.id,type:'MP',nodes:triple}];
+    case 'OA': return [{id:c.id,type:'OA',nodes:triple}];
   }
+}
+
+// Current flowing INTO the part at each of its pins, in `pinsOf` order. This
+// is the one place that knows how a part's internal devices connect to its
+// pins, so the animation and the KCL wire solver don't have to special-case
+// every multi-device part.
+function pinCurrents(c:Comp,result:Solution):number[]{
+  const cur=(id:string)=>result.current[id]||0;
+  if(c.type==='GND') return [0];
+  if(c.type==='MCU') return [cur(c.id)];
+  if(c.type==='POT'){
+    const ia=cur(c.id+':a'), ib=cur(c.id+':b');   // each flows first node -> second
+    return [ia, ib-ia, -ib];
+  }
+  const t=result.terminals&&result.terminals[c.id];
+  if(t) return [t.Ic,t.Ib,t.Ie];                  // 3-terminal active devices
+  const i=cur(c.id);
+  return [i,-i];                                  // 2-terminal: in at A, out at B
 }
 
 function buildNetlist():Netlist{
@@ -208,10 +279,7 @@ function buildNetlist():Netlist{
     if(!rootToNode.has(r)) rootToNode.set(r,next++); return rootToNode.get(r)!; };
   // Emit engine components (skip GND — it only defines the reference).
   const netComps:Component[]=[];
-  for(const c of comps){
-    const d=toDevice(c,pinsOf(c).map(p=>nodeOf(p.x,p.y)));
-    if(d) netComps.push(d);
-  }
+  for(const c of comps) netComps.push(...toDevices(c,pinsOf(c).map(p=>nodeOf(p.x,p.y))));
   const nodeCount=next-1+(grounded.size?1:0);
   return {netComps,nodeOf,nodeCount,grounded:grounded.size>0};
 }
@@ -229,21 +297,8 @@ function solveWireCurrents(result:Solution|null):Map<number,number>{
   for(const c of comps){
     if(c.type==='GND') continue;
     const ps=pinsOf(c);
-    if(c.type==='QN'||c.type==='QP'||c.type==='MN'||c.type==='MP'||c.type==='OA'){
-      const t=result.terminals&&result.terminals[c.id]; if(!t) continue;
-      // injection into node = -(current flowing into that terminal of the device)
-      add(key(ps[0].x,ps[0].y), -t.Ic);
-      add(key(ps[1].x,ps[1].y), -t.Ib);
-      add(key(ps[2].x,ps[2].y), -t.Ie);
-    } else if(c.type==='MCU'){
-      // One pin, with the return path through ground rather than a second
-      // terminal, so only this node sees an injection.
-      add(key(ps[0].x,ps[0].y), -(result.current[c.id]||0));
-    } else {
-      const i=result.current[c.id]||0; // flows pinA -> pinB through the device
-      add(key(ps[0].x,ps[0].y), -i);
-      add(key(ps[1].x,ps[1].y), +i);
-    }
+    // Injection into a node = -(current flowing into the part at that pin).
+    pinCurrents(c,result).forEach((i,k)=>{ if(ps[k]) add(key(ps[k].x,ps[k].y), -i); });
   }
   // Adjacency of wires at each point.
   interface Incident { wi:number; other:string; sign:number }
@@ -719,6 +774,45 @@ function drawComponent(c:Comp,nodeColor:NodeColor){
     ctx.textAlign='left';
     return;
   }
+  if(c.type==='POT'){
+    // A resistor track between the two ends, with an arrow from the wiper pin
+    // striking it at the tap point — the position of the arrow along the track
+    // is the wiper setting, so the symbol reads the value at a glance.
+    const Ap={x:gx(ps[0].x),y:gy(ps[0].y)}, Wp={x:gx(ps[1].x),y:gy(ps[1].y)}, Bp={x:gx(ps[2].x),y:gy(ps[2].y)};
+    const tl=Math.hypot(Bp.x-Ap.x,Bp.y-Ap.y)||1;
+    const tux=(Bp.x-Ap.x)/tl, tuy=(Bp.y-Ap.y)/tl;      // along the track
+    const tnx=-tuy, tny=tux;                            // across it
+    const cxp=(Ap.x+Bp.x)/2, cyp=(Ap.y+Bp.y)/2;
+    const Q=(d:number,o:number):Pt=>({x:cxp+tux*d+tnx*o, y:cyp+tuy*d+tny*o});
+    ctx.strokeStyle=col(ps[0].x,ps[0].y);
+    ctx.beginPath(); ctx.moveTo(Ap.x,Ap.y); ctx.lineTo(Q(-13,0).x,Q(-13,0).y); ctx.stroke();
+    ctx.strokeStyle=col(ps[2].x,ps[2].y);
+    ctx.beginPath(); ctx.moveTo(Bp.x,Bp.y); ctx.lineTo(Q(13,0).x,Q(13,0).y); ctx.stroke();
+    ctx.strokeStyle=T.ink; ctx.beginPath();
+    for(let i=0;i<=6;i++){ const p=Q(-13+26*i/6,(i%2?6:-6)*(i===0||i===6?0:1));
+      i===0?ctx.moveTo(p.x,p.y):ctx.lineTo(p.x,p.y); } ctx.stroke();
+    const pos=Math.max(0,Math.min(1,c.pos??0.5));
+    const tap=Q(-13+26*pos,0);
+    ctx.strokeStyle=col(ps[1].x,ps[1].y);
+    ctx.beginPath(); ctx.moveTo(Wp.x,Wp.y); ctx.lineTo(tap.x,tap.y); ctx.stroke();
+    // Arrowhead on the track end of the wiper lead.
+    let wx=tap.x-Wp.x, wy=tap.y-Wp.y; const wl=Math.hypot(wx,wy)||1; wx/=wl; wy/=wl;
+    const bx0=tap.x-wx*8, by0=tap.y-wy*8;   // arrow base, back along the lead
+    ctx.fillStyle=T.ink; ctx.beginPath();
+    ctx.moveTo(tap.x,tap.y);
+    ctx.lineTo(bx0-wy*4, by0+wx*4);
+    ctx.lineTo(bx0+wy*4, by0-wx*4); ctx.closePath(); ctx.fill();
+    if(running&&lastResult){ const I=pinCurrents(c,lastResult);
+      drawFlow(Ap.x,Ap.y,tap.x,tap.y,I[0]); drawFlow(tap.x,tap.y,Bp.x,Bp.y,-I[2]); }
+    // Label on the side away from the wiper, so it never sits on the track.
+    ctx.fillStyle=T.label; ctx.font='10px ui-monospace,monospace';
+    const lx=cxp-tnx*24, ly=cyp-tny*24;
+    const txt=fmt(c.value??TYPES.POT.def,'Ω')+' · '+Math.round(pos*100)+'%';
+    if(Math.abs(tnx)>Math.abs(tny)){ ctx.textAlign=tnx<0?'right':'left'; ctx.fillText(txt,lx,ly+3); }
+    else { ctx.textAlign='center'; ctx.fillText(txt,lx,ly); }
+    ctx.textAlign='left';
+    return;
+  }
   const A=ps[0],B=ps[1];
   const ax=gx(A.x),ay=gy(A.y),bx=gx(B.x),by=gy(B.y);
   const mx=(ax+bx)/2,my=(ay+by)/2;
@@ -768,10 +862,80 @@ function drawComponent(c:Comp,nodeColor:NodeColor){
     for(let i=0;i<4;i++){ const d=-12+i*8; const c0=P(d+4,0);
       ctx.moveTo(P(d,0).x,P(d,0).y);
       ctx.arc(c0.x,c0.y,4,Math.atan2(uy,ux)+Math.PI,Math.atan2(uy,ux),false); } ctx.stroke();
-  } else if(c.type==='D'){
+  } else if(c.type==='D'||c.type==='LED'){
+    if(c.type==='LED'){
+      // Brightness tracks forward current on a log scale — an LED is visibly
+      // lit well before it reaches its rated 20 mA, and a linear scale would
+      // show almost nothing over most of the useful range.
+      const i=running&&lastResult?(lastResult.current[c.id]||0):0;
+      const lit=Math.max(0,Math.min(1,Math.log10(1+Math.abs(i)/1e-4)/2.6));
+      if(lit>0.02){
+        const g=ctx.createRadialGradient(mx,my,2,mx,my,20);
+        g.addColorStop(0,`rgba(255,120,60,${0.75*lit})`); g.addColorStop(1,'rgba(255,120,60,0)');
+        ctx.fillStyle=g; ctx.beginPath(); ctx.arc(mx,my,20,0,7); ctx.fill();
+      }
+      ctx.fillStyle=lit>0.02?`rgb(${Math.round(200+55*lit)},${Math.round(70+90*lit)},60)`:T.ink;
+    }
     const t1=P(-6,7),t2=P(-6,-7),tip=P(6,0);
     ctx.beginPath(); ctx.moveTo(t1.x,t1.y); ctx.lineTo(t2.x,t2.y); ctx.lineTo(tip.x,tip.y); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle=T.ink;
     const b1=P(6,7),b2=P(6,-7); ctx.beginPath(); ctx.moveTo(b1.x,b1.y); ctx.lineTo(b2.x,b2.y); ctx.stroke();
+    if(c.type==='LED'){   // the two emission arrows that make it an LED
+      for(const off of [-4,3]){
+        const s=P(off-2,-9), e=P(off+3,-15);
+        ctx.beginPath(); ctx.moveTo(s.x,s.y); ctx.lineTo(e.x,e.y); ctx.stroke();
+        let dx2=e.x-s.x, dy2=e.y-s.y; const dl=Math.hypot(dx2,dy2)||1; dx2/=dl; dy2/=dl;
+        ctx.fillStyle=T.ink; ctx.beginPath(); ctx.moveTo(e.x,e.y);
+        ctx.lineTo(e.x-dx2*5-dy2*2.5, e.y-dy2*5+dx2*2.5);
+        ctx.lineTo(e.x-dx2*5+dy2*2.5, e.y-dy2*5-dx2*2.5); ctx.closePath(); ctx.fill();
+      }
+    }
+  } else if(c.type==='LAMP'){
+    // Filament lamp: a circle with a crossed filament, glowing with dissipated
+    // power. Referenced to 1 W so an ordinary indicator bulb reads as fully on.
+    const v=running&&lastResult?(lastResult.voltageAcross[c.id]||0):0;
+    const i=running&&lastResult?(lastResult.current[c.id]||0):0;
+    const lit=Math.max(0,Math.min(1,Math.abs(v*i)));
+    if(lit>0.02){
+      const g=ctx.createRadialGradient(mx,my,2,mx,my,22);
+      g.addColorStop(0,`rgba(255,205,90,${0.85*lit})`); g.addColorStop(1,'rgba(255,205,90,0)');
+      ctx.fillStyle=g; ctx.beginPath(); ctx.arc(mx,my,22,0,7); ctx.fill();
+    }
+    ctx.fillStyle=lit>0.02?`rgba(255,225,140,${lit})`:'transparent';
+    ctx.strokeStyle=T.ink;
+    ctx.beginPath(); ctx.arc(mx,my,11,0,7); if(lit>0.02) ctx.fill(); ctx.stroke();
+    const d=11/Math.SQRT2;
+    ctx.beginPath();
+    ctx.moveTo(P(-d,-d).x,P(-d,-d).y); ctx.lineTo(P(d,d).x,P(d,d).y);
+    ctx.moveTo(P(-d,d).x,P(-d,d).y); ctx.lineTo(P(d,-d).x,P(d,-d).y); ctx.stroke();
+  } else if(c.type==='CP'){
+    // Polarized: a flat plate for the anode and a curved one for the cathode,
+    // plus a + marker, so the orientation that matters is visible.
+    const p1=P(-3,9),p2=P(-3,-9);
+    ctx.beginPath(); ctx.moveTo(p1.x,p1.y); ctx.lineTo(p2.x,p2.y); ctx.stroke();
+    const arcC=P(9,0), ang=Math.atan2(uy,ux);
+    ctx.beginPath(); ctx.arc(arcC.x,arcC.y,9,ang+Math.PI*0.62,ang+Math.PI*1.38); ctx.stroke();
+    ctx.strokeStyle=col(A.x,A.y); ctx.beginPath(); ctx.moveTo(mx-ux*13,my-uy*13); ctx.lineTo(mx-ux*3,my-uy*3); ctx.stroke();
+    ctx.strokeStyle=col(B.x,B.y); ctx.beginPath(); ctx.moveTo(mx+ux*13,my+uy*13); ctx.lineTo(mx+ux*3,my+uy*3); ctx.stroke();
+    ctx.fillStyle=T.ink; ctx.font='11px sans-serif';
+    const pp=P(-9,-13); ctx.fillText('+',pp.x-3,pp.y+4);
+  } else if(isContact(c.type)){
+    // A hinged blade pivoting off pin A. Open, it stands off the far contact;
+    // closed, it lies across both — the same picture the schematic symbol uses,
+    // which makes the state readable without selecting the part.
+    const closed=contactClosed(c);
+    const piv=P(-8,0), rest=P(8,0);
+    ctx.strokeStyle=T.ink; ctx.fillStyle=T.ink;
+    ctx.beginPath(); ctx.arc(piv.x,piv.y,2.6,0,7); ctx.fill();
+    ctx.beginPath(); ctx.arc(rest.x,rest.y,2.6,0,7); ctx.fill();
+    const tipP=closed?P(8,0):P(7,-10);
+    ctx.beginPath(); ctx.moveTo(piv.x,piv.y); ctx.lineTo(tipP.x,tipP.y); ctx.stroke();
+    if(c.type!=='SW'){   // push buttons get an actuator cap above the contacts
+      const capA=P(-7,closed?-11:-14), capB=P(7,closed?-11:-14);
+      ctx.beginPath(); ctx.moveTo(capA.x,capA.y); ctx.lineTo(capB.x,capB.y); ctx.stroke();
+      const st1=P(0,closed?-11:-14), st2=P(0,closed?-17:-20);
+      ctx.beginPath(); ctx.moveTo(st1.x,st1.y); ctx.lineTo(st2.x,st2.y); ctx.stroke();
+    }
   }
   // moving current dots through the body
   if(running&&lastResult){ drawFlow(ax,ay,bx,by, lastResult.current[c.id]||0); }
@@ -781,8 +945,10 @@ function drawComponent(c:Comp,nodeColor:NodeColor){
   // symbol — so side-anchored labels are aligned away from the body instead.
   ctx.fillStyle=T.label; ctx.font='10px ui-monospace,monospace';
   const lp=P(0,-18);
-  let valTxt = c.type==='D'?'':fmt(c.value??TYPES[c.type].def,TYPES[c.type].unit);
+  const noLabel:PartType[]=['D','LED'];
+  let valTxt = noLabel.includes(c.type)?'':fmt(c.value??TYPES[c.type].def,TYPES[c.type].unit);
   if(c.type==='VS'||c.type==='SQ') valTxt = fmt(c.amp??0,'V')+' '+fmt(c.freq??0,'Hz');
+  if(isContact(c.type)) valTxt = contactClosed(c)?'closed':'open';
   const offX=lp.x-mx, offY=lp.y-my;
   if(Math.abs(offX)>Math.abs(offY)){
     ctx.textAlign = offX>0?'left':'right';
@@ -803,12 +969,14 @@ function drawGhost(type:PartType,x:number,y:number){
 // ===========================================================================
 //  PART 5 — INTERACTION
 // ===========================================================================
-const PLACE_TYPES:PartType[]=['R','V','VS','SQ','I','C','L','D','QN','MN','OA','GND','MCU'];
+const PLACE_TYPES:PartType[]=['R','POT','V','VS','SQ','I','C','CP','L','D','LED','LAMP',
+  'SW','PB','PBNC','QN','QP','MN','MP','OA','GND','MCU'];
 const isPlaceType=(t:Tool):t is PartType=>(PLACE_TYPES as string[]).includes(t);
 let mouse:{px:number;py:number;gx:number|null;gy:number|null}={px:0,py:0,gx:null,gy:null};
 let wireStart:Pt|null=null;
 let ghostRot:Rot=0;
 let dragging:{c:Comp;dx:number;dy:number;x0:number;y0:number}|null=null;
+let heldButton:Comp|null=null;   // push button currently held down by a pointer
 // Panning the canvas, and the two-pointer pinch that zooms it. Tracking live
 // pointers by id is what lets one finger pan while two fingers pinch.
 let panning:{px:number;py:number;ox:number;oy:number}|null=null;
@@ -885,6 +1053,8 @@ stage.addEventListener('pointerdown',e=>{
     const nc:Comp={id:tool+(uid++),type:tool,x:g.x,y:g.y,rot:ghostRot,value:TYPES[tool].def};
     if(tool==='VS'){ nc.amp=5; nc.freq=1000; nc.off=0; }
     if(tool==='SQ'){ nc.amp=5; nc.freq=1000; nc.off=0; nc.duty=0.5; }
+    if(tool==='POT') nc.pos=0.5;
+    if(isContact(tool)) nc.on=false;   // NC buttons read `on` as "held", so this is closed
     comps.push(nc);
     refreshMeta(); commit(); draw(); return;
   }
@@ -916,6 +1086,14 @@ stage.addEventListener('pointerdown',e=>{
   }
   // select tool
   const c=hitComponent(g.x,g.y);
+  // While the simulation runs, the schematic doubles as a control panel:
+  // tapping a switch throws it and holding a push button presses it, which is
+  // what these parts are for. Stopped, the same tap just selects the part.
+  if(c&&running&&isContact(c.type)){
+    if(c.type==='SW'){ c.on=!c.on; }
+    else { c.on=true; heldButton=c; try{ stage.setPointerCapture(e.pointerId); }catch{ /* best-effort */ } }
+    selected=c; renderInspector(); syncValues(); draw(); return;
+  }
   selected=c; renderInspector();
   if(c){
     dragging={c,dx:g.x-c.x,dy:g.y-c.y,x0:c.x,y0:c.y};
@@ -933,6 +1111,8 @@ const endDrag=(e?:PointerEvent)=>{
   if(e) pointers.delete(e.pointerId);
   if(pointers.size<2) pinchDist=0;
   panning=null;
+  // A push button is momentary — releasing the pointer releases the contact.
+  if(heldButton){ heldButton.on=false; heldButton=null; syncValues(); renderInspector(); draw(); }
   if(!dragging) return;
   const moved=dragging.c.x!==dragging.x0||dragging.c.y!==dragging.y0;
   dragging=null; refreshMeta();
@@ -1163,15 +1343,16 @@ function renderInspector(){
       <span class="kbd">R</span> rotate · <span class="kbd">Del</span> remove · <span class="kbd">Esc</span> deselect
       </div><hr>
       <h3>Legend</h3>
-      <div class="swatch-row"><span class="swatch" style="background:#4dabf7"></span> low voltage</div>
-      <div class="swatch-row"><span class="swatch" style="background:#e05a4d"></span> high voltage</div>
-      <div class="swatch-row"><span class="swatch" style="background:#ffd86b"></span> current flow (moving dots)</div>`;
+      <div class="swatch-row"><span class="swatch" style="background:${voltColor(-1e9)}"></span> low voltage</div>
+      <div class="swatch-row"><span class="swatch" style="background:${voltColor(1e9)}"></span> high voltage</div>
+      <div class="swatch-row"><span class="swatch" style="background:${T.current}"></span> current flow (moving dots)</div>`;
     renderReadout(); return;
   }
   const sel=selected;                       // narrowed for the closures below
   const t=TYPES[sel.type];
   let html=`<h3>${t.name}</h3>`;
-  const noValue:PartType[]=['GND','D','QN','QP','MN','MP','OA','VS','SQ','MCU'];
+  const noValue:PartType[]=['GND','D','LED','QN','QP','MN','MP','OA','VS','SQ','MCU',
+    'SW','PB','PBNC'];
   if(!noValue.includes(sel.type)){
     html+=`<div class="field"><label>Value (${t.unit}) — e.g. 4.7k, 100n, 12</label>
       <input id="valInput" value="${fmt(sel.value??t.def,'').trim()}"/></div>`;
@@ -1184,6 +1365,29 @@ function renderInspector(){
       html+=`<div class="field"><label>Duty cycle (0–1) — 0.5 is a symmetric square</label>
         <input id="dutyInput" value="${sel.duty??0.5}"/></div>`;
     }
+  }
+  if(sel.type==='POT'){
+    html+=`<div class="field"><label>Wiper position — ${Math.round((sel.pos??0.5)*100)}%</label>
+      <input id="posInput" type="range" min="0" max="100" step="1" value="${Math.round((sel.pos??0.5)*100)}"/></div>
+      <div class="field"><div class="empty">Track resistance splits between the two halves. Drag while
+        the simulation runs to sweep it live.</div></div>`;
+  }
+  if(isContact(sel.type)){
+    const closed=contactClosed(sel);
+    const verb=sel.type==='SW'?(closed?'Open':'Close'):(closed?'Release':'Press');
+    html+=`<div class="field"><label>Contact — currently <b>${closed?'closed':'open'}</b></label>
+      <button class="btn" id="contactBtn">${verb}</button></div>
+      <div class="field"><div class="empty">${sel.type==='SW'
+        ? 'Click the switch on the schematic while running to throw it.'
+        : 'Hold the button on the schematic while running to press it; it springs back on release.'}</div></div>`;
+  }
+  if(sel.type==='LED'){
+    html+=`<div class="field"><div class="empty">A diode that lights with forward current. Add a series
+      resistor — a bare LED across a supply is a short.</div></div>`;
+  }
+  if(sel.type==='CP'){
+    html+=`<div class="field"><div class="empty">Polarized: the <b>+</b> plate must sit at the higher
+      potential. The solver models it as an ordinary capacitor.</div></div>`;
   }
   if(sel.type==='QN'||sel.type==='QP'){
     html+=`<div class="field"><label>Terminals</label><div class="empty">Base = single-pin side; collector = upper pin, emitter = lower pin (arrow). β≈100.</div></div>`;
@@ -1217,6 +1421,19 @@ function renderInspector(){
   bindNum('offInput',v=>sel.off=v);
   bindNum('dutyInput',v=>sel.duty=Math.max(0.01,Math.min(0.99,v)));
   bindNum('pinInput',v=>sel.pin=Math.max(0,Math.round(v)));
+  // The wiper streams on `input`, not `change`: sweeping a pot and watching the
+  // circuit follow is most of the point of having one.
+  const pos=document.getElementById('posInput') as HTMLInputElement|null;
+  if(pos) pos.addEventListener('input',()=>{
+    sel.pos=Number(pos.value)/100;
+    const lab=pos.previousElementSibling; if(lab) lab.innerHTML=`Wiper position — ${pos.value}%`;
+    if(running) syncValues(); draw();
+  });
+  if(pos) pos.addEventListener('change',()=>commit());
+  const cb=document.getElementById('contactBtn');
+  if(cb) cb.addEventListener('click',()=>{
+    sel.on=!sel.on; commit(); if(running) syncValues(); renderInspector(); draw();
+  });
   renderReadout();
 }
 function syncValues(){ // push edited values into live sim without restarting
@@ -1375,15 +1592,24 @@ const RAIL:{t:Tool;label:string;icon?:string}[]=[
   {t:'wire',label:'Wire',icon:'M3 12h6a3 3 0 003-3V6M21 12h-6a3 3 0 00-3 3v3'},
   {t:'probe',label:'Probe'},
   {t:'R',label:'Resistor'},
+  {t:'POT',label:'Pot'},
   {t:'V',label:'Source'},
   {t:'VS',label:'Sine'},
   {t:'SQ',label:'Square'},
   {t:'I',label:'Current'},
   {t:'C',label:'Cap'},
+  {t:'CP',label:'Cap +'},
   {t:'L',label:'Inductor'},
   {t:'D',label:'Diode'},
+  {t:'LED',label:'LED'},
+  {t:'LAMP',label:'Lamp'},
+  {t:'SW',label:'Switch'},
+  {t:'PB',label:'Button'},
+  {t:'PBNC',label:'Btn NC'},
   {t:'QN',label:'NPN'},
+  {t:'QP',label:'PNP'},
   {t:'MN',label:'NMOS'},
+  {t:'MP',label:'PMOS'},
   {t:'OA',label:'Op-amp'},
   {t:'GND',label:'Ground'},
   {t:'MCU',label:'MCU pin'},
@@ -1414,8 +1640,17 @@ function miniSymbol(t:Tool){
     case 'C': return s('<path d="M2 12h8M14 12h8M10 6v12M14 6v12"/>');
     case 'L': return s('<path d="M2 14h3a3 3 0 016 0 3 3 0 016 0h3"/>');
     case 'D': return s('<path d="M2 12h6M16 12h6M8 6l8 6-8 6zM16 6v12"/>');
+    case 'LED': return s('<path d="M2 12h6M16 12h6M8 6l8 6-8 6zM16 6v12M13 5l3-3M16 2h-3M16 2v3M17 8l4-4M21 4h-3M21 4v3"/>');
+    case 'LAMP': return s('<circle cx="12" cy="12" r="6"/><path d="M2 12h4M18 12h4M8 8l8 8M16 8l-8 8"/>');
+    case 'POT': return s('<path d="M2 17h3l1.5-4 3 8 3-8 3 8 1.5-4H21M12 3v6M9 6l3 3 3-3"/>');
+    case 'CP': return s('<path d="M2 12h8M14 12h8M10 5v14M14 6a9 9 0 010 12M4 6h4M6 4v4"/>');
+    case 'SW': return s('<path d="M2 16h5M17 16h5M7 16l10-6"/><circle cx="7" cy="16" r="1.6"/><circle cx="17" cy="16" r="1.6"/>');
+    case 'PB': return s('<path d="M2 17h5M17 17h5M7 17h10M4 9h16M12 9V4"/>');
+    case 'PBNC': return s('<path d="M2 17h5M17 17h5M6 14h12M12 14V4M12 17v-3"/>');
     case 'QN': return s('<path d="M3 12h6M9 5v14M9 9l9-5M9 15l9 5"/>');
+    case 'QP': return s('<path d="M3 12h6M9 5v14M9 9l9-5M9 15l9 5M12 13.7l3 1.6"/>');
     case 'MN': return s('<path d="M3 12h4M7 6v12M10 6v12M10 8h8M10 16h8M18 4v6M18 14v6"/>');
+    case 'MP': return s('<path d="M3 12h4M7 6v12M10 6v12M10 8h8M10 16h8M18 4v6M18 14v6M13 15l-2.5 1"/>');
     case 'OA': return s('<path d="M4 5v14l14-7zM2 9h2M2 15h2"/>');
     case 'GND': return s('<path d="M12 4v8M6 12h12M8 16h8M10 20h4"/>');
     case 'MCU': return s('<rect x="4" y="7" width="16" height="10" rx="2"/><path d="M12 17v4"/>');
@@ -1443,7 +1678,41 @@ const GALLERY=[
   {name:'BJT common-emitter amp', fn:loadAmp},
   {name:'NMOS common-source amp', fn:loadMos},
   {name:'Non-inverting op-amp', fn:loadOpamp},
+  {name:'Switch, pot & LED (click to play)', fn:loadPanel},
 ];
+// A circuit you operate rather than watch: throw the switch to power the rail,
+// hold the button for the lamp, and sweep the pot to dim the LED. Every part
+// here is one the solver already knew how to model — the switch and the pot
+// are resistors whose value the UI changes — so it doubles as the worked
+// example for the whole electromechanical batch.
+function loadPanel(){
+  comps=[]; wires=[]; uid=1;
+  comps.push({id:'V'+(uid++),type:'V',x:2,y:4,rot:90,value:9});   // 9 V battery (2,4)-(2,6)
+  comps.push({id:'GND'+(uid++),type:'GND',x:2,y:10});
+  wires.push({x1:2,y1:6,x2:2,y2:10});
+  // Master switch feeds the top rail. Closed at load so Run does something.
+  comps.push({id:'SW'+(uid++),type:'SW',x:2,y:2,rot:0,on:true});  // (2,2)-(4,2)
+  wires.push({x1:2,y1:4,x2:2,y2:2});
+  wires.push({x1:4,y1:2,x2:6,y2:2});
+  wires.push({x1:6,y1:2,x2:12,y2:2});
+  // Branch 1 — pot in series with an LED: sweeping the wiper dims it.
+  comps.push({id:'POT'+(uid++),type:'POT',x:6,y:2,rot:90,value:2000,pos:0.35}); // (6,2)-(6,4), wiper (8,3)
+  wires.push({x1:6,y1:4,x2:6,y2:10});                             // bottom of the track to ground
+  wires.push({x1:8,y1:3,x2:8,y2:5});                              // wiper down to the LED
+  comps.push({id:'LED'+(uid++),type:'LED',x:8,y:5,rot:90});       // (8,5)-(8,7)
+  wires.push({x1:8,y1:7,x2:8,y2:10});
+  // Branch 2 — momentary button lighting a lamp.
+  comps.push({id:'PB'+(uid++),type:'PB',x:12,y:2,rot:90});        // (12,2)-(12,4)
+  comps.push({id:'LAMP'+(uid++),type:'LAMP',x:12,y:4,rot:90,value:150}); // (12,4)-(12,6)
+  wires.push({x1:12,y1:6,x2:12,y2:10});
+  // Ground rail. Split at each tap point: wires join at endpoints, so a run
+  // that merely passes over a junction doesn't connect to it.
+  wires.push({x1:2,y1:10,x2:6,y2:10});
+  wires.push({x1:6,y1:10,x2:8,y2:10});
+  wires.push({x1:8,y1:10,x2:12,y2:10});
+  selected=null; refreshMeta(); renderInspector(); fitView(); draw();
+  flashHint('Press <b>Run</b>, then click the <b>switch</b>, hold the <b>button</b>, and sweep the <b>pot</b> in the inspector.');
+}
 function buildGallery(){
   const sel=el('gallery') as HTMLSelectElement;
   sel.innerHTML='<option value="">Examples ▾</option>'+GALLERY.map((g,i)=>`<option value="${i}">${g.name}</option>`).join('');
