@@ -1,5 +1,5 @@
 import { Circuit } from './engine';
-import type { Component, NodeId, Pair, Solution, SolveTrace, Triple } from './engine';
+import type { Component, NodeId, Pair, Quad, Solution, SolveTrace, Triple } from './engine';
 import { fmt, parseVal } from './format';
 // The assistant module pulls in the Anthropic SDK, which is several times the
 // size of the whole app. It is imported dynamically at the point of use so the
@@ -15,8 +15,12 @@ import './style.css';
 /** Every part the editor can hold. 'GND' is a marker, not an engine device. */
 export type PartType = 'R' | 'V' | 'I' | 'C' | 'L' | 'VS' | 'SQ' | 'D'
   | 'QN' | 'QP' | 'MN' | 'MP' | 'OA' | 'GND' | 'MCU'
-  // Batch 1 — parts built out of the devices the engine already models.
-  | 'LED' | 'LAMP' | 'CP' | 'SW' | 'PB' | 'PBNC' | 'POT';
+  // Parts built out of the devices the engine already models.
+  | 'LED' | 'LAMP' | 'CP' | 'SW' | 'PB' | 'PBNC' | 'POT'
+  // Dependent sources and the transformer, straight through to the new stamps.
+  | 'E' | 'G' | 'F' | 'H' | 'XF'
+  // Electromechanical: state the editor integrates, driving ordinary devices.
+  | 'RLY' | 'MOT';
 /** Everything the tool rail can be set to: a part to place, or a mode. */
 type Tool = PartType | 'select' | 'wire' | 'probe' | 'delete';
 type Rot = 0 | 90 | 180 | 270;
@@ -34,8 +38,14 @@ interface Comp {
   off?: number;
   duty?: number;    // square source only: fraction of the period spent high
   pin?: number;     // MCU pin only: which digital pin this pad is
-  on?: boolean;     // switches and push buttons: contact currently closed
+  on?: boolean;     // switches, push buttons, relay armature: contact closed
   pos?: number;     // potentiometer wiper, 0..1 from pin A to pin B
+  l2?: number;      // transformer secondary inductance (H)
+  k?: number;       // transformer coupling coefficient, 0..1
+  // Mechanical state the editor integrates alongside the electrical solve —
+  // the solver has no notion of either, so they live on the placed part.
+  omega?: number;   // DC motor shaft speed, rad/s
+  angle?: number;   // DC motor shaft angle, radians (for the animation only)
 }
 interface Wire { x1: number; y1: number; x2: number; y2: number }
 interface Probe { x: number; y: number; color: string }
@@ -85,6 +95,7 @@ let uid=1;
 let tool:Tool='select';
 let selected:Comp|null=null;
 let running=false;
+let mechanics=false;      // does the running circuit contain a relay or a motor?
 let lastResult:Solution|null=null;
 let view={ox:0,oy:0,scale:1};  // pan offset (screen px) and zoom factor
 
@@ -109,6 +120,15 @@ const PIN_OFFSETS:Partial<Record<PartType,[number,number][]>>={
   MP:[[2,-2],[0,0],[2,2]],
   OA:[[4,0],[0,-1],[0,1]],   // out, in+, in-
   POT:[[0,0],[1,-2],[2,0]],  // end A, wiper (tapped off the side), end B
+  // Four-terminal parts share one box footprint: the port that DRIVES on the
+  // right, the port that CONTROLS on the left, so signal flow reads left to
+  // right the way the rest of the schematic does.
+  E:[[4,-1],[4,1],[0,-1],[0,1]],   // out+, out-, ctrl+, ctrl-
+  G:[[4,-1],[4,1],[0,-1],[0,1]],
+  F:[[4,-1],[4,1],[0,-1],[0,1]],   // out+, out-, sense+, sense-
+  H:[[4,-1],[4,1],[0,-1],[0,1]],
+  XF:[[0,-1],[0,1],[4,-1],[4,1]],  // primary +/-, secondary +/-
+  RLY:[[0,-1],[0,1],[4,-1],[4,1]], // coil +/-, contact A/B
 };
 function pinsOf(c:Comp):Pt[]{
   const offs=PIN_OFFSETS[c.type];
@@ -142,7 +162,27 @@ const TYPES:Record<PartType,TypeInfo>={
   PB:{name:'Push button (NO)',unit:'',def:0},
   PBNC:{name:'Push button (NC)',unit:'',def:0},
   POT:{name:'Potentiometer',unit:'Ω',def:10000},
+  E:{name:'VCVS (voltage-controlled V)',unit:'V/V',def:2},
+  G:{name:'VCCS (voltage-controlled I)',unit:'A/V',def:1e-3},
+  F:{name:'CCCS (current-controlled I)',unit:'A/A',def:10},
+  H:{name:'CCVS (current-controlled V)',unit:'V/A',def:1000},
+  XF:{name:'Transformer',unit:'H',def:1},
+  RLY:{name:'Relay (SPST-NO)',unit:'Ω',def:200},
+  MOT:{name:'DC motor',unit:'Ω',def:5},
 };
+
+// ---- Electromechanical model constants ------------------------------------
+// A relay coil is an inductor in series with its winding resistance, and the
+// armature pulls in above a threshold current and drops out below a lower one.
+// The gap between the two is real hysteresis, not a fudge: without it a coil
+// sitting exactly at the threshold would chatter every timestep.
+const RELAY_L=100e-3, RELAY_PULL_IN=20e-3, RELAY_DROP_OUT=12e-3;
+// Permanent-magnet DC motor. Ke (V·s/rad) and Kt (N·m/A) are numerically equal
+// in SI, J is rotor inertia and B viscous friction — small-hobby-motor numbers.
+// Armature inductance is deliberately left out: it is two decades faster than
+// anything you can see happening, so modelling it would only force a tiny
+// timestep and slow the whole simulation to make a difference nobody can watch.
+const MOTOR_KE=0.02, MOTOR_J=2e-6, MOTOR_B=2e-6;
 
 // ---- Mechanical contacts ---------------------------------------------------
 // A switch is modelled as a resistor that changes value rather than as a device
@@ -165,6 +205,12 @@ const isContact=(t:PartType)=>t==='SW'||t==='PB'||t==='PBNC';
 // 100 MΩ leak to ground — high enough not to load the circuit, low enough to
 // keep the node defined.
 const MCU_HIGH_V=5, MCU_THRESHOLD=2.5, MCU_INPUT_Z=1e8;
+
+// Node ids at or above this belong to a part's insides — the junction between
+// a motor's armature resistance and its back-EMF, say. They are handed out
+// from their own range so they can never collide with a node the user drew,
+// and so the UI can tell the two apart and only show the ones on the grid.
+const INTERNAL_NODE_BASE=1e6;
 const mcuOut=new Map<number,boolean>();     // pin -> driven level
 const mcuMode=new Map<number,boolean>();    // pin -> true when an output
 
@@ -189,9 +235,10 @@ interface Netlist {
 // A part that expands into several devices names them `<id>:<suffix>`. That
 // keeps ids unique for the solver while staying recoverable, which is what
 // `pinCurrents` below relies on to animate current through the part.
-function toDevices(c:Comp,nodes:NodeId[]):Component[]{
+function toDevices(c:Comp,nodes:NodeId[],alloc:()=>NodeId):Component[]{
   const pair:Pair=[nodes[0],nodes[1]];
   const triple:Triple=[nodes[0],nodes[1],nodes[2]];
+  const quad:Quad=[nodes[0],nodes[1],nodes[2],nodes[3]];
   const value=c.value??TYPES[c.type].def;
   switch(c.type){
     case 'GND': return [];
@@ -233,12 +280,58 @@ function toDevices(c:Comp,nodes:NodeId[]):Component[]{
         {id:c.id+':b',type:'R',nodes:[nodes[1],nodes[2]],value:Math.max(1e-3,value*(1-pos))},
       ];
     }
+    // The dependent sources and the transformer pass straight through: the
+    // engine models them directly, so the editor only supplies the pin order.
+    case 'E': case 'G': case 'F': case 'H':
+      return [{id:c.id,type:c.type,nodes:quad,value}];
+    case 'XF':
+      return [{id:c.id,type:'XF',nodes:quad,value,l2:c.l2??value,k:c.k??0.99}];
+    case 'RLY': {
+      // Coil = winding resistance in series with its inductance, so the
+      // armature takes time to pull in and the coil kicks back when it opens.
+      // The contact is the same value-swapped resistor a switch uses, driven
+      // by the coil current rather than by a click.
+      const mid=alloc();
+      return [
+        {id:c.id+':coilR',type:'R',nodes:[nodes[0],mid],value},
+        {id:c.id+':coilL',type:'L',nodes:[mid,nodes[1]],value:RELAY_L},
+        {id:c.id+':contact',type:'R',nodes:[nodes[2],nodes[3]],
+          value:c.on?CONTACT_CLOSED:CONTACT_OPEN},
+      ];
+    }
+    case 'MOT': {
+      // Armature resistance in series with a back-EMF source whose value the
+      // mechanical integrator updates each step. Keeping the EMF as an ordinary
+      // voltage source is what lets the shaft speed — which the solver knows
+      // nothing about — feed back into the electrical solution.
+      const n1=alloc();
+      return [
+        {id:c.id+':Ra',type:'R',nodes:[nodes[0],n1],value},
+        {id:c.id+':emf',type:'V',nodes:[n1,nodes[1]],value:MOTOR_KE*(c.omega??0)},
+      ];
+    }
     case 'QN': return [{id:c.id,type:'QN',nodes:triple}];
     case 'QP': return [{id:c.id,type:'QP',nodes:triple}];
     case 'MN': return [{id:c.id,type:'MN',nodes:triple}];
     case 'MP': return [{id:c.id,type:'MP',nodes:triple}];
     case 'OA': return [{id:c.id,type:'OA',nodes:triple}];
   }
+}
+
+// The single voltage and current to show for a part — what the inspector reads
+// out and what the scope traces. A part that expands into several devices has
+// no `current[id]` of its own, so this goes through `pinCurrents` instead of
+// the solver's per-device record, and picks the pair of pins the number is
+// actually meaningful across.
+function partVI(c:Comp,result:Solution):{v:number;i:number}{
+  const ps=pinsOf(c);
+  const I=pinCurrents(c,result);
+  const nodeV=(p:Pt)=>simNet?(result.nodeVoltage[simNet.nodeOf(p.x,p.y)]??0):0;
+  // A relay's two ports are electrically unrelated, so report the coil — the
+  // side you are actually driving. Everything else reads end to end.
+  const other=c.type==='RLY'?ps[1]:ps[ps.length-1];
+  const v=result.voltageAcross[c.id]??(ps.length>1?nodeV(ps[0])-nodeV(other):nodeV(ps[0]));
+  return {v, i:I[0]??0};
 }
 
 // Current flowing INTO the part at each of its pins, in `pinsOf` order. This
@@ -252,6 +345,22 @@ function pinCurrents(c:Comp,result:Solution):number[]{
   if(c.type==='POT'){
     const ia=cur(c.id+':a'), ib=cur(c.id+':b');   // each flows first node -> second
     return [ia, ib-ia, -ib];
+  }
+  if(c.type==='RLY'){
+    const ic=cur(c.id+':coilR'), ik=cur(c.id+':contact');
+    return [ic,-ic,ik,-ik];                       // coil and contact are separate loops
+  }
+  if(c.type==='MOT'){ const i=cur(c.id+':Ra'); return [i,-i]; }
+  if(c.type==='XF'){
+    const ip=cur(c.id), is=cur(c.id+':secondary');
+    return [ip,-ip,is,-is];                       // two windings, no shared current
+  }
+  if(c.type==='E'||c.type==='G'){
+    return [cur(c.id),-cur(c.id),0,0];            // the control port draws nothing
+  }
+  if(c.type==='F'||c.type==='H'){
+    const io=cur(c.id), is=cur(c.id+':sense');
+    return [io,-io,is,-is];
   }
   const t=result.terminals&&result.terminals[c.id];
   if(t) return [t.Ic,t.Ib,t.Ie];                  // 3-terminal active devices
@@ -279,7 +388,14 @@ function buildNetlist():Netlist{
     if(!rootToNode.has(r)) rootToNode.set(r,next++); return rootToNode.get(r)!; };
   // Emit engine components (skip GND — it only defines the reference).
   const netComps:Component[]=[];
-  for(const c of comps) netComps.push(...toDevices(c,pinsOf(c).map(p=>nodeOf(p.x,p.y))));
+  // Some parts have nodes that exist only inside them — the junction between a
+  // relay's coil resistance and its inductance, say — with no pin and no place
+  // on the grid. Those come from a separate high range so they can never
+  // collide with a grid node, and so they stay out of the "N nodes" readout,
+  // which is meant to describe the schematic the user drew.
+  let internal=INTERNAL_NODE_BASE;
+  const alloc=():NodeId=>internal++;
+  for(const c of comps) netComps.push(...toDevices(c,pinsOf(c).map(p=>nodeOf(p.x,p.y)),alloc));
   const nodeCount=next-1+(grounded.size?1:0);
   return {netComps,nodeOf,nodeCount,grounded:grounded.size>0};
 }
@@ -671,6 +787,21 @@ function drawFlow(x1:number,y1:number,x2:number,y2:number,cur:number){
   }
 }
 
+// Which pins form the left-hand port and which the right, for the parts drawn
+// as a body with a port on each side. A dependent source senses on the left and
+// drives on the right; a transformer's primary is the left port.
+const FOUR_PIN_SIDES:Partial<Record<PartType,{left:[number,number];right:[number,number]}>>={
+  E:{left:[2,3],right:[0,1]},  G:{left:[2,3],right:[0,1]},
+  F:{left:[2,3],right:[0,1]},  H:{left:[2,3],right:[0,1]},
+  XF:{left:[0,1],right:[2,3]}, RLY:{left:[0,1],right:[2,3]},
+};
+function fourPinLabel(c:Comp):string{
+  const v=c.value??TYPES[c.type].def;
+  if(c.type==='XF') return `${fmt(v,'H')} : ${fmt(c.l2??v,'H')}`;
+  if(c.type==='RLY') return `${fmt(v,'Ω')} coil · ${c.on?'closed':'open'}`;
+  return `${fmt(v,'').trim()} ${TYPES[c.type].unit}`;
+}
+
 function drawComponent(c:Comp,nodeColor:NodeColor){
   const ps=pinsOf(c);
   ctx.lineWidth=2.4; ctx.lineJoin='round'; ctx.lineCap='round';
@@ -771,6 +902,80 @@ function drawComponent(c:Comp,nodeColor:NodeColor){
     ctx.fillText('−', backC.x-px*7+ax*6, backC.y-py*7+ay*6+3);
     if(running&&lastResult&&lastResult.terminals&&lastResult.terminals[c.id]){
       const t=lastResult.terminals[c.id]; drawFlow(tip.x,tip.y,Op.x,Op.y,-t.Ic); }
+    ctx.textAlign='left';
+    return;
+  }
+  // ---- Four-terminal parts -------------------------------------------------
+  // All of them share one footprint: a body with a two-pin port on each side.
+  // Which pins form which port differs (a dependent source is controlled on
+  // the left and drives on the right; a transformer's primary is the left
+  // port), so the sides are named per type rather than inferred from geometry.
+  const sides=FOUR_PIN_SIDES[c.type];
+  if(sides){
+    const S=(i:number)=>({x:gx(ps[i].x),y:gy(ps[i].y)});
+    const L0=S(sides.left[0]),L1=S(sides.left[1]),R0=S(sides.right[0]),R1=S(sides.right[1]);
+    const lm={x:(L0.x+L1.x)/2,y:(L0.y+L1.y)/2}, rm={x:(R0.x+R1.x)/2,y:(R0.y+R1.y)/2};
+    const mid={x:(lm.x+rm.x)/2,y:(lm.y+rm.y)/2};
+    let ux4=rm.x-lm.x, uy4=rm.y-lm.y; const ul=Math.hypot(ux4,uy4)||1; ux4/=ul; uy4/=ul;
+    const nx4=-uy4, ny4=ux4;
+    const P4=(d:number,o:number):Pt=>({x:mid.x+ux4*d+nx4*o, y:mid.y+uy4*d+ny4*o});
+    const line=(a:Pt,b:Pt)=>{ ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke(); };
+    // Leads: each pin runs to the body corner nearest it.
+    const pinIdx=[sides.left[0],sides.left[1],sides.right[0],sides.right[1]];
+    const corners:[Pt,number,number][]=[[L0,-32,-26],[L1,-32,26],[R0,32,-26],[R1,32,26]];
+    corners.forEach(([p,d,o],i)=>{
+      ctx.strokeStyle=col(ps[pinIdx[i]].x,ps[pinIdx[i]].y); line(p,P4(d,o));
+    });
+    ctx.strokeStyle=T.ink; ctx.fillStyle=T.ink; ctx.lineWidth=2;
+    ctx.beginPath();                                  // body outline
+    const bc=[P4(-32,-26),P4(32,-26),P4(32,26),P4(-32,26)];
+    ctx.moveTo(bc[0].x,bc[0].y); for(let i=1;i<4;i++) ctx.lineTo(bc[i].x,bc[i].y);
+    ctx.closePath(); ctx.stroke();
+    if(c.type==='XF'){
+      // Two windings either side of a laminated core: the picture of coupling.
+      const base=Math.atan2(ny4,nx4);
+      for(const d of [-16,16]){
+        ctx.beginPath();
+        for(let i=0;i<3;i++){
+          const a=P4(d,-14+i*14);
+          ctx.arc(a.x,a.y,7,base-Math.PI/2,base+Math.PI/2,d<0);
+        }
+        ctx.stroke();
+      }
+      line(P4(-4,-22),P4(-4,22)); line(P4(4,-22),P4(4,22));   // the core
+      // Dots mark the two ends that swing positive together.
+      for(const d of [-16,16]){ const p=P4(d,-22); ctx.beginPath(); ctx.arc(p.x,p.y,2.4,0,7); ctx.fill(); }
+    } else if(c.type==='RLY'){
+      // Coil on the left, contact on the right, with a dashed armature link
+      // between them — the standard way of drawing "this drives that".
+      const cA=P4(-27,-15), cB=P4(-10,15);
+      ctx.strokeRect(Math.min(cA.x,cB.x),Math.min(cA.y,cB.y),Math.abs(cB.x-cA.x),Math.abs(cB.y-cA.y));
+      const piv=P4(10,17), rest=P4(28,17), tip=c.on===true?P4(28,17):P4(27,4);
+      ctx.beginPath(); ctx.arc(piv.x,piv.y,2.2,0,7); ctx.fill();
+      ctx.beginPath(); ctx.arc(rest.x,rest.y,2.2,0,7); ctx.fill();
+      line(piv,tip);
+      ctx.setLineDash([3,3]); ctx.lineWidth=1.2;
+      line(P4(-16,0),P4(18,6)); ctx.setLineDash([]); ctx.lineWidth=2;
+    } else {
+      // Dependent source: a diamond, and the letter naming which of the four
+      // it is. The current-controlled pair also shows the internal ammeter
+      // shorting its two sensing pins together.
+      const dia=[P4(28,0),P4(9,-19),P4(-10,0),P4(9,19)];
+      ctx.beginPath(); ctx.moveTo(dia[0].x,dia[0].y);
+      for(let i=1;i<4;i++) ctx.lineTo(dia[i].x,dia[i].y); ctx.closePath(); ctx.stroke();
+      if(c.type==='F'||c.type==='H') line(P4(-32,-26),P4(-32,26));
+      ctx.fillStyle=T.label; ctx.font='11px ui-monospace,monospace'; ctx.textAlign='center';
+      ctx.font='12px ui-monospace,monospace';
+      const lt=P4(9,0); ctx.fillText(c.type, lt.x, lt.y+4);
+      ctx.fillStyle=T.ink;
+    }
+    if(running&&lastResult){
+      const I=pinCurrents(c,lastResult);
+      drawFlow(L0.x,L0.y,R0.x,R0.y, (c.type==='XF'||c.type==='RLY')?I[0]:I[2]);
+    }
+    ctx.fillStyle=T.label; ctx.font='10px ui-monospace,monospace'; ctx.textAlign='center';
+    const lp4=P4(0,-38);
+    ctx.fillText(fourPinLabel(c), lp4.x, lp4.y);
     ctx.textAlign='left';
     return;
   }
@@ -908,6 +1113,19 @@ function drawComponent(c:Comp,nodeColor:NodeColor){
     ctx.beginPath();
     ctx.moveTo(P(-d,-d).x,P(-d,-d).y); ctx.lineTo(P(d,d).x,P(d,d).y);
     ctx.moveTo(P(-d,d).x,P(-d,d).y); ctx.lineTo(P(d,-d).x,P(d,-d).y); ctx.stroke();
+  } else if(c.type==='MOT'){
+    // A circle marked M, with a rotor line at the integrated shaft angle — the
+    // only way the mechanical state is visible, since no node carries it.
+    ctx.strokeStyle=T.ink;
+    ctx.beginPath(); ctx.arc(mx,my,13,0,7); ctx.stroke();
+    ctx.fillStyle=T.ink; ctx.font='bold 13px sans-serif'; ctx.textAlign='center';
+    ctx.fillText('M', mx, my+5);
+    // A marker on the rim, at the integrated shaft angle: the only place the
+    // mechanical state is visible, since no node carries it.
+    const th=c.angle??0;
+    ctx.fillStyle=T.current;
+    ctx.beginPath(); ctx.arc(mx+Math.cos(th)*13, my+Math.sin(th)*13, 3, 0, 7); ctx.fill();
+    ctx.fillStyle=T.ink; ctx.textAlign='left';
   } else if(c.type==='CP'){
     // Polarized: a flat plate for the anode and a curved one for the cathode,
     // plus a + marker, so the orientation that matters is visible.
@@ -938,7 +1156,9 @@ function drawComponent(c:Comp,nodeColor:NodeColor){
     }
   }
   // moving current dots through the body
-  if(running&&lastResult){ drawFlow(ax,ay,bx,by, lastResult.current[c.id]||0); }
+  // Current dots along the body. pinCurrents, not current[id]: a part built
+  // from several devices has no single device current to look up.
+  if(running&&lastResult){ drawFlow(ax,ay,bx,by, pinCurrents(c,lastResult)[0]||0); }
   // Label. The anchor sits one step along the component's normal, which points
   // up for a horizontal part and sideways for a vertical one. A centred label
   // is only right in the first case — on a vertical part it would straddle the
@@ -949,6 +1169,10 @@ function drawComponent(c:Comp,nodeColor:NodeColor){
   let valTxt = noLabel.includes(c.type)?'':fmt(c.value??TYPES[c.type].def,TYPES[c.type].unit);
   if(c.type==='VS'||c.type==='SQ') valTxt = fmt(c.amp??0,'V')+' '+fmt(c.freq??0,'Hz');
   if(isContact(c.type)) valTxt = contactClosed(c)?'closed':'open';
+  // A motor's interesting number is its speed, not its winding resistance.
+  if(c.type==='MOT') valTxt = running
+    ? Math.round((c.omega??0)*60/(2*Math.PI))+' rpm'
+    : fmt(c.value??TYPES.MOT.def,'Ω');
   const offX=lp.x-mx, offY=lp.y-my;
   if(Math.abs(offX)>Math.abs(offY)){
     ctx.textAlign = offX>0?'left':'right';
@@ -969,8 +1193,8 @@ function drawGhost(type:PartType,x:number,y:number){
 // ===========================================================================
 //  PART 5 — INTERACTION
 // ===========================================================================
-const PLACE_TYPES:PartType[]=['R','POT','V','VS','SQ','I','C','CP','L','D','LED','LAMP',
-  'SW','PB','PBNC','QN','QP','MN','MP','OA','GND','MCU'];
+const PLACE_TYPES:PartType[]=['R','POT','V','VS','SQ','I','C','CP','L','XF','D','LED','LAMP',
+  'SW','PB','PBNC','RLY','MOT','QN','QP','MN','MP','OA','E','G','F','H','GND','MCU'];
 const isPlaceType=(t:Tool):t is PartType=>(PLACE_TYPES as string[]).includes(t);
 let mouse:{px:number;py:number;gx:number|null;gy:number|null}={px:0,py:0,gx:null,gy:null};
 let wireStart:Pt|null=null;
@@ -1055,6 +1279,9 @@ stage.addEventListener('pointerdown',e=>{
     if(tool==='SQ'){ nc.amp=5; nc.freq=1000; nc.off=0; nc.duty=0.5; }
     if(tool==='POT') nc.pos=0.5;
     if(isContact(tool)) nc.on=false;   // NC buttons read `on` as "held", so this is closed
+    if(tool==='XF'){ nc.l2=1; nc.k=0.99; }
+    if(tool==='RLY') nc.on=false;
+    if(tool==='MOT'){ nc.omega=0; nc.angle=0; }
     comps.push(nc);
     refreshMeta(); commit(); draw(); return;
   }
@@ -1201,7 +1428,7 @@ function rebuildMcuPins(){
   const net=buildNetlist();
   const fresh=new Circuit(net.netComps.map(c=>({...c})));
   fresh.captureTrace=mathMode;
-  circuit=fresh; simNet=net;
+  circuit=fresh; liveIndex=null; simNet=net;
 }
 let panelMode:'scope'|'bode'='scope';   // transient panel or AC sweep panel
 let bodeData:BodeData|null=null;
@@ -1216,6 +1443,12 @@ function mcuFault(msg:string){
 function startSim(){
   // Boot the MCU with the circuit: pin state must not leak between runs.
   mcuOut.clear(); mcuMode.clear(); mcu=null; mcuStatus='';
+  // Mechanical state is part of the simulation, not the schematic — a motor
+  // that was spinning when you pressed Stop must start from rest on Run.
+  for(const c of comps){
+    if(c.type==='MOT'){ c.omega=0; c.angle=0; }
+    if(c.type==='RLY') c.on=false;
+  }
   if(sketch.trim()){
     const err=checkSketch(sketch);
     if(err){ mcuStatus='Compile error — '+err; flashHint('Sketch error: '+err); }
@@ -1227,7 +1460,8 @@ function startSim(){
   if(net.netComps.length===0){ flashHint('Place some components first.'); return; }
   // choose timestep from smallest reactive time constant present
   simH=chooseTimestep(net.netComps);
-  circuit=new Circuit(net.netComps.map(c=>({...c})));
+  circuit=new Circuit(net.netComps.map(c=>({...c}))); liveIndex=null;
+  mechanics=hasMechanics();
   circuit.captureTrace=mathMode;
   simNet=net; resetScope(); panelMode='scope';
   simTime=0; running=true;
@@ -1246,7 +1480,7 @@ function stopSim(){
 // from rest. (Clear, by contrast, deletes the circuit itself.)
 function resetSim(){
   stopSim();
-  circuit=null; simNet=null; simTime=0; lastResult=null; bodeData=null;
+  circuit=null; liveIndex=null; simNet=null; simTime=0; lastResult=null; bodeData=null;
   panelMode='scope'; resetScope();
   vRange={min:-1,max:1};
   renderInspector(); draw();
@@ -1275,8 +1509,18 @@ function runBode(){
 function chooseTimestep(nc:Component[]){
   let tau=1e-3;
   let reactive=false;
+  // Reference resistance for an inductor's time constant. L/R is the decay it
+  // actually has, so assuming a fixed 1 kΩ badly misjudges low-impedance
+  // circuits — a relay coil or a motor armature is tens of ohms, and the fixed
+  // guess makes the step 10–100× smaller than it needs to be, which is the
+  // difference between a relay you watch pull in and one you wait out. Take the
+  // largest resistance that looks like a real circuit element: switch contacts
+  // and high-impedance pins sit decades outside that band and would otherwise
+  // dominate the estimate.
+  const rs=nc.flatMap(c=>c.type==='R'&&c.value>1e-2&&c.value<1e7?[c.value]:[]);
+  const rRef=rs.length?Math.max(...rs):1000;
   for(const c of nc){ if(c.type==='C'){ reactive=true; tau=Math.min(tau, Math.max(1e-7,c.value*1000)); }
-    if(c.type==='L'){ reactive=true; tau=Math.min(tau, Math.max(1e-7,c.value/1000)); } }
+    if(c.type==='L'||c.type==='XF'){ reactive=true; tau=Math.min(tau, Math.max(1e-7,c.value/rRef)); } }
   // A purely resistive network has no state to integrate, so backward Euler is
   // exact at any step size — take big ones. This is what makes MCU sketches
   // watchable: at the reactive-circuit timestep, a delay(500) would take the
@@ -1296,6 +1540,10 @@ function loop(){
     if(mcu){ mcu.run(mcuHost); if(mcu.error) mcuFault(mcu.error); }
     if(!circuit) break;
     lastResult=circuit.step(simH); simTime+=simH;
+    // Mechanical state advances on the solution just computed, and what it
+    // writes back takes effect on the next step — a relay contact can't close
+    // in the same instant its coil reaches the pull-in current.
+    if(mechanics) stepMechanics(lastResult,simH);
   }
   // sample the scope once per frame
   const net=simNet, buf=scopeBuf, res=lastResult;
@@ -1307,9 +1555,9 @@ function loop(){
     // starts a fresh trace rather than splicing two parts' data together.
     const selId=selected&&selected.type!=='GND'?selected.id:null;
     if(selId!==buf.selId){ buf.selV.length=0; buf.selI.length=0; buf.selId=selId; }
-    if(selId){
-      buf.selV.push(res.voltageAcross[selId]??0);
-      buf.selI.push(res.current[selId]??0);
+    if(selId&&selected){
+      const {v,i}=partVI(selected,res);
+      buf.selV.push(v); buf.selI.push(i);
     }
     if(buf.t.length>SCOPE_MAX){
       buf.t.shift(); buf.series.forEach(s=>s.shift());
@@ -1381,6 +1629,33 @@ function renderInspector(){
         ? 'Click the switch on the schematic while running to throw it.'
         : 'Hold the button on the schematic while running to press it; it springs back on release.'}</div></div>`;
   }
+  if(sel.type==='E'||sel.type==='G'||sel.type==='F'||sel.type==='H'){
+    const senses=(sel.type==='F'||sel.type==='H')
+      ? 'The two left pins are an internal ammeter — a 0 V short. Wire the current you want to sense straight through them.'
+      : 'The two left pins sense a voltage and draw no current of their own.';
+    html+=`<div class="field"><div class="empty">${senses}
+      Output is the right-hand pair, <b>+</b> on top.</div></div>`;
+  }
+  if(sel.type==='XF'){
+    html+=`<div class="field"><label>Secondary inductance (H)</label>
+      <input id="l2Input" value="${fmt(sel.l2??sel.value??1,'').trim()}"/></div>
+      <div class="field"><label>Coupling k (0–1)</label>
+      <input id="kInput" value="${sel.k??0.99}"/></div>
+      <div class="field"><div class="empty">Turns ratio is √(L₂/L₁), so L₂ = 4·L₁ steps the
+        voltage up by 2. Perfect coupling (k = 1) makes the two windings linearly
+        dependent and the matrix singular — 0.99 is the useful default.</div></div>`;
+  }
+  if(sel.type==='RLY'){
+    html+=`<div class="field"><div class="empty">Coil on the left (its value is the winding
+      resistance), contact on the right. The armature pulls in above
+      ${fmt(RELAY_PULL_IN,'A')} of coil current and drops out below
+      ${fmt(RELAY_DROP_OUT,'A')}. Put a diode across the coil to catch the kickback.</div></div>`;
+  }
+  if(sel.type==='MOT'){
+    html+=`<div class="field"><div class="empty">Permanent-magnet DC motor: its value is the
+      armature resistance. It draws a big stall current at start-up and settles as
+      the back-EMF builds — watch the rpm on the symbol while it runs.</div></div>`;
+  }
   if(sel.type==='LED'){
     html+=`<div class="field"><div class="empty">A diode that lights with forward current. Add a series
       resistor — a bare LED across a supply is a short.</div></div>`;
@@ -1421,6 +1696,8 @@ function renderInspector(){
   bindNum('offInput',v=>sel.off=v);
   bindNum('dutyInput',v=>sel.duty=Math.max(0.01,Math.min(0.99,v)));
   bindNum('pinInput',v=>sel.pin=Math.max(0,Math.round(v)));
+  bindNum('l2Input',v=>sel.l2=Math.max(1e-12,v));
+  bindNum('kInput',v=>sel.k=Math.max(0,Math.min(0.9999,v)));
   // The wiper streams on `input`, not `change`: sweeping a pot and watching the
   // circuit follow is most of the point of having one.
   const pos=document.getElementById('posInput') as HTMLInputElement|null;
@@ -1436,12 +1713,54 @@ function renderInspector(){
   });
   renderReadout();
 }
+// ---- Electromechanical co-simulation ---------------------------------------
+// Relays and motors have state the solver knows nothing about: an armature
+// position, a shaft speed. Each timestep we read the electrical solution, step
+// that mechanical state forward, and write the consequence back as a device
+// VALUE — a contact resistance, a back-EMF. Because only values change and
+// never the set of devices, the matrix keeps its shape and none of this costs
+// a rebuild. It is the same trick the MCU pins use, applied to physics.
+let liveIndex:Map<string,Component>|null=null;
+/** Set a live device's value in place, without rebuilding the netlist. */
+function pokeLive(id:string,value:number){
+  if(!circuit) return;
+  if(!liveIndex) liveIndex=new Map(circuit.components.map(d=>[d.id,d]));
+  const d=liveIndex.get(id);
+  if(d&&'value' in d) d.value=value;
+}
+function stepMechanics(res:Solution,h:number){
+  for(const c of comps){
+    if(c.type==='RLY'){
+      // Hysteresis between pull-in and drop-out: a coil sitting exactly at one
+      // threshold would otherwise chatter on every timestep.
+      const i=Math.abs(res.current[c.id+':coilR']??0);
+      const on=c.on ? i>RELAY_DROP_OUT : i>RELAY_PULL_IN;
+      if(on!==c.on){ c.on=on; pokeLive(c.id+':contact',on?CONTACT_CLOSED:CONTACT_OPEN); }
+    } else if(c.type==='MOT'){
+      // J·dω/dt = Kt·i − B·ω, forward Euler. The timestep is already small
+      // enough for the electrical side, and the mechanical time constant is
+      // orders of magnitude longer, so this is comfortably stable.
+      const i=res.current[c.id+':Ra']??0;
+      const w=c.omega??0;
+      c.omega=w+h*(MOTOR_KE*i-MOTOR_B*w)/MOTOR_J;
+      c.angle=(c.angle??0)+h*c.omega;
+      pokeLive(c.id+':emf',MOTOR_KE*c.omega);
+    }
+  }
+}
+/** True when the document holds anything the mechanical integrator must run for. */
+const hasMechanics=()=>comps.some(c=>c.type==='RLY'||c.type==='MOT');
+
 function syncValues(){ // push edited values into live sim without restarting
   if(!circuit) return;
   const map=new Map(buildNetlist().netComps.map(c=>[c.id,c]));
   for(const live of circuit.components){
     const fresh=map.get(live.id);
     if(fresh&&'value' in live&&'value' in fresh&&fresh.value!==undefined) live.value=fresh.value;
+    // A transformer's other two numbers are model parameters, not `value`, so
+    // they need carrying across too — otherwise editing them mid-run does
+    // nothing and the schematic silently disagrees with the simulation.
+    if(fresh&&live.type==='XF'&&fresh.type==='XF'){ live.l2=fresh.l2; live.k=fresh.k; }
   }
 }
 function syncSine(){ // push edited sine params into the live sim
@@ -1562,7 +1881,7 @@ function renderReadout(){
   if(!lastResult){ host.innerHTML=''; renderMath(); return; }
   let rows='';
   if(selected&&selected.type!=='GND'){
-    const v=lastResult.voltageAcross[selected.id], i=lastResult.current[selected.id];
+    const {v,i}=partVI(selected,lastResult);
     rows+=`<hr><h3>Live — ${selected.id}</h3><div class="readout">
       <div><span class="k">Voltage across</span><span class="v">${fmt(v,'V')}</span></div>
       <div><span class="k">Current</span><span class="v">${fmt(i,'A')}</span></div>
@@ -1571,6 +1890,10 @@ function renderReadout(){
   // node table
   rows+=`<hr><h3>Node voltages</h3><table class="probes">`;
   for(const [k,v] of Object.entries(lastResult.nodeVoltage)){
+    // Skip nodes that exist only inside a part. They are real unknowns to the
+    // solver, but they correspond to nothing the user drew, so listing them
+    // just makes the schematic look like it has nodes it doesn't.
+    if(Number(k)>=INTERNAL_NODE_BASE) continue;
     rows+=`<tr><td>node ${k===''?0:k}</td><td>${fmt(v,'V')}</td></tr>`; }
   rows+=`</table>`;
   host.innerHTML=rows;
@@ -1600,17 +1923,24 @@ const RAIL:{t:Tool;label:string;icon?:string}[]=[
   {t:'C',label:'Cap'},
   {t:'CP',label:'Cap +'},
   {t:'L',label:'Inductor'},
+  {t:'XF',label:'Transf'},
   {t:'D',label:'Diode'},
   {t:'LED',label:'LED'},
   {t:'LAMP',label:'Lamp'},
   {t:'SW',label:'Switch'},
   {t:'PB',label:'Button'},
   {t:'PBNC',label:'Btn NC'},
+  {t:'RLY',label:'Relay'},
+  {t:'MOT',label:'Motor'},
   {t:'QN',label:'NPN'},
   {t:'QP',label:'PNP'},
   {t:'MN',label:'NMOS'},
   {t:'MP',label:'PMOS'},
   {t:'OA',label:'Op-amp'},
+  {t:'E',label:'VCVS'},
+  {t:'G',label:'VCCS'},
+  {t:'F',label:'CCCS'},
+  {t:'H',label:'CCVS'},
   {t:'GND',label:'Ground'},
   {t:'MCU',label:'MCU pin'},
   {t:'delete',label:'Delete',icon:'M6 7h12l-1 13H7zM9 7V4h6v3'},
@@ -1647,6 +1977,11 @@ function miniSymbol(t:Tool){
     case 'SW': return s('<path d="M2 16h5M17 16h5M7 16l10-6"/><circle cx="7" cy="16" r="1.6"/><circle cx="17" cy="16" r="1.6"/>');
     case 'PB': return s('<path d="M2 17h5M17 17h5M7 17h10M4 9h16M12 9V4"/>');
     case 'PBNC': return s('<path d="M2 17h5M17 17h5M6 14h12M12 14V4M12 17v-3"/>');
+    case 'XF': return s('<path d="M9 4v16M15 4v16M3 7a2.5 2.5 0 010 5a2.5 2.5 0 010 5M21 7a2.5 2.5 0 000 5a2.5 2.5 0 000 5M3 7h3M3 17h3M18 7h3M18 17h3"/>');
+    case 'RLY': return s('<rect x="2" y="8" width="8" height="8"/><path d="M14 16h3M20 16h2M14 16l6-4"/><path d="M10 12h3" stroke-dasharray="2 2"/>');
+    case 'MOT': return s('<circle cx="12" cy="12" r="7"/><path d="M2 12h3M19 12h3M9 9l6 6M15 9l-6 6"/>');
+    case 'E': case 'G': case 'F': case 'H':
+      return s(`<path d="M12 5l6 7-6 7-6-7z"/><path d="M2 8h3M2 16h3M19 12h3"/><text x="12" y="15" font-size="7" fill="currentColor" stroke="none" text-anchor="middle">${t}</text>`);
     case 'QN': return s('<path d="M3 12h6M9 5v14M9 9l9-5M9 15l9 5"/>');
     case 'QP': return s('<path d="M3 12h6M9 5v14M9 9l9-5M9 15l9 5M12 13.7l3 1.6"/>');
     case 'MN': return s('<path d="M3 12h4M7 6v12M10 6v12M10 8h8M10 16h8M18 4v6M18 14v6"/>');
@@ -1679,6 +2014,8 @@ const GALLERY=[
   {name:'NMOS common-source amp', fn:loadMos},
   {name:'Non-inverting op-amp', fn:loadOpamp},
   {name:'Switch, pot & LED (click to play)', fn:loadPanel},
+  {name:'Relay drives a DC motor', fn:loadRelay},
+  {name:'Transformer steps 10 V up to 20 V', fn:loadXfmr},
 ];
 // A circuit you operate rather than watch: throw the switch to power the rail,
 // hold the button for the lamp, and sweep the pot to dim the LED. Every part
@@ -1713,6 +2050,61 @@ function loadPanel(){
   selected=null; refreshMeta(); renderInspector(); fitView(); draw();
   flashHint('Press <b>Run</b>, then click the <b>switch</b>, hold the <b>button</b>, and sweep the <b>pot</b> in the inspector.');
 }
+// A small control circuit switching a big load — the reason relays exist. The
+// button carries only coil current; the motor's stall current goes through the
+// contact. The flyback diode across the coil is the point of the example: an
+// inductor whose current is interrupted will generate whatever voltage it
+// takes to keep that current flowing, and the diode gives it somewhere to go.
+function loadRelay(){
+  comps=[]; wires=[]; uid=1;
+  comps.push({id:'V'+(uid++),type:'V',x:2,y:4,rot:90,value:12});   // 12 V (2,4)-(2,6)
+  comps.push({id:'GND'+(uid++),type:'GND',x:2,y:12});
+  wires.push({x1:2,y1:6,x2:2,y2:12});
+  // Supply rail: up from the battery, along the top, down to the contact.
+  wires.push({x1:2,y1:4,x2:2,y2:2});
+  wires.push({x1:2,y1:2,x2:2,y2:0});
+  wires.push({x1:2,y1:0,x2:10,y2:0});
+  wires.push({x1:10,y1:0,x2:10,y2:2});
+  // Control side: button -> coil, with the flyback diode across the coil.
+  comps.push({id:'PB'+(uid++),type:'PB',x:2,y:2,rot:0});           // (2,2)-(4,2)
+  comps.push({id:'RLY'+(uid++),type:'RLY',x:6,y:3,rot:0,value:200});
+  // coil (6,2)-(6,4); contact (10,2)-(10,4)
+  // Flyback diode across the coil, cathode uppermost so it blocks in normal
+  // operation and only conducts on the reverse spike when the coil opens.
+  comps.push({id:'D'+(uid++),type:'D',x:4,y:4,rot:270});           // (4,4)->(4,2)
+  wires.push({x1:4,y1:2,x2:6,y2:2});
+  wires.push({x1:4,y1:4,x2:6,y2:4});
+  wires.push({x1:6,y1:4,x2:6,y2:12});
+  // Load side: the contact feeds the motor.
+  comps.push({id:'MOT'+(uid++),type:'MOT',x:10,y:6,rot:90,value:5}); // (10,6)-(10,8)
+  wires.push({x1:10,y1:4,x2:10,y2:6});
+  wires.push({x1:10,y1:8,x2:10,y2:12});
+  wires.push({x1:2,y1:12,x2:6,y2:12});
+  wires.push({x1:6,y1:12,x2:10,y2:12});
+  selected=null; refreshMeta(); renderInspector(); fitView(); draw();
+  flashHint('Press <b>Run</b>, then hold the <b>button</b>: the coil energises, the contact closes, and the motor spins up.');
+}
+
+// Turns ratio in action: L₂ = 4·L₁ is a 1:2 winding ratio, so a 10 V peak sine
+// on the primary comes out as 20 V on the secondary.
+function loadXfmr(){
+  comps=[]; wires=[]; uid=1;
+  comps.push({id:'VS'+(uid++),type:'VS',x:2,y:2,rot:90,value:10,amp:10,freq:1000,off:0});
+  comps.push({id:'GND'+(uid++),type:'GND',x:2,y:8});
+  wires.push({x1:2,y1:4,x2:2,y2:8});
+  comps.push({id:'XF'+(uid++),type:'XF',x:6,y:3,rot:0,value:1,l2:4,k:0.999});
+  // primary (6,2)-(6,4); secondary (10,2)-(10,4)
+  wires.push({x1:2,y1:2,x2:6,y2:2});
+  wires.push({x1:6,y1:4,x2:6,y2:8});
+  comps.push({id:'R'+(uid++),type:'R',x:10,y:2,rot:90,value:10000});  // (10,2)-(10,4)
+  wires.push({x1:10,y1:4,x2:10,y2:8});
+  wires.push({x1:2,y1:8,x2:6,y2:8});
+  wires.push({x1:6,y1:8,x2:10,y2:8});
+  scopeProbes=[{x:2,y:2,color:SCOPE_COLORS[0]},{x:10,y:2,color:SCOPE_COLORS[1]}];
+  selected=null; refreshMeta(); renderInspector(); fitView(); draw();
+  flashHint('Press <b>Run</b>: the scope shows 10 V in on the primary and 20 V out on the secondary — √(L₂/L₁) = 2.');
+}
+
 function buildGallery(){
   const sel=el('gallery') as HTMLSelectElement;
   sel.innerHTML='<option value="">Examples ▾</option>'+GALLERY.map((g,i)=>`<option value="${i}">${g.name}</option>`).join('');

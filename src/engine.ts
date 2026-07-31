@@ -30,6 +30,8 @@ export type NodeId = number;
 export type Pair = [NodeId, NodeId];
 /** Three-terminal parts: BJT [C,B,E], MOSFET [D,G,S], op-amp [out, in+, in−]. */
 export type Triple = [NodeId, NodeId, NodeId];
+/** Four-terminal parts: an output port and a controlling/secondary port. */
+export type Quad = [NodeId, NodeId, NodeId, NodeId];
 
 interface Part { id: string }
 
@@ -50,11 +52,49 @@ export interface Bjt extends Part { type: 'QN' | 'QP'; nodes: Triple; Is?: numbe
 export interface Mosfet extends Part { type: 'MN' | 'MP'; nodes: Triple; vth?: number; k?: number; lam?: number }
 export interface OpAmp extends Part { type: 'OA'; nodes: Triple; gain?: number }
 
+/**
+ * The four dependent sources, each with an output port and a controlling port:
+ * nodes = [out+, out−, ctrl+, ctrl−].
+ *
+ * SPICE names another source to sense a controlling CURRENT. That's awkward in
+ * a schematic editor, where you draw a symbol and wire to its pins, so F and H
+ * instead carry their OWN ammeter: the controlling current is whatever flows
+ * in at ctrl+ and out at ctrl−, across an internal 0 V short. You wire the
+ * current you want to sense through those two pins.
+ *
+ * `value` is the gain, and its units are what distinguish the four:
+ *   E — VCVS, V/V   G — VCCS, A/V   F — CCCS, A/A   H — CCVS, V/A
+ */
+export interface ControlledSource extends Part {
+  type: 'E' | 'G' | 'F' | 'H';
+  nodes: Quad;
+  value: number;
+}
+
+/**
+ * Two magnetically coupled windings — a transformer. `value` is the primary
+ * inductance, `l2` the secondary, and `k` the coupling coefficient (1 is
+ * perfect coupling, and the turns ratio is then √(L2/L1)). nodes = [p+, p−,
+ * s+, s−], with the dots at p+ and s+.
+ *
+ * This is the one part here that genuinely needs a new stamp rather than a
+ * combination of existing ones: mutual inductance couples two branch-current
+ * unknowns to each other, which nothing else in the netlist does.
+ */
+export interface Transformer extends Part {
+  type: 'XF';
+  nodes: Quad;
+  value: number;   // primary inductance, henries
+  l2?: number;     // secondary inductance, henries (defaults to the primary)
+  k?: number;      // coupling coefficient 0..1
+}
+
 /** Anything with an MNA branch-current unknown of its own. */
 export type VoltageSource = DCSource | WaveSource;
 export type Component =
   | Resistor | Capacitor | Inductor | CurrentSource
-  | VoltageSource | Diode | Bjt | Mosfet | OpAmp;
+  | VoltageSource | Diode | Bjt | Mosfet | OpAmp
+  | ControlledSource | Transformer;
 
 /** A complex number, used by the AC (phasor) analysis. */
 export interface Complex { re: number; im: number }
@@ -79,6 +119,13 @@ export interface AcSweep {
 
 /** Backward-Euler history for one component: voltage across / current through. */
 interface History { v: number; i: number }
+
+// Suffixes for the extra unknowns some parts need. They are appended to the
+// component id to key the branch index, the row labels and the reported
+// currents, so a part with two branches stays addressable by name from
+// outside — which is how the editor animates current through both of them.
+const SENSE = ':sense';         // internal ammeter of a CCCS / CCVS
+const SECONDARY = ':secondary'; // a transformer's second winding
 
 /**
  * A record of one solved system, for the "show the math" mode. The solver
@@ -280,14 +327,25 @@ export class Circuit {
     this.branchIndex = new Map<string, number>();
     let b = 0;
     for (const c of this.components) {
-      if (c.type === 'V' || c.type === 'VS' || c.type === 'L' || c.type === 'OA') this.branchIndex.set(c.id, this.numNodes + b++);
+      // Elements whose branch current is itself an unknown: anything that
+      // constrains a voltage rather than a current, plus the inductor.
+      if (c.type === 'V' || c.type === 'VS' || c.type === 'L' || c.type === 'OA'
+        || c.type === 'E' || c.type === 'H' || c.type === 'XF') this.branchIndex.set(c.id, this.numNodes + b++);
+      // A second unknown for elements with two coupled branches: the internal
+      // ammeter of a current-controlled source, and a transformer's secondary.
+      if (c.type === 'F' || c.type === 'H') this.branchIndex.set(c.id + SENSE, this.numNodes + b++);
+      if (c.type === 'XF') this.branchIndex.set(c.id + SECONDARY, this.numNodes + b++);
     }
     this.numBranches = b;
     this.size = this.numNodes + this.numBranches;
 
-    // Per-element history for transient analysis (previous v / i).
+    // Per-element history for transient analysis (previous v / i). A
+    // transformer integrates two currents, so it keeps two histories.
     this.state = new Map<string, History>();
-    for (const c of this.components) this.state.set(c.id, { v: 0, i: 0 });
+    for (const c of this.components) {
+      this.state.set(c.id, { v: 0, i: 0 });
+      if (c.type === 'XF') this.state.set(c.id + SECONDARY, { v: 0, i: 0 });
+    }
 
     // Name every unknown, so a displayed matrix has meaningful row/column axes.
     this.rowLabels = new Array<string>(this.size);
@@ -483,6 +541,70 @@ export class Circuit {
           if (nout >= 0) { A[nout][br] += 1; A[br][nout] += 1; } // KCL + Vout term
           if (np >= 0) A[br][np] -= gain;                        // −gain·V+
           if (nm >= 0) A[br][nm] += gain;                        // +gain·V−
+
+        } else if (c.type === 'E' || c.type === 'G' || c.type === 'F' || c.type === 'H') {
+          // Dependent sources. All four are linear, so they stamp once and
+          // never take part in the Newton loop.
+          const op = this._ni(c.nodes[0]), on = this._ni(c.nodes[1]);
+          const cp = this._ni(c.nodes[2]), cn = this._ni(c.nodes[3]);
+          const k = c.value;
+          // Voltage-controlled pair: the controlling port draws no current, so
+          // it appears only in the output equation.
+          if (c.type === 'G') {
+            // Output current k·(v_cp − v_cn) leaves out+ and enters out−.
+            if (op >= 0 && cp >= 0) A[op][cp] += k;
+            if (op >= 0 && cn >= 0) A[op][cn] -= k;
+            if (on >= 0 && cp >= 0) A[on][cp] -= k;
+            if (on >= 0 && cn >= 0) A[on][cn] += k;
+          } else if (c.type === 'E') {
+            // v_op − v_on = k·(v_cp − v_cn), through a branch current unknown.
+            const br = this.branchIndex.get(c.id)!;
+            if (op >= 0) { A[op][br] += 1; A[br][op] += 1; }
+            if (on >= 0) { A[on][br] -= 1; A[br][on] -= 1; }
+            if (cp >= 0) A[br][cp] -= k;
+            if (cn >= 0) A[br][cn] += k;
+          } else {
+            // Current-controlled pair. The controlling port is a 0 V short
+            // whose current is the extra unknown: v_cp − v_cn = 0.
+            const bs = this.branchIndex.get(c.id + SENSE)!;
+            if (cp >= 0) { A[cp][bs] += 1; A[bs][cp] += 1; }
+            if (cn >= 0) { A[cn][bs] -= 1; A[bs][cn] -= 1; }
+            if (c.type === 'F') {
+              // Output current k·i_sense leaves out+ and enters out−.
+              if (op >= 0) A[op][bs] += k;
+              if (on >= 0) A[on][bs] -= k;
+            } else {
+              // v_op − v_on = k·i_sense.
+              const br = this.branchIndex.get(c.id)!;
+              if (op >= 0) { A[op][br] += 1; A[br][op] += 1; }
+              if (on >= 0) { A[on][br] -= 1; A[br][on] -= 1; }
+              A[br][bs] -= k;
+            }
+          }
+
+        } else if (c.type === 'XF') {
+          // Coupled inductors. Each winding gets the ordinary inductor stamp,
+          // plus an off-diagonal M/h term tying it to the OTHER winding's
+          // current — which is the whole of what makes it a transformer.
+          const p = this.branchIndex.get(c.id)!, s2 = this.branchIndex.get(c.id + SECONDARY)!;
+          const pp = this._ni(c.nodes[0]), pn = this._ni(c.nodes[1]);
+          const sp = this._ni(c.nodes[2]), sn = this._ni(c.nodes[3]);
+          if (pp >= 0) { A[pp][p] += 1; A[p][pp] += 1; }
+          if (pn >= 0) { A[pn][p] -= 1; A[p][pn] -= 1; }
+          if (sp >= 0) { A[sp][s2] += 1; A[s2][sp] += 1; }
+          if (sn >= 0) { A[sn][s2] -= 1; A[s2][sn] -= 1; }
+          if (h) {
+            const L1 = c.value, L2 = c.l2 ?? c.value;
+            const M = (c.k ?? 0.99) * Math.sqrt(Math.max(0, L1 * L2));
+            const i1p = st.i, i2p = this.state.get(c.id + SECONDARY)!.i;
+            // v1 = (L1·di1 + M·di2)/h  and  v2 = (M·di1 + L2·di2)/h
+            A[p][p] -= L1 / h; A[p][s2] -= M / h;
+            A[s2][p] -= M / h; A[s2][s2] -= L2 / h;
+            z[p] += -(L1 / h) * i1p - (M / h) * i2p;
+            z[s2] += -(M / h) * i1p - (L2 / h) * i2p;
+          } else {
+            A[p][p] -= 1e-9; A[s2][s2] -= 1e-9;  // DC: both windings are shorts
+          }
         }
       }
 
@@ -535,6 +657,11 @@ export class Circuit {
       const st = this.state.get(c.id)!;
       st.v = res.voltageAcross[c.id];
       st.i = res.current[c.id];
+      if (c.type === 'XF') {
+        const s2 = this.state.get(c.id + SECONDARY)!;
+        s2.v = res.voltageAcross[c.id + SECONDARY];
+        s2.i = res.current[c.id + SECONDARY];
+      }
     }
     return res;
   }
@@ -599,6 +726,43 @@ export class Circuit {
           const J = [[gds, gm, -(gm + gds)], [0, 0, 0], [-gds, -gm, gm + gds]];
           const nodes = [nd, ng, nsrc];
           for (let p = 0; p < 3; p++) for (let q = 0; q < 3; q++) gReal(A, nodes[p], nodes[q], J[p][q]);
+        } else if (c.type === 'E' || c.type === 'G' || c.type === 'F' || c.type === 'H') {
+          // Same stamps as the transient path — these sources are linear, so
+          // the small-signal model and the large-signal one are identical.
+          const op = this._ni(c.nodes[0]), on = this._ni(c.nodes[1]);
+          const cp = this._ni(c.nodes[2]), cn = this._ni(c.nodes[3]);
+          const k = c.value;
+          if (c.type === 'G') {
+            gReal(A, op, cp, k); gReal(A, op, cn, -k);
+            gReal(A, on, cp, -k); gReal(A, on, cn, k);
+          } else if (c.type === 'E') {
+            const br = this.branchIndex.get(c.id)!;
+            branch(A, op, on, br);
+            if (cp >= 0) A[br][cp] = csub(A[br][cp], cx(k));
+            if (cn >= 0) A[br][cn] = cadd(A[br][cn], cx(k));
+          } else {
+            const bs = this.branchIndex.get(c.id + SENSE)!;
+            branch(A, cp, cn, bs);
+            if (c.type === 'F') {
+              if (op >= 0) A[op][bs] = cadd(A[op][bs], cx(k));
+              if (on >= 0) A[on][bs] = csub(A[on][bs], cx(k));
+            } else {
+              const br = this.branchIndex.get(c.id)!;
+              branch(A, op, on, br);
+              A[br][bs] = csub(A[br][bs], cx(k));
+            }
+          }
+        } else if (c.type === 'XF') {
+          // jωL on each winding's own branch, jωM across the pair.
+          const p = this.branchIndex.get(c.id)!, s2 = this.branchIndex.get(c.id + SECONDARY)!;
+          const L1 = c.value, L2 = c.l2 ?? c.value;
+          const M = (c.k ?? 0.99) * Math.sqrt(Math.max(0, L1 * L2));
+          branch(A, this._ni(c.nodes[0]), this._ni(c.nodes[1]), p);
+          branch(A, this._ni(c.nodes[2]), this._ni(c.nodes[3]), s2);
+          A[p][p] = csub(A[p][p], cx(0, w * L1));
+          A[p][s2] = csub(A[p][s2], cx(0, w * M));
+          A[s2][p] = csub(A[s2][p], cx(0, w * M));
+          A[s2][s2] = csub(A[s2][s2], cx(0, w * L2));
         }
       }
       const x = csolve(A, z);
@@ -654,6 +818,22 @@ export class Circuit {
         current[c.id] = s * Id;
         voltageAcross[c.id] = vd - vs; // Vds
         terminals[c.id] = { Ic: s * Id, Ib: 0, Ie: -s * Id }; // drain/gate/source mapped to Ic/Ib/Ie
+      } else if (c.type === 'E' || c.type === 'H') {
+        current[c.id] = x[this.branchIndex.get(c.id)!];
+      } else if (c.type === 'G') {
+        // No branch unknown: the output current IS the controlling expression.
+        current[c.id] = c.value * ((nodeVoltage[c.nodes[2]] ?? 0) - (nodeVoltage[c.nodes[3]] ?? 0));
+      } else if (c.type === 'F') {
+        current[c.id] = c.value * x[this.branchIndex.get(c.id + SENSE)!];
+      } else if (c.type === 'XF') {
+        current[c.id] = x[this.branchIndex.get(c.id)!];
+        current[c.id + SECONDARY] = x[this.branchIndex.get(c.id + SECONDARY)!];
+        voltageAcross[c.id + SECONDARY] = (nodeVoltage[c.nodes[2]] ?? 0) - (nodeVoltage[c.nodes[3]] ?? 0);
+      }
+      // The controlling port of a current-controlled source is a real branch
+      // the editor needs to animate, so report its current too.
+      if (c.type === 'F' || c.type === 'H') {
+        current[c.id + SENSE] = x[this.branchIndex.get(c.id + SENSE)!];
       }
     }
     return { nodeVoltage, voltageAcross, current, terminals };

@@ -21,6 +21,7 @@ const KEY_STORAGE = 'zuri.anthropic.key';
 export const AI_PART_TYPES = [
   'R', 'C', 'L', 'V', 'VS', 'SQ', 'I', 'D', 'QN', 'QP', 'MN', 'MP', 'OA', 'GND',
   'LED', 'LAMP', 'CP', 'SW', 'PB', 'PBNC', 'POT',
+  'E', 'G', 'F', 'H', 'XF', 'RLY', 'MOT',
 ] as const;
 export type AiPartType = (typeof AI_PART_TYPES)[number];
 
@@ -127,6 +128,17 @@ PART VALUES:
   that is closed until held. All three start in their resting state.
 - POT is a 3-pin potentiometer: value is the whole track in ohms, and its pins
   are [one end, wiper, the other end] in that order.
+- E, G, F and H are the dependent sources, pins [out+, out-, ctrl+, ctrl-].
+  Value is the gain: E volts per volt, G amps per volt, F amps per amp, H volts
+  per amp. E and G sense a voltage across their control pins; F and H sense the
+  current flowing THROUGH theirs, so wire that current straight through them.
+- XF is a transformer, pins [primary+, primary-, secondary+, secondary-]. Value
+  is the primary inductance in henries; the turns ratio is the square root of
+  the inductance ratio, so give it a secondary of 4x for a 1:2 step-up.
+- RLY is a relay, pins [coil+, coil-, contact A, contact B]. Value is the coil
+  resistance; the contact closes above about 20 mA of coil current. Put a diode
+  across the coil, cathode to coil+, to catch the switch-off spike.
+- MOT is a DC motor with two pins; value is its armature resistance in ohms.
 - VS is a sine source and SQ a square source: set amp (peak volts), freq (Hz),
   off (DC offset). SQ also takes duty (0-1, use 0.5 for a symmetric square).
   A 0-to-5 V pulse is off 2.5 with amp 2.5.
