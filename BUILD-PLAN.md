@@ -28,7 +28,7 @@ already in place, so new semiconductors reuse it rather than reinventing it.
 | 3 | Instrumentation | Oscilloscope (probe nodes, live multi-trace) + sine source to drive it | Frequency-response test + UI capture | ✅ done |
 | 4 | Analyses | AC small-signal sweep + Bode plot (magnitude & phase) | RC/RLC transfer-function checks | ✅ done |
 | 5 | Persistence & sharing | Save/load circuits as JSON, shareable URLs, named example gallery | Round-trip serialize tests | ✅ done |
-| 6 | Cross-platform packaging | TypeScript port, Capacitor (iOS/Android), Tauri (desktop), PWA offline | Per-platform launch + touch tests | next |
+| 6 | Cross-platform packaging | TypeScript port, Capacitor (iOS/Android), Tauri (desktop), PWA offline | Per-platform launch + touch tests | in progress |
 | 7 | Differentiators | "Show the math" learning mode, MCU co-sim, AI circuit assistant | Feature-specific | |
 
 ## Phase 1 — what was just delivered (reference implementation)
@@ -157,6 +157,37 @@ bottleneck, **Flutter** is the fallback — the engine ports to Dart cleanly
 because it's pure computation — but don't start there; the web-first path ships
 far sooner.
 
+**Status.** The restructure is in the repo and verified to run: `npm install`,
+`npm test` (8 checks green), `npm run typecheck` (clean under `strict`), and
+`npm run build` (emits `dist/` with a generated service worker and web manifest —
+the PWA piece is done). `engine.ts` is now genuinely typed, not JavaScript
+wearing a `.ts` extension: the netlist is a discriminated `Component` union, the
+MNA layout fields are declared on the class, and the complex-arithmetic layer is
+typed through `csolve`. No math changed — the same 8 checks pass before and after.
+
+**Test coverage restored.** The port had arrived with only 8 checks against the
+prototype's 46. The suite is now **52 checks across one file per device**, which
+is the discipline this plan asks for: 6 solver, 4 diode, 7 BJT, 10 MOSFET, 5
+op-amp, 4 sine/transient, 6 AC/Bode, 10 formatter. The transient
+frequency-response checks measure gain by *running the simulation* and reading
+the output peak, so they exercise the whole time-stepping path end to end rather
+than re-deriving it. Restoring them required extracting `fmt`/`parseVal` out of
+the UI file into `src/format.ts` — DOM-free and typed, like the engine.
+
+**A real bug the restored coverage caught.** `parseVal` lower-cased its SI
+prefix, so `"1M"` parsed as milli, not mega. Because the inspector fills its
+input with `fmt(value)` and saves `parseVal(input)`, opening and re-saving a
+1 MΩ resistor silently rewrote it as 1 mΩ — nine orders of magnitude, no
+warning. Prefix parsing is now case-sensitive where it must be (`M` mega vs `m`
+milli) and case-forgiving where there's no ambiguity, with a round-trip test
+over every prefix `fmt` can emit.
+
+**Remaining in this phase.** (1) `main.ts` still carries `// @ts-nocheck` — the
+UI type pass. (2) Actual per-platform launches (Tauri window, iOS/Android via
+Capacitor) are still unverified on real devices. (3) The headless-browser smoke
+captures described below have not been ported either; the engine is covered, the
+UI is not.
+
 ## Phase 7 — where you actually differentiate
 
 With the fundamentals solid, invest in the things the incumbents don't have. A
@@ -176,10 +207,12 @@ device** that checks its numbers against a known answer (hand calculation or
 textbook), and a **headless-browser smoke test** that loads the app, runs a
 representative circuit, and confirms the on-screen values match. Every new device
 adds one of each before it's considered done. This is why the current engine is
-trustworthy — **46 automated checks pass today** (6 solver, 6 BJT, 9 MOSFET, 5
-op-amp, 4 sine/frequency-response, 6 AC/Bode, 10 formatter), plus headless-browser
-captures of the scope, the Bode plot, and every worked example — and it's the
-cheapest insurance you have as complexity grows.
+trustworthy — **52 automated checks pass in the repo today** (6 solver, 4 diode,
+7 BJT, 10 MOSFET, 5 op-amp, 4 sine/transient, 6 AC/Bode, 10 formatter), run with
+`npm test` — and it's the cheapest insurance you have as complexity grows. The
+headless-browser captures of the scope, the Bode plot, and the worked examples
+existed in the prototype but have not been ported yet; that's the open half of
+this strategy.
 
 ## Suggested immediate next step
 

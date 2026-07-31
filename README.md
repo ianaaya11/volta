@@ -21,11 +21,12 @@ any platform:
 ```
 src/
   engine.ts   # pure simulation engine — no DOM. The single source of truth.
+  format.ts   # SI value formatting / parsing (pure).
   main.ts     # schematic editor, rendering, scope/Bode UI, persistence.
   style.css   # app styling.
 index.html    # Vite entry / markup.
-tests/
-  engine.test.ts   # verifies the engine against closed-form theory (Vitest).
+tests/        # one file per device, verified against closed-form theory:
+  solver  diode  bjt  mosfet  opamp  transient  ac  format
 ```
 
 `engine.ts` takes a plain netlist (`{ id, type, nodes, value, ... }[]`) and
@@ -34,6 +35,10 @@ events, or frameworks — which is exactly what lets the same engine run on the
 web, in a mobile shell, and in a desktop window unchanged. Every device model is
 verified in isolation against a hand calculation or a textbook transfer function
 before it ships (see `tests/`).
+
+`engine.ts` is fully typed and checked under `strict`: the netlist is a
+discriminated union (`Component`), so narrowing on `c.type` yields exactly the
+fields that device model uses.
 
 > Note: `main.ts` is ported from the original single-file prototype and currently
 > carries `// @ts-nocheck`; a full type pass over the UI is the tracked follow-up.
@@ -74,11 +79,14 @@ npx cap open android       # open in Android Studio
 
 ## Status
 
-Ported from a verified single-file prototype. The engine passes an automated
-suite covering DC, transient, and AC across every device (voltage divider, RC
-time constant, diode drop, BJT β, MOSFET bias, op-amp gain, RC −3dB point, RLC
-resonance). Roadmap and phase history live in `BUILD-PLAN.md` at the project root
-of the prototype.
+Ported from a verified single-file prototype. **52 automated checks pass**,
+organized one file per device and covering DC, transient, and AC: voltage
+divider and series/parallel networks, RC and RL time constants, diode drop and
+rectification, BJT β with active/saturation/cutoff regions and the PNP mirror,
+MOSFET region equations plus a common-source bias point and the PMOS mirror,
+op-amp gains with the virtual short and virtual ground, RC −3dB point and
+−20 dB/decade rolloff, RLC resonance, and SI formatting round-trips. Roadmap and
+phase history live in `BUILD-PLAN.md`.
 
 ## License
 

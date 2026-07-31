@@ -1,5 +1,6 @@
 // @ts-nocheck — ported UI glue; fuller typing tracked as a follow-up.
 import { Circuit } from './engine';
+import { fmt, parseVal } from './format';
 import './style.css';
 
 //  PART 2 — SCHEMATIC MODEL + EDITOR
@@ -59,28 +60,6 @@ const TYPES={
   GND:{name:'Ground',unit:'',def:0},
 };
 
-// ---- SI value formatting / parsing ----------------------------------------
-function fmt(v,unit){
-  if(v===0) return '0'+unit;
-  const a=Math.abs(v);
-  const pfx=[[1e9,'G'],[1e6,'M'],[1e3,'k'],[1,''],[1e-3,'m'],[1e-6,'µ'],[1e-9,'n'],[1e-12,'p']];
-  // 0.9995·m threshold so a value like 999.998m rounds up into the next unit
-  // (shows "1 V" instead of "1.00e+3 mV") rather than overflowing its prefix.
-  for(const [m,p] of pfx){ if(a>=m*0.9995){
-    let s=(v/m).toPrecision(3);
-    // strip trailing zeros ONLY after a decimal point (so 690 stays 690)
-    if(s.indexOf('.')>=0) s=s.replace(/0+$/,'').replace(/\.$/,'');
-    return s+' '+p+unit; } }
-  return v.toExponential(2)+unit;
-}
-function parseVal(s){
-  s=String(s).trim().replace(/[ΩVAFH]/gi,'');
-  const m=s.match(/^(-?[0-9.]+)\s*([a-zµ]?)/i);
-  if(!m) return NaN;
-  let v=parseFloat(m[1]); const p=(m[2]||'').toLowerCase();
-  const mul={g:1e9,meg:1e6,k:1e3,'':1,m:1e-3,u:1e-6,'µ':1e-6,n:1e-9,p:1e-12};
-  return v*(mul[p]??1);
-}
 
 // ===========================================================================
 //  PART 3 — NETLIST: turn geometry into electrical nodes (union-find)

@@ -19,6 +19,64 @@
 //  v = node voltages, j = the extra branch currents, and we solve A x = z.
 // ============================================================================
 
+// ---- Netlist types ---------------------------------------------------------
+// A node id is an integer; the special id 0 is GROUND (the reference node, it
+// gets no equation). Every component is a member of the `Component` union
+// below, discriminated on `type`, so narrowing on `c.type` gives you exactly
+// the fields that device model needs and nothing else.
+export type NodeId = number;
+
+/** Two-terminal parts: nodes = [a, b]. */
+export type Pair = [NodeId, NodeId];
+/** Three-terminal parts: BJT [C,B,E], MOSFET [D,G,S], op-amp [out, in+, in−]. */
+export type Triple = [NodeId, NodeId, NodeId];
+
+interface Part { id: string }
+
+export interface Resistor extends Part { type: 'R'; nodes: Pair; value: number }        // ohms
+export interface Capacitor extends Part { type: 'C'; nodes: Pair; value: number }       // farads
+export interface Inductor extends Part { type: 'L'; nodes: Pair; value: number }        // henries
+export interface CurrentSource extends Part { type: 'I'; nodes: Pair; value: number }   // amps
+export interface DCSource extends Part { type: 'V'; nodes: Pair; value: number; wave?: 'DC' }
+export interface SineSource extends Part {
+  type: 'VS'; nodes: Pair; wave: 'SIN';
+  value?: number; amp?: number; freq?: number; off?: number; phase?: number;
+}
+export interface Diode extends Part { type: 'D'; nodes: Pair }
+export interface Bjt extends Part { type: 'QN' | 'QP'; nodes: Triple; Is?: number; bf?: number; br?: number }
+export interface Mosfet extends Part { type: 'MN' | 'MP'; nodes: Triple; vth?: number; k?: number; lam?: number }
+export interface OpAmp extends Part { type: 'OA'; nodes: Triple; gain?: number }
+
+/** Anything with an MNA branch-current unknown of its own. */
+export type VoltageSource = DCSource | SineSource;
+export type Component =
+  | Resistor | Capacitor | Inductor | CurrentSource
+  | VoltageSource | Diode | Bjt | Mosfet | OpAmp;
+
+/** A complex number, used by the AC (phasor) analysis. */
+export interface Complex { re: number; im: number }
+
+/** Per-terminal currents of a 3-terminal part (drain/gate/source map to Ic/Ib/Ie). */
+export interface Terminals { Ic: number; Ib: number; Ie: number }
+
+/** What one solved operating point looks like. Keyed by node id / component id. */
+export interface Solution {
+  nodeVoltage: Record<NodeId, number>;
+  voltageAcross: Record<string, number>;
+  current: Record<string, number>;
+  terminals: Record<string, Terminals>;
+}
+
+/** A frequency sweep: phasors[i][nodeId] is that node's response at freqs[i]. */
+export interface AcSweep {
+  freqs: number[];
+  phasors: Record<NodeId, Complex>[];
+  stimulusId: string | undefined;
+}
+
+/** Backward-Euler history for one component: voltage across / current through. */
+interface History { v: number; i: number }
+
 // ---- Linear solver: Gaussian elimination with partial pivoting -------------
 // Solves A x = b for x. A is n-by-n (array of rows), b is length n.
 // Partial pivoting (swapping in the largest pivot) keeps it numerically stable.
@@ -28,7 +86,7 @@
 // pnjlim caps how far a junction voltage may move in a single iteration,
 // switching to a logarithmic step once past the critical voltage. This is the
 // single trick that makes diodes and transistors converge reliably.
-export function pnjlim(vnew, vold, vt, vcrit) {
+export function pnjlim(vnew: number, vold: number, vt: number, vcrit: number): number {
   if (vnew > vcrit && Math.abs(vnew - vold) > 2 * vt) {
     if (vold > 0) {
       const arg = 1 + (vnew - vold) / vt;
@@ -44,7 +102,7 @@ export function pnjlim(vnew, vold, vt, vcrit) {
 // Given effective (on-state) gate-source / drain-source voltages, returns the
 // drain current and the two small-signal conductances gm=dId/dVgs, gds=dId/dVds.
 // Cutoff / triode / saturation regions; lambda gives finite output resistance.
-export function mos1(vgs, vds, vth, k, lam) {
+export function mos1(vgs: number, vds: number, vth: number, k: number, lam: number): { Id: number; gm: number; gds: number } {
   const vov = vgs - vth;
   if (vov <= 0) return { Id: 0, gm: 0, gds: 0 };            // cutoff
   if (vds < vov) {                                          // triode
@@ -59,22 +117,22 @@ export function mos1(vgs, vds, vth, k, lam) {
 
 // Instantaneous value of an independent source at time t. A DC source returns
 // its constant value; a SIN source returns offset + amp·sin(2πf·t + phase).
-export function srcVal(c, t) {
+export function srcVal(c: VoltageSource, t: number): number {
   if (c.wave === 'SIN') return (c.off || 0) + (c.amp || 0) * Math.sin(2 * Math.PI * (c.freq || 0) * (t || 0) + (c.phase || 0));
-  return c.value;
+  return c.value ?? 0;
 }
 
 // ---- Complex arithmetic + solver for AC (phasor) analysis ------------------
-const cx = (re, im = 0) => ({ re, im });
-const cadd = (a, b) => ({ re: a.re + b.re, im: a.im + b.im });
-const csub = (a, b) => ({ re: a.re - b.re, im: a.im - b.im });
-const cmul = (a, b) => ({ re: a.re * b.re - a.im * b.im, im: a.re * b.im + a.im * b.re });
-const cdiv = (a, b) => { const d = b.re * b.re + b.im * b.im; return { re: (a.re * b.re + a.im * b.im) / d, im: (a.im * b.re - a.re * b.im) / d }; };
-const cmag = (a) => Math.hypot(a.re, a.im);
+const cx = (re: number, im = 0): Complex => ({ re, im });
+const cadd = (a: Complex, b: Complex): Complex => ({ re: a.re + b.re, im: a.im + b.im });
+const csub = (a: Complex, b: Complex): Complex => ({ re: a.re - b.re, im: a.im - b.im });
+const cmul = (a: Complex, b: Complex): Complex => ({ re: a.re * b.re - a.im * b.im, im: a.re * b.im + a.im * b.re });
+const cdiv = (a: Complex, b: Complex): Complex => { const d = b.re * b.re + b.im * b.im; return { re: (a.re * b.re + a.im * b.im) / d, im: (a.im * b.re - a.re * b.im) / d }; };
+const cmag = (a: Complex): number => Math.hypot(a.re, a.im);
 
 // Complex Gauss-Jordan elimination with partial pivoting. A: N×N of {re,im},
 // z: length-N of {re,im}. Returns the solution vector (complex).
-export function csolve(A, z) {
+export function csolve(A: Complex[][], z: Complex[]): Complex[] {
   const n = z.length;
   A = A.map((r) => r.slice()); z = z.slice();
   for (let col = 0; col < n; col++) {
@@ -91,12 +149,12 @@ export function csolve(A, z) {
       z[r] = csub(z[r], cmul(f, z[col]));
     }
   }
-  const x = new Array(n);
+  const x: Complex[] = new Array(n);
   for (let i = 0; i < n; i++) { const d = A[i][i]; x[i] = cmag(d) < 1e-20 ? cx(0) : cdiv(z[i], d); }
   return x;
 }
 
-export function solve(A, b) {
+export function solve(A: number[][], b: number[]): number[] {
   const n = b.length;
   // Work on copies so we don't clobber the caller's matrix.
   const M = A.map((row) => row.slice());
@@ -136,13 +194,26 @@ export function solve(A, b) {
 }
 
 // ---- The circuit ----------------------------------------------------------
-// A component is: { type, nodes: [a, b], value, id }
-//   type: 'R' | 'V' | 'I' | 'C' | 'L' | 'D'
-//   nodes: node ids (any string/number). The special id 0 (zero) is GROUND.
-//   value: resistance (Ω), voltage (V), current (A), capacitance (F),
-//          inductance (H). Diodes ignore value and use the model below.
+// Hand it a netlist (see the `Component` union above) and it solves for every
+// node voltage and every branch current. `value` carries resistance (Ω),
+// voltage (V), current (A), capacitance (F) or inductance (H) depending on the
+// part; semiconductors ignore it and use their model parameters instead.
 export class Circuit {
-  constructor(components) {
+  readonly components: Component[];
+  /** Absolute simulation time (seconds), advanced by step(). */
+  t: number;
+
+  // Built by _index(): the MNA layout. Non-ground node -> matrix row, and one
+  // extra row/column per element carrying a branch-current unknown.
+  nodeIndex!: Map<NodeId, number>;
+  branchIndex!: Map<string, number>;
+  numNodes!: number;
+  numBranches!: number;
+  size!: number;
+  /** Per-element transient history, keyed by component id. */
+  state!: Map<string, History>;
+
+  constructor(components: Component[]) {
     this.components = components;
     this.t = 0; // absolute simulation time (seconds), advanced by step()
     this._index();
@@ -150,18 +221,18 @@ export class Circuit {
 
   // Assign each non-ground node a matrix row. Assign each voltage source and
   // inductor an EXTRA row/column (its branch-current unknown).
-  _index() {
-    const nodeSet = new Set();
+  _index(): void {
+    const nodeSet = new Set<NodeId>();
     for (const c of this.components) for (const nd of c.nodes) nodeSet.add(nd);
     nodeSet.delete(0); // ground is the reference; it has no equation.
 
-    this.nodeIndex = new Map();
+    this.nodeIndex = new Map<NodeId, number>();
     let k = 0;
     for (const nd of nodeSet) this.nodeIndex.set(nd, k++);
     this.numNodes = k;
 
     // Branch unknowns for elements that carry a current variable.
-    this.branchIndex = new Map();
+    this.branchIndex = new Map<string, number>();
     let b = 0;
     for (const c of this.components) {
       if (c.type === 'V' || c.type === 'VS' || c.type === 'L' || c.type === 'OA') this.branchIndex.set(c.id, this.numNodes + b++);
@@ -170,21 +241,24 @@ export class Circuit {
     this.size = this.numNodes + this.numBranches;
 
     // Per-element history for transient analysis (previous v / i).
-    this.state = new Map();
+    this.state = new Map<string, History>();
     for (const c of this.components) this.state.set(c.id, { v: 0, i: 0 });
   }
 
-  _ni(nd) {
-    return nd === 0 ? -1 : this.nodeIndex.get(nd); // -1 means ground row (skip)
+  // Matrix row for a node. -1 means ground (or an unknown node): stamps skip it.
+  _ni(nd: NodeId): number {
+    if (nd === 0) return -1;
+    const i = this.nodeIndex.get(nd);
+    return i === undefined ? -1 : i;
   }
 
   // Stamp helpers: add a value into A or z, skipping ground (index -1).
-  _stampG(A, a, b, g) {
+  _stampG(A: number[][], a: number, b: number, g: number): void {
     if (a >= 0) A[a][a] += g;
     if (b >= 0) A[b][b] += g;
     if (a >= 0 && b >= 0) { A[a][b] -= g; A[b][a] -= g; }
   }
-  _stampI(z, a, b, cur) {
+  _stampI(z: number[], a: number, b: number, cur: number): void {
     if (a >= 0) z[a] -= cur;
     if (b >= 0) z[b] += cur;
   }
@@ -192,25 +266,25 @@ export class Circuit {
   // Build and solve one operating point.
   //   opts.h    : timestep (seconds). If omitted -> pure DC (caps open, L short).
   //   opts.vguess: node-voltage guess for Newton-Raphson (nonlinear elements).
-  _buildAndSolve(h, vguess, t) {
+  _buildAndSolve(h: number | null, vguess: number[] | null, t: number): number[] {
     const N = this.size;
     // Newton-Raphson loop for nonlinear elements (diodes, transistors). For a
     // linear circuit this runs exactly once because nothing changes per pass.
-    let x = new Array(N).fill(0);
-    const nodeV = (idx) => (idx < 0 ? 0 : (vguess ? vguess[idx] || 0 : x[idx] || 0));
+    let x: number[] = new Array(N).fill(0);
+    const nodeV = (idx: number) => (idx < 0 ? 0 : (vguess ? vguess[idx] || 0 : x[idx] || 0));
     const nonlinear = this.components.some((c) => c.type === 'D' || c.type === 'QN' || c.type === 'QP' || c.type === 'MN' || c.type === 'MP');
     // Per-transistor memory of last iteration's junction voltages, for pnjlim.
-    const bjtLim = new Map();
+    const bjtLim = new Map<string, { vbe: number; vbc: number }>();
     for (const c of this.components) if (c.type === 'QN' || c.type === 'QP') bjtLim.set(c.id, { vbe: 0, vbc: 0 });
 
     for (let iter = 0; iter < 100; iter++) {
-      const A = Array.from({ length: N }, () => new Array(N).fill(0));
-      const z = new Array(N).fill(0);
+      const A: number[][] = Array.from({ length: N }, () => new Array<number>(N).fill(0));
+      const z: number[] = new Array<number>(N).fill(0);
 
       for (const c of this.components) {
         const a = this._ni(c.nodes[0]);
         const b = this._ni(c.nodes[1]);
-        const st = this.state.get(c.id);
+        const st = this.state.get(c.id)!;
 
         if (c.type === 'R') {
           this._stampG(A, a, b, 1 / c.value);
@@ -221,7 +295,7 @@ export class Circuit {
 
         } else if (c.type === 'V' || c.type === 'VS') {
           // Voltage source (DC or sine): extra branch current unknown 'br'.
-          const br = this.branchIndex.get(c.id);
+          const br = this.branchIndex.get(c.id)!;
           if (a >= 0) { A[a][br] += 1; A[br][a] += 1; }
           if (b >= 0) { A[b][br] -= 1; A[br][b] -= 1; }
           z[br] += srcVal(c, t); // v(a) - v(b) = source value at time t
@@ -238,7 +312,7 @@ export class Circuit {
           }
         } else if (c.type === 'L') {
           // Inductor. Uses a branch current unknown 'br'.
-          const br = this.branchIndex.get(c.id);
+          const br = this.branchIndex.get(c.id)!;
           if (a >= 0) { A[a][br] += 1; A[br][a] += 1; }
           if (b >= 0) { A[b][br] -= 1; A[br][b] -= 1; }
           if (h) {
@@ -275,7 +349,7 @@ export class Circuit {
           const vcrit = Vt * Math.log(Vt / (Math.SQRT2 * Is));
           // junction voltages (sign-flipped for PNP), then voltage-limited so
           // Newton-Raphson can't jump up the exponential and diverge.
-          const lim = bjtLim.get(c.id);
+          const lim = bjtLim.get(c.id)!;
           let vbe = pnjlim(s * (nodeV(nb) - nodeV(ne)), lim.vbe, Vt, vcrit);
           let vbc = pnjlim(s * (nodeV(nb) - nodeV(nc)), lim.vbc, Vt, vcrit);
           lim.vbe = vbe; lim.vbc = vbc;
@@ -352,7 +426,7 @@ export class Circuit {
           // Modeled as a VCVS with its own branch current (linear stamp).
           const gain = c.gain ?? 1e6;
           const nout = this._ni(c.nodes[0]), np = this._ni(c.nodes[1]), nm = this._ni(c.nodes[2]);
-          const br = this.branchIndex.get(c.id);
+          const br = this.branchIndex.get(c.id)!;
           if (nout >= 0) { A[nout][br] += 1; A[br][nout] += 1; } // KCL + Vout term
           if (np >= 0) A[br][np] -= gain;                        // −gain·V+
           if (nm >= 0) A[br][nm] += gain;                        // +gain·V−
@@ -371,19 +445,19 @@ export class Circuit {
   }
 
   // Public: solve the DC operating point (t -> infinity, no time stepping).
-  dc() {
+  dc(): Solution {
     const x = this._buildAndSolve(null, null, 0);
     return this._unpack(x, null);
   }
 
   // Public: advance the simulation by one timestep h (seconds).
-  step(h) {
+  step(h: number): Solution {
     this.t += h;
     const x = this._buildAndSolve(h, null, this.t);
     const res = this._unpack(x, h);
     // Save history (v across / i through) for the next backward-Euler step.
     for (const c of this.components) {
-      const st = this.state.get(c.id);
+      const st = this.state.get(c.id)!;
       st.v = res.voltageAcross[c.id];
       st.i = res.current[c.id];
     }
@@ -395,36 +469,36 @@ export class Circuit {
   // device around the DC operating point. The stimulus source is driven with a
   // unit phasor (1∠0), so each node's phasor IS the transfer function to it.
   // Returns { freqs:[Hz], phasors:[ {nodeId:{re,im}} per freq ], stimulusId }.
-  ac(fStart, fStop, points, stimulusId) {
+  ac(fStart: number, fStop: number, points: number, stimulusId?: string): AcSweep {
     const Vdc = this.dc().nodeVoltage; // operating point for linearization
     if (!stimulusId) { const s = this.components.find((c) => c.type === 'V' || c.type === 'VS'); stimulusId = s && s.id; }
     const N = this.size, Vt = 0.025852;
-    const stampY = (A, a, b, Y) => {
+    const stampY = (A: Complex[][], a: number, b: number, Y: Complex) => {
       if (a >= 0) A[a][a] = cadd(A[a][a], Y);
       if (b >= 0) A[b][b] = cadd(A[b][b], Y);
       if (a >= 0 && b >= 0) { A[a][b] = csub(A[a][b], Y); A[b][a] = csub(A[b][a], Y); }
     };
-    const branch = (A, a, b, br) => { // voltage-source style branch coupling
+    const branch = (A: Complex[][], a: number, b: number, br: number) => { // voltage-source style branch coupling
       if (a >= 0) { A[a][br] = cadd(A[a][br], cx(1)); A[br][a] = cadd(A[br][a], cx(1)); }
       if (b >= 0) { A[b][br] = csub(A[b][br], cx(1)); A[br][b] = csub(A[br][b], cx(1)); }
     };
-    const gReal = (A, p, q, g) => { if (p >= 0 && q >= 0) A[p][q] = cadd(A[p][q], cx(g)); };
-    const freqs = [], phasors = [];
+    const gReal = (A: Complex[][], p: number, q: number, g: number) => { if (p >= 0 && q >= 0) A[p][q] = cadd(A[p][q], cx(g)); };
+    const freqs: number[] = [], phasors: Record<NodeId, Complex>[] = [];
     for (let i = 0; i < points; i++) {
       const f = fStart * Math.pow(fStop / fStart, points > 1 ? i / (points - 1) : 0);
       const w = 2 * Math.PI * f;
-      const A = Array.from({ length: N }, () => Array.from({ length: N }, () => cx(0)));
-      const z = Array.from({ length: N }, () => cx(0));
+      const A: Complex[][] = Array.from({ length: N }, () => Array.from({ length: N }, () => cx(0)));
+      const z: Complex[] = Array.from({ length: N }, () => cx(0));
       for (const c of this.components) {
         const a = this._ni(c.nodes[0]), b = this._ni(c.nodes[1]);
         if (c.type === 'R') stampY(A, a, b, cx(1 / c.value));
         else if (c.type === 'C') stampY(A, a, b, cx(0, w * c.value));
         else if (c.type === 'I') { if (a >= 0) z[a] = csub(z[a], cx(c.value)); if (b >= 0) z[b] = cadd(z[b], cx(c.value)); }
-        else if (c.type === 'V' || c.type === 'VS') { const br = this.branchIndex.get(c.id); branch(A, a, b, br); z[br] = cx(c.id === stimulusId ? 1 : 0); }
-        else if (c.type === 'L') { const br = this.branchIndex.get(c.id); branch(A, a, b, br); A[br][br] = csub(A[br][br], cx(0, w * c.value)); }
+        else if (c.type === 'V' || c.type === 'VS') { const br = this.branchIndex.get(c.id)!; branch(A, a, b, br); z[br] = cx(c.id === stimulusId ? 1 : 0); }
+        else if (c.type === 'L') { const br = this.branchIndex.get(c.id)!; branch(A, a, b, br); A[br][br] = csub(A[br][br], cx(0, w * c.value)); }
         else if (c.type === 'OA') {
           const gain = c.gain ?? 1e6; const nout = this._ni(c.nodes[0]), np = this._ni(c.nodes[1]), nm = this._ni(c.nodes[2]);
-          const br = this.branchIndex.get(c.id);
+          const br = this.branchIndex.get(c.id)!;
           if (nout >= 0) { A[nout][br] = cadd(A[nout][br], cx(1)); A[br][nout] = cadd(A[br][nout], cx(1)); }
           if (np >= 0) A[br][np] = csub(A[br][np], cx(gain));
           if (nm >= 0) A[br][nm] = cadd(A[br][nm], cx(gain));
@@ -453,7 +527,7 @@ export class Circuit {
         }
       }
       const x = csolve(A, z);
-      const ph = { 0: cx(0) };
+      const ph: Record<NodeId, Complex> = { 0: cx(0) };
       for (const [nd, idx] of this.nodeIndex) ph[nd] = x[idx];
       freqs.push(f); phasors.push(ph);
     }
@@ -461,24 +535,24 @@ export class Circuit {
   }
 
   // Turn the raw solution vector into friendly per-node / per-component values.
-  _unpack(x, h) {
-    const nodeVoltage = { 0: 0 };
+  _unpack(x: number[], h: number | null): Solution {
+    const nodeVoltage: Record<NodeId, number> = { 0: 0 };
     for (const [nd, idx] of this.nodeIndex) nodeVoltage[nd] = x[idx];
 
-    const voltageAcross = {};
-    const current = {};
-    const terminals = {}; // for 3-terminal parts: {Ic, Ib, Ie}
+    const voltageAcross: Record<string, number> = {};
+    const current: Record<string, number> = {};
+    const terminals: Record<string, Terminals> = {}; // for 3-terminal parts: {Ic, Ib, Ie}
     for (const c of this.components) {
       const va = nodeVoltage[c.nodes[0]] ?? 0;
       const vb = nodeVoltage[c.nodes[1]] ?? 0;
       const dv = va - vb;
       voltageAcross[c.id] = dv;
-      const st = this.state.get(c.id);
+      const st = this.state.get(c.id)!;
       if (c.type === 'R') current[c.id] = dv / c.value;
       else if (c.type === 'I') current[c.id] = c.value;
-      else if (c.type === 'V' || c.type === 'VS' || c.type === 'L') current[c.id] = x[this.branchIndex.get(c.id)];
+      else if (c.type === 'V' || c.type === 'VS' || c.type === 'L') current[c.id] = x[this.branchIndex.get(c.id)!];
       else if (c.type === 'OA') {
-        const iout = x[this.branchIndex.get(c.id)];
+        const iout = x[this.branchIndex.get(c.id)!];
         current[c.id] = iout; voltageAcross[c.id] = nodeVoltage[c.nodes[0]] ?? 0;
         terminals[c.id] = { Ic: iout, Ib: 0, Ie: 0 }; // only the output carries current
       }
