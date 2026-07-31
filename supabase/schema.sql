@@ -109,10 +109,15 @@ alter table public.reports  enable row level security;
 drop policy if exists profiles_read   on public.profiles;
 drop policy if exists profiles_insert on public.profiles;
 drop policy if exists profiles_update on public.profiles;
+drop policy if exists profiles_delete on public.profiles;
 create policy profiles_read   on public.profiles for select using (true);
 create policy profiles_insert on public.profiles for insert with check (auth.uid() = id);
 create policy profiles_update on public.profiles for update using (auth.uid() = id)
                                                   with check (auth.uid() = id);
+-- Leaving has to be as available as joining, and for a service with children on
+-- it that is not a nicety. Deleting the profile cascades to everything the
+-- member published, which is the point: one action, and they are gone.
+create policy profiles_delete on public.profiles for delete using (auth.uid() = id);
 
 -- designs: published ones are world-readable — that is what the commons means.
 -- An author additionally sees their own unpublished drafts. Writes are the
@@ -150,7 +155,7 @@ create policy reports_insert on public.reports for insert
 grant usage on schema public to anon, authenticated;
 
 grant select                         on public.profiles to anon, authenticated;
-grant insert, update                 on public.profiles to authenticated;
+grant insert, update, delete         on public.profiles to authenticated;
 
 grant select                         on public.designs  to anon, authenticated;
 grant insert, update, delete         on public.designs  to authenticated;

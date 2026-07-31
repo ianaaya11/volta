@@ -159,6 +159,26 @@ grants as well as policies — perfect policies with no grant just return
 browser talks to the database directly and anything enforced only in client
 code is merely a suggestion.
 
+### Email delivery — do this before inviting anyone
+Supabase's built-in mailer is for development only: **two messages an hour**,
+and on a free project it delivers **only to your own team members' addresses**.
+Both sign-up confirmation and password reset go through it, so with the default
+setup a member who is not you cannot finish signing up and cannot recover an
+account. Configure custom SMTP (Resend, Postmark, SendGrid — all have free
+tiers) under Authentication → Emails before the first real member arrives.
+
+### Checking it actually works
+`npm run verify:commons` walks the whole path against the live database with two
+real members: publish, read as a signed-out visitor, open, fork, and the credit
+counter. It spends most of its assertions on what must *not* work — B editing
+A's design, deleting it, unpublishing it, publishing under A's name, reading
+anyone's reports — because those are the ones that break silently when a policy
+is edited. It cleans up after itself.
+
+It needs two accounts. If email confirmation is on (the default), either supply
+two confirmed ones through `VOLTA_TEST_A_EMAIL` / `_PASSWORD` and the same for
+`B`, or turn confirmation off in the dashboard while it runs.
+
 ### What is public
 
 A published design shows a **display name** and a **country**. School is a
