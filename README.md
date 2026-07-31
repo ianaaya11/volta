@@ -195,6 +195,27 @@ write-only from the client: a reporter can file one and can never read any,
 including their own, so the table cannot be used to enumerate what has been
 reported. Read them from the Supabase dashboard.
 
+### Moderation
+Every card has a Report button. Reports are invisible to everyone except a
+moderator, who gets a queue in the commons: the design, its author, the reason,
+and three actions — open it in the editor to look at it properly, take it down
+(or put it back), or dismiss the report.
+
+Moderator is not self-service. There is no policy that allows an insert into
+`moderators`, so the only way in is the SQL editor with the project owner's
+credentials:
+
+```sql
+insert into public.moderators (id, note)
+select id, 'founder' from auth.users where email = 'you@example.com';
+```
+
+A moderator can unpublish a design and nothing else. That restraint is the
+point: a blanket UPDATE on `designs` would also let them rewrite the title, the
+description and the circuit, which is a different and much larger power than the
+job needs, so taking something down goes through a function that touches one
+boolean column.
+
 ### Licensing
 
 Every design carries **CC BY-SA 4.0**, agreed to explicitly at publish time —

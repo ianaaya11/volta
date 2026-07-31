@@ -75,6 +75,7 @@ export function mountCommunity(hooks: CommunityHooks) {
     if (!s) return;
     profile = await C.myProfile().catch(() => null);
     paintAccount(true, s.user.email ?? undefined);
+    void refreshModerator();
   });
   // A reset link produces a real session, so without this the modal would show
   // the profile form to somebody whose only reason for being here is that they
@@ -135,10 +136,19 @@ export function mountCommunity(hooks: CommunityHooks) {
           + 'Close this and ask for a new one.', s ? '' : 'bad');
       return;
     }
-    if (!s) { profile = null; paintAccount(false); return; }
+    if (!s) {
+      // Sign-out has to drop the role with the session, or the Reports button
+      // stays in the toolbar for the next person to use this browser.
+      profile = null; moderator = false;
+      el('galleryReports').hidden = true;
+      if (showingReports) { showReports(false); void renderGallery(); }
+      paintAccount(false);
+      return;
+    }
     el('authWho').textContent = s.user.email ?? '';
     profile = await C.myProfile();
     paintAccount(true, s.user.email ?? undefined);
+    void refreshModerator();
     if (profile) {
       input('profHandle').value = profile.handle;
       input('profName').value = profile.display_name;
@@ -283,6 +293,7 @@ export function mountCommunity(hooks: CommunityHooks) {
   let mineOnly = false;
 
   async function renderGallery() {
+    showReports(false);
     const grid = el('galleryGrid');
     const empty = el('galleryEmpty');
     grid.innerHTML = '<div class="galempty">Loading…</div>';
@@ -346,6 +357,105 @@ export function mountCommunity(hooks: CommunityHooks) {
     return d;
   }
 
+  // ---- moderation ---------------------------------------------------------
+  // The button appears only if the database says this member is a moderator.
+  // That check is a convenience: reports_read is what actually decides, and to
+  // anyone else the queue simply comes back empty.
+  let moderator = false;
+  let showingReports = false;
+
+  async function refreshModerator() {
+    moderator = await C.amModerator().catch(() => false);
+    el('galleryReports').hidden = !moderator;
+    if (!moderator && showingReports) { showingReports = false; void renderGallery(); }
+    if (moderator) void countReports();
+  }
+
+  async function countReports() {
+    try {
+      const n = (await C.reportQueue()).length;
+      const pill = el('reportCount');
+      pill.textContent = n ? String(n) : '';
+      pill.hidden = !n;
+    } catch { /* the badge is not worth an error message */ }
+  }
+
+  /** Both panes live in the same view; only one is ever on screen. */
+  function showReports(on: boolean) {
+    showingReports = on;
+    el('reportQueue').hidden = !on;
+    el('galleryGrid').hidden = on;
+    if (on) el('galleryEmpty').hidden = true;
+  }
+
+  async function renderReports() {
+    showReports(true);
+    const q = el('reportQueue');
+    q.innerHTML = '<div class="galempty">Loading…</div>';
+    let rows: C.ReportRow[];
+    try { rows = await C.reportQueue(); }
+    catch (e) { q.innerHTML = `<div class="galempty">${esc(msg(e))}</div>`; return; }
+    if (!rows.length) {
+      q.innerHTML = '<div class="galempty">Nothing reported. That is the good outcome.</div>';
+      el('reportCount').hidden = true;
+      return;
+    }
+    q.innerHTML = '';
+    for (const r of rows) q.appendChild(reportCard(r));
+    void countReports();
+  }
+
+  function reportCard(r: C.ReportRow): HTMLElement {
+    const d = document.createElement('article');
+    d.className = 'repcard' + (r.published ? '' : ' down');
+    const who = r.author_name
+      ? `${esc(r.author_name)}${r.author_handle ? ' · @' + esc(r.author_handle) : ''}`
+      : 'author deleted';
+    d.innerHTML =
+      `<div class="galthumb">${r.thumbnail
+        ? `<img src="${esc(r.thumbnail)}" alt="" loading="lazy">`
+        : '<span>no preview</span>'}</div>`
+      + `<h4>${esc(r.title)}</h4>`
+      + `<p class="repmeta">${who} · reported ${new Date(r.created_at).toLocaleDateString()}`
+      + `${r.published ? '' : ' · <b>currently down</b>'}</p>`
+      + `<p class="repreason">${esc(r.reason)}</p>`
+      + `<div class="repact">`
+      + `<button class="btn" data-open>Look at it</button>`
+      + `<button class="btn" data-toggle>${r.published ? 'Take it down' : 'Put it back'}</button>`
+      + `<button class="btn ghost" data-dismiss>Dismiss</button>`
+      + `</div>`;
+
+    // Judging a circuit without opening it is guessing. This loads it into the
+    // editor exactly as a member would see it.
+    d.querySelector<HTMLElement>('[data-open]')!.onclick = async () => {
+      try {
+        const got = await C.loadDesign(r.design_id);
+        hooks.load(got.circuit, got.title);
+        forkedFrom = null;          // reviewing is not forking
+        closeGallery();
+        hooks.hint(`Reviewing <b>${esc(got.title)}</b>. Reopen the commons to act on the report.`);
+      } catch (e) { alert(msg(e)); }
+    };
+
+    d.querySelector<HTMLElement>('[data-toggle]')!.onclick = async () => {
+      try {
+        await C.setPublished(r.design_id, !r.published);
+        await renderReports();
+      } catch (e) { alert(msg(e)); }
+    };
+
+    d.querySelector<HTMLElement>('[data-dismiss]')!.onclick = async () => {
+      // Dismissing destroys the report, so it asks. Taking a design down is
+      // reversible from this same card; this is not.
+      if (!confirm('Dismiss this report? The design stays as it is and the report is deleted.')) return;
+      try { await C.dismissReport(r.id); await renderReports(); }
+      catch (e) { alert(msg(e)); }
+    };
+    return d;
+  }
+
+  el('galleryReports').onclick = () => { void renderReports(); };
+
   // ---- cross-links --------------------------------------------------------
   // The commons and the About page each need a way to the other and back to
   // the editor; a full-screen view with no labelled exit is a dead end.
@@ -380,8 +490,8 @@ export function mountCommunity(hooks: CommunityHooks) {
 
   el('galleryBtn').onclick = () => { void openGallery(); mineOnly = false; renderGallery(); };
   el('galleryClose').onclick = closeGallery;
-  el('galleryAll').onclick = () => { mineOnly = false; renderGallery(); };
-  el('galleryMine').onclick = () => { mineOnly = true; renderGallery(); };
+  el('galleryAll').onclick = () => { mineOnly = false; showReports(false); renderGallery(); };
+  el('galleryMine').onclick = () => { mineOnly = true; showReports(false); renderGallery(); };
   let t: number | undefined;
   el('gallerySearch').addEventListener('input', () => {
     clearTimeout(t);

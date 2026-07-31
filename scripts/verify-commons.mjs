@@ -226,6 +226,21 @@ try {
   const readAnon = await anon().from('reports').select('*');
   check('nor can a signed-out visitor', !!readAnon.error || (readAnon.data?.length ?? 0) === 0);
 
+  section('Moderation is locked to moderators');
+  // Neither test member is one, which is the case worth checking: the queue and
+  // the takedown have to be shut to an ordinary member, not merely un-shown.
+  denied('an ordinary member cannot read the report queue',
+    await B.sb.from('report_queue').select('*'));
+  denied('nor can a signed-out visitor', await anon().from('report_queue').select('*'));
+
+  const mod = await B.sb.rpc('moderate_set_published', { design: designId, state: false });
+  check('an ordinary member cannot unpublish through the moderation RPC', !!mod.error,
+    'the call succeeded');
+  // And the attempt left nothing behind — the guard has to run before the
+  // update, not merely report afterwards.
+  const still = await anon().from('gallery').select('id').eq('id', designId);
+  check('and the design is still in the commons', still.data?.length === 1);
+
   section('An author is in charge of their own work');
   const un = await A.sb.from('designs').update({ published: false }).eq('id', designId).select();
   check('A can unpublish', !un.error && un.data?.length === 1, un.error?.message);

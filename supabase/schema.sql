@@ -82,6 +82,46 @@ create table if not exists public.reports (
 );
 
 -- ---------------------------------------------------------------------------
+--  moderators — who can act on a report
+-- ---------------------------------------------------------------------------
+--  A commons open to all needs someone able to take something down, and until
+--  now the only route was the Supabase dashboard. Membership is deliberately
+--  not self-service: there is no policy that lets anyone insert here, so the
+--  only way in is the SQL editor, with the project owner's credentials.
+--
+--    insert into public.moderators (id, note)
+--    select id, 'founder' from auth.users where email = 'you@example.com';
+create table if not exists public.moderators (
+  id         uuid primary key references auth.users on delete cascade,
+  note       text check (char_length(note) <= 200),
+  created_at timestamptz not null default now()
+);
+
+alter table public.moderators enable row level security;
+-- Readable so the client can decide whether to show the queue at all. It holds
+-- user ids and a note, nothing sensitive, and hiding it would only mean the app
+-- had to guess. Nothing may be written from the client at any privilege.
+drop policy if exists moderators_read on public.moderators;
+create policy moderators_read on public.moderators for select using (true);
+grant select on public.moderators to anon, authenticated;
+
+--  Used inside policies, so it must not itself be subject to a policy that
+--  reads the same table — security definer breaks that loop. Pinned
+--  search_path, as with every definer function here.
+create or replace function public.is_moderator()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (select 1 from public.moderators where id = auth.uid());
+$$;
+
+revoke all on function public.is_moderator() from public;
+grant execute on function public.is_moderator() to authenticated;
+
+-- ---------------------------------------------------------------------------
 --  updated_at
 -- ---------------------------------------------------------------------------
 create or replace function public.touch_updated_at() returns trigger
@@ -133,10 +173,17 @@ create policy designs_update on public.designs for update using (auth.uid() = au
                                                  with check (auth.uid() = author_id);
 create policy designs_delete on public.designs for delete using (auth.uid() = author_id);
 
--- reports: file one, never read one.
+-- reports: file one, never read one — unless you are a moderator, who is the
+-- one person who has to. Dismissing a report deletes it, which is why they can
+-- delete too; nobody else can, including the reporter, so a report cannot be
+-- withdrawn to cover something up.
 drop policy if exists reports_insert on public.reports;
+drop policy if exists reports_read   on public.reports;
+drop policy if exists reports_delete on public.reports;
 create policy reports_insert on public.reports for insert
   with check (auth.uid() is not null and auth.uid() = reporter_id);
+create policy reports_read   on public.reports for select using (public.is_moderator());
+create policy reports_delete on public.reports for delete using (public.is_moderator());
 
 -- ---------------------------------------------------------------------------
 --  Table privileges
@@ -160,9 +207,11 @@ grant insert, update, delete         on public.profiles to authenticated;
 grant select                         on public.designs  to anon, authenticated;
 grant insert, update, delete         on public.designs  to authenticated;
 
-grant insert                         on public.reports  to authenticated;
--- Deliberately no SELECT on reports, for anyone. Filing a report must not
--- double as a way to read what has been reported.
+grant insert, select, delete          on public.reports  to authenticated;
+-- SELECT is granted but the policy above allows exactly one role through it:
+-- a moderator. For everyone else filing a report still cannot double as a way
+-- to read what has been reported. The grant is the coarse gate, the policy is
+-- what decides — the same division as everywhere else in this file.
 
 -- ---------------------------------------------------------------------------
 --  record_fork — bump a counter on a row you do not own
@@ -184,6 +233,51 @@ $$;
 
 revoke all on function public.record_fork(uuid) from public;
 grant execute on function public.record_fork(uuid) to authenticated;
+
+-- ---------------------------------------------------------------------------
+--  moderate_set_published — take something down, or put it back
+-- ---------------------------------------------------------------------------
+--  A moderator needs to unpublish somebody else's design and nothing more.
+--  Granting them a blanket UPDATE on designs would also let them rewrite the
+--  title, the description and the circuit itself, which is a different and much
+--  larger power than the job needs. This function is the whole of it: one
+--  column, one boolean, and a check that the caller is actually a moderator —
+--  security definer means that check is the only thing standing between the
+--  caller and the write, so it comes first and it is not optional.
+create or replace function public.moderate_set_published(design uuid, state boolean)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not public.is_moderator() then
+    raise exception 'not a moderator' using errcode = '42501';
+  end if;
+  update public.designs set published = state where id = design;
+end $$;
+
+revoke all on function public.moderate_set_published(uuid, boolean) from public;
+grant execute on function public.moderate_set_published(uuid, boolean) to authenticated;
+
+-- ---------------------------------------------------------------------------
+--  report_queue — what a moderator actually needs to see
+-- ---------------------------------------------------------------------------
+--  A report on its own is a reason and two ids. Deciding anything requires the
+--  design it is about and who made it, so the join happens here rather than in
+--  three client round trips. security_invoker keeps the reports_read policy in
+--  force through the view: to a non-moderator this returns nothing at all.
+create or replace view public.report_queue as
+  select r.id, r.reason, r.created_at,
+         d.id as design_id, d.title, d.published, d.thumbnail,
+         p.handle as author_handle, p.display_name as author_name
+    from public.reports r
+    join public.designs  d on d.id = r.design_id
+    left join public.profiles p on p.id = d.author_id
+   order by r.created_at desc;
+
+alter view public.report_queue set (security_invoker = on);
+grant select on public.report_queue to authenticated;
 
 -- ---------------------------------------------------------------------------
 --  gallery — the commons listing, without shipping every circuit body

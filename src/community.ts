@@ -274,6 +274,56 @@ export async function report(designId: string, reason: string) {
   if (error) throw new Error(error.message);
 }
 
+// ---- Moderation ------------------------------------------------------------
+//  A commons open to all needs a way to take something out of it. Membership of
+//  the moderators table is granted in SQL, never from here.
+
+export interface ReportRow {
+  id: string;
+  reason: string;
+  created_at: string;
+  design_id: string;
+  title: string;
+  published: boolean;
+  thumbnail: string | null;
+  author_handle: string | null;
+  author_name: string | null;
+}
+
+/** Whether the signed-in member can moderate. Answered by the database, not by
+ *  anything the client knows about itself — the UI hiding a button is a
+ *  convenience, and the policies are what actually decide. */
+export async function amModerator(): Promise<boolean> {
+  const s = await session();
+  if (!s) return false;
+  const { data } = await (await client())
+    .from('moderators').select('id').eq('id', s.user.id).maybeSingle();
+  return !!data;
+}
+
+/** The queue. Returns nothing at all to a non-moderator — the view runs with
+ *  the caller's permissions and reports_read lets only moderators through. */
+export async function reportQueue(): Promise<ReportRow[]> {
+  const { data, error } = await (await client())
+    .from('report_queue').select('*').limit(200);
+  if (error) throw new Error(error.message);
+  return (data ?? []) as ReportRow[];
+}
+
+/** Take a design out of the commons, or put it back. Deliberately the only
+ *  thing a moderator can do to somebody else's row. */
+export async function setPublished(designId: string, published: boolean) {
+  const { error } = await (await client())
+    .rpc('moderate_set_published', { design: designId, state: published });
+  if (error) throw new Error(error.message);
+}
+
+/** Dismiss a report: the design is fine, the report goes away. */
+export async function dismissReport(reportId: string) {
+  const { error } = await (await client()).from('reports').delete().eq('id', reportId);
+  if (error) throw new Error(error.message);
+}
+
 // ---- Presentation helpers --------------------------------------------------
 /** How a design is credited in the gallery. Country and school are optional
  *  and, per the profile rules, school only appears if its owner opted in. */

@@ -162,6 +162,8 @@
       <div class="sep"></div>
       <button class="btn" id="galleryMine">My designs</button>
       <button class="btn" id="galleryAll">Everything</button>
+      <!-- Shown only to a moderator, and only because the database said so. -->
+      <button class="btn" id="galleryReports" hidden>Reports <span id="reportCount" class="pill" hidden></span></button>
       <button class="btn" id="galleryAbout">About</button>
       <button class="btn primary" id="galleryClose"><svg class="ic" viewBox="0 0 24 24"><use href="#i-back"/></svg><span>Back to the editor</span></button>
     </header>
@@ -171,6 +173,7 @@
     </p>
     <div id="galleryGrid" class="galgrid"></div>
     <div id="galleryEmpty" class="galempty" hidden></div>
+    <div id="reportQueue" class="galgrid" hidden></div>
   </div>
 
   <!-- ==== About ======================================================== -->
