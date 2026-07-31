@@ -348,6 +348,66 @@ disconnected junk. The SDK is code-split and imported at point of use: it is
 three times the size of the app, and the offline PWA shouldn't download it
 unless the panel is opened.
 
+**MCU co-simulation ✅ (digital I/O).** Run microcontroller code against the
+live analog sim. `src/mcu.ts` is a tokenizer, recursive-descent parser and
+tree-walking interpreter for the Arduino subset — `setup`/`loop`, int/float,
+`if`/`while`/`for`, and the digital I/O builtins — with no DOM and no engine
+import. It reaches the circuit only through an `McuHost` interface, which is
+what lets the whole language be tested against a fake host.
+
+The hard requirement is that the sketch runs in **simulated time**: `delay(500)`
+must block for 500 ms of *circuit* time regardless of how fast the solver is
+actually going, which means execution has to resume mid-program across solver
+timesteps. That is why the evaluator is written as generators — a `delay` yields
+out of arbitrarily deep recursion, the driver parks it, and the next timestep
+picks up exactly where it stopped. A step budget per timestep is what stops
+`while(1){}` freezing the browser: the sketch simply gets a slice and continues.
+
+Electrically, an **MCU pin** part is a one-terminal pad. As an output it is an
+ideal 0/5 V source; as an input it is high-impedance — but a genuinely floating
+node makes the MNA matrix singular, so an input gets a 100 MΩ leak to ground,
+high enough not to load the circuit and low enough to keep the node defined.
+The MCU runs *before* each solver step, so a pin written this instant is already
+driving the network when that step is solved — the same ordering as hardware.
+
+Two things fell out of building it. `solveWireCurrents` assumed every non-ground
+part had two pins and threw on the one-pin pad. And the blink was invisible: at
+the timestep chosen for reactive circuits, `delay(500)` took the better part of
+a minute of wall time. A purely resistive network has no state to integrate, so
+backward Euler is exact at any step size — those circuits now take much larger
+steps, which is what makes a sketch watchable.
+
+### MCU co-simulation — deferred options
+
+Ordered by value per unit of work, from what today's foundation most directly
+supports:
+
+1. **ADC and PWM.** `analogRead(pin)` sampling a real node voltage through the
+   solver, and `analogWrite(pin, duty)` driving a PWM output the analog side
+   genuinely filters. The biggest single step up in realism — it unlocks sensor
+   conditioning, motor drive and RC-filtered PWM, and the pin plumbing already
+   exists. Needs a 10-bit quantizer on read and a carrier-frequency source on
+   write.
+2. **Serial output.** `Serial.print`/`println` into a console pane. Cheap, and
+   it's the debugging tool every embedded developer reaches for first.
+3. **Interrupts and timers.** `attachInterrupt` on a pin edge, plus timer
+   callbacks. The interpreter would need a second resumable context and an
+   edge-detect hook in the step loop — moderate work, and it makes debouncing
+   and event-driven sketches expressible.
+4. **Arrays, functions and strings.** The language deliberately stops at scalars
+   today. User-defined functions and arrays are a contained parser/interpreter
+   extension; strings drag in a whole value model, so they're the natural cut.
+5. **More builtins and pin modes.** `INPUT_PULLUP` wired to a real 20 kΩ pull-up
+   device, `tone()`, `shiftOut()`, `map()`, `random()`.
+6. **Multiple MCUs.** Several sketches in one circuit, each with its own pin
+   namespace — mostly a question of scoping pin numbers per device.
+7. **Real AVR binary emulation.** Execute compiled `.hex` firmware through a
+   full ATmega instruction-set emulator, so unmodified Arduino sketches run.
+   Highest fidelity by a distance, and by far the largest build: an
+   instruction-set emulator to write and verify, peripheral registers to model,
+   and an `avr-gcc` toolchain (or pre-built binaries) before it's useful at all.
+   Worth it only if the goal becomes running real third-party firmware.
+
 ## Phase 7 — the rest
 
 With the fundamentals solid, invest in the things the incumbents don't have. A

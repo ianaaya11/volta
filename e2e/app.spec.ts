@@ -23,7 +23,12 @@ test('boots with the default example, no console errors', async ({ page }) => {
 
   await page.goto('/');
   await expect(page.locator('#nodeCount')).toHaveText(/[1-9]\d* nodes/);
-  await expect(page.locator('#rail .tool')).toHaveCount(16);
+  // Assert the rail built and carries its key tools, rather than an exact
+  // count — that only churns whenever a part is added.
+  expect(await page.locator('#rail .tool').count()).toBeGreaterThanOrEqual(15);
+  for (const t of ['select', 'wire', 'probe', 'R', 'GND', 'MCU', 'delete']) {
+    await expect(page.locator(`#rail .tool[data-t="${t}"]`)).toHaveCount(1);
+  }
   expect(errors).toEqual([]);
 });
 

@@ -6,6 +6,7 @@ import { fmt, parseVal } from './format';
 // offline PWA doesn't pay for it on every load — only `import type` here, which
 // is erased at compile time.
 import type { AiCircuit } from './ai';
+import { Mcu, checkSketch, type McuHost } from './mcu';
 import './style.css';
 
 //  PART 2 — SCHEMATIC MODEL + EDITOR
@@ -13,7 +14,7 @@ import './style.css';
 
 /** Every part the editor can hold. 'GND' is a marker, not an engine device. */
 export type PartType = 'R' | 'V' | 'I' | 'C' | 'L' | 'VS' | 'SQ' | 'D'
-  | 'QN' | 'QP' | 'MN' | 'MP' | 'OA' | 'GND';
+  | 'QN' | 'QP' | 'MN' | 'MP' | 'OA' | 'GND' | 'MCU';
 /** Everything the tool rail can be set to: a part to place, or a mode. */
 type Tool = PartType | 'select' | 'wire' | 'probe' | 'delete';
 type Rot = 0 | 90 | 180 | 270;
@@ -30,6 +31,7 @@ interface Comp {
   freq?: number;
   off?: number;
   duty?: number;    // square source only: fraction of the period spent high
+  pin?: number;     // MCU pin only: which digital pin this pad is
 }
 interface Wire { x1: number; y1: number; x2: number; y2: number }
 interface Probe { x: number; y: number; color: string }
@@ -70,7 +72,7 @@ function rotOff(dx:number,dy:number,rot:Rot):[number,number]{
   return [dx,dy];
 }
 function pinsOf(c:Comp):Pt[]{
-  if(c.type==='GND') return [{x:c.x,y:c.y}];
+  if(c.type==='GND'||c.type==='MCU') return [{x:c.x,y:c.y}];
   if(c.type==='QN'||c.type==='QP'||c.type==='MN'||c.type==='MP'){
     // 3 pins, engine order [collector/drain, base/gate, emitter/source].
     const offs:[number,number][]=[[2,-2],[0,0],[2,2]]; // C/D, B/G (at anchor), E/S
@@ -102,7 +104,17 @@ const TYPES:Record<PartType,TypeInfo>={
   MP:{name:'PMOS transistor',unit:'',def:0},
   OA:{name:'Op-amp (ideal)',unit:'',def:0},
   GND:{name:'Ground',unit:'',def:0},
+  MCU:{name:'MCU pin',unit:'',def:0},
 };
+
+// ---- MCU pin electrical model ---------------------------------------------
+// An output pin is an ideal 0/5 V source; an input is high-impedance. A truly
+// floating input node would make the MNA matrix singular, so an input gets a
+// 100 MΩ leak to ground — high enough not to load the circuit, low enough to
+// keep the node defined.
+const MCU_HIGH_V=5, MCU_THRESHOLD=2.5, MCU_INPUT_Z=1e8;
+const mcuOut=new Map<number,boolean>();     // pin -> driven level
+const mcuMode=new Map<number,boolean>();    // pin -> true when an output
 
 
 // ===========================================================================
@@ -126,6 +138,13 @@ function toDevice(c:Comp,nodes:NodeId[]):Component|null{
   const value=c.value??TYPES[c.type].def;
   switch(c.type){
     case 'GND': return null;
+    case 'MCU': {
+      // Referenced to ground, so a pin pad needs no second terminal drawn.
+      const p=c.pin??13;
+      return mcuMode.get(p)
+        ? {id:c.id,type:'V',nodes:[nodes[0],0],value:mcuOut.get(p)?MCU_HIGH_V:0}
+        : {id:c.id,type:'R',nodes:[nodes[0],0],value:MCU_INPUT_Z};
+    }
     case 'R': return {id:c.id,type:'R',nodes:pair,value};
     case 'C': return {id:c.id,type:'C',nodes:pair,value};
     case 'L': return {id:c.id,type:'L',nodes:pair,value};
@@ -194,6 +213,10 @@ function solveWireCurrents(result:Solution|null):Map<number,number>{
       add(key(ps[0].x,ps[0].y), -t.Ic);
       add(key(ps[1].x,ps[1].y), -t.Ib);
       add(key(ps[2].x,ps[2].y), -t.Ie);
+    } else if(c.type==='MCU'){
+      // One pin, with the return path through ground rather than a second
+      // terminal, so only this node sees an injection.
+      add(key(ps[0].x,ps[0].y), -(result.current[c.id]||0));
     } else {
       const i=result.current[c.id]||0; // flows pinA -> pinB through the device
       add(key(ps[0].x,ps[0].y), -i);
@@ -558,6 +581,21 @@ function drawComponent(c:Comp,nodeColor:NodeColor){
     ctx.moveTo(x-6,y+13); ctx.lineTo(x+6,y+13);
     ctx.moveTo(x-2,y+18); ctx.lineTo(x+2,y+18); ctx.stroke(); return;
   }
+  if(c.type==='MCU'){
+    // A labelled pad: the pin number, and a fill that shows its driven state.
+    const x=gx(c.x), y=gy(c.y), p=c.pin??13, out=mcuMode.get(p);
+    const live=running&&out;
+    ctx.strokeStyle=col(c.x,c.y);
+    ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x,y-9); ctx.stroke();
+    ctx.fillStyle=live?(mcuOut.get(p)?'#3fb950':'#1c2636'):'#1c2636';
+    ctx.strokeStyle='#c7d3e3'; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.roundRect(x-17,y-27,34,18,4); ctx.fill(); ctx.stroke();
+    ctx.fillStyle=live&&mcuOut.get(p)?'#06210e':'#c7d3e3';
+    ctx.font='10px ui-monospace,monospace'; ctx.textAlign='center';
+    ctx.fillText('D'+p, x, y-14);
+    ctx.textAlign='left';
+    return;
+  }
   if(c.type==='QN'||c.type==='QP'){
     const Cp={x:gx(ps[0].x),y:gy(ps[0].y)}, Bp={x:gx(ps[1].x),y:gy(ps[1].y)}, Ep={x:gx(ps[2].x),y:gy(ps[2].y)};
     const mid={x:(Cp.x+Ep.x)/2,y:(Cp.y+Ep.y)/2};
@@ -718,7 +756,7 @@ function drawGhost(type:PartType,x:number,y:number){
 // ===========================================================================
 //  PART 5 — INTERACTION
 // ===========================================================================
-const PLACE_TYPES:PartType[]=['R','V','VS','SQ','I','C','L','D','QN','MN','OA','GND'];
+const PLACE_TYPES:PartType[]=['R','V','VS','SQ','I','C','L','D','QN','MN','OA','GND','MCU'];
 const isPlaceType=(t:Tool):t is PartType=>(PLACE_TYPES as string[]).includes(t);
 let mouse:{px:number;py:number;gx:number|null;gy:number|null}={px:0,py:0,gx:null,gy:null};
 let wireStart:Pt|null=null;
@@ -899,12 +937,64 @@ const SCOPE_MAX=1400;
 function resetScope(){
   scopeBuf={t:[],series:scopeProbes.map(()=>[] as number[]),selV:[],selI:[],selId:selected?selected.id:null};
 }
+// ---- MCU co-simulation state ----------------------------------------------
+let sketch='';                 // the user's source, saved with the circuit
+let mcu:Mcu|null=null;
+let mcuStatus='';
+/** Bridges the interpreter to the live circuit: pin numbers <-> node voltages. */
+const mcuHost:McuHost={
+  nowMs:()=>simTime*1000,      // the solver's clock, not the wall clock
+  setMode:(pin,out)=>{
+    if(mcuMode.get(pin)!==out){ mcuMode.set(pin,out); rebuildMcuPins(); }
+  },
+  writePin:(pin,high)=>{ mcuOut.set(pin,high); syncMcuPins(); },
+  readPin:pin=>{
+    if(!simNet||!lastResult) return false;
+    for(const c of comps){
+      if(c.type==='MCU'&&(c.pin??13)===pin){
+        const nd=simNet.nodeOf(c.x,c.y);
+        return (lastResult.nodeVoltage[nd]??0)>MCU_THRESHOLD;
+      }
+    }
+    return false;
+  },
+};
+/** Push driven levels into the live solver without rebuilding the matrix. */
+function syncMcuPins(){
+  if(!circuit) return;
+  for(const c of comps){
+    if(c.type!=='MCU') continue;
+    const dev=circuit.components.find(d=>d.id===c.id);
+    if(dev&&dev.type==='V') dev.value=mcuOut.get(c.pin??13)?MCU_HIGH_V:0;
+  }
+}
+/** A pin changing direction changes the DEVICE, so the matrix must be rebuilt. */
+function rebuildMcuPins(){
+  if(!running) return;
+  const net=buildNetlist();
+  const fresh=new Circuit(net.netComps.map(c=>({...c})));
+  fresh.captureTrace=mathMode;
+  circuit=fresh; simNet=net;
+}
 let panelMode:'scope'|'bode'='scope';   // transient panel or AC sweep panel
 let bodeData:BodeData|null=null;
 function refreshMeta(){
   el('nodeCount').textContent=(buildNetlist().nodeCount||0)+' nodes';
 }
+function mcuFault(msg:string){
+  mcu=null; mcuStatus='Runtime error — '+msg;
+  flashHint('Sketch stopped: '+msg);
+  renderMcuStatus();
+}
 function startSim(){
+  // Boot the MCU with the circuit: pin state must not leak between runs.
+  mcuOut.clear(); mcuMode.clear(); mcu=null; mcuStatus='';
+  if(sketch.trim()){
+    const err=checkSketch(sketch);
+    if(err){ mcuStatus='Compile error — '+err; flashHint('Sketch error: '+err); }
+    else { mcu=new Mcu(sketch); mcuStatus='Running'; }
+    renderMcuStatus();
+  }
   const net=buildNetlist();
   if(!net.grounded){ flashHint('Add a Ground symbol — the simulator needs a 0V reference.'); return; }
   if(net.netComps.length===0){ flashHint('Place some components first.'); return; }
@@ -957,17 +1047,29 @@ function runBode(){
 }
 function chooseTimestep(nc:Component[]){
   let tau=1e-3;
-  for(const c of nc){ if(c.type==='C') tau=Math.min(tau, Math.max(1e-7,c.value*1000));
-    if(c.type==='L') tau=Math.min(tau, Math.max(1e-7,c.value/1000)); }
-  let h=tau/50;
+  let reactive=false;
+  for(const c of nc){ if(c.type==='C'){ reactive=true; tau=Math.min(tau, Math.max(1e-7,c.value*1000)); }
+    if(c.type==='L'){ reactive=true; tau=Math.min(tau, Math.max(1e-7,c.value/1000)); } }
+  // A purely resistive network has no state to integrate, so backward Euler is
+  // exact at any step size — take big ones. This is what makes MCU sketches
+  // watchable: at the reactive-circuit timestep, a delay(500) would take the
+  // better part of a minute of wall time to elapse.
+  let h=reactive?tau/50:1e-3;
   // ensure at least ~200 steps per sine period for smooth waveforms
   for(const c of nc){ if(c.type==='VS'&&(c.freq??0)>0) h=Math.min(h, 1/(c.freq!*200)); }
   return h;
 }
 function loop(){
   if(!running||!circuit) return;
-  // advance a few timesteps per frame for smooth transient evolution
-  for(let k=0;k<8;k++){ lastResult=circuit.step(simH); simTime+=simH; }
+  // Advance a few timesteps per frame for smooth transient evolution. The MCU
+  // runs BEFORE each solver step, so a pin written this instant is already
+  // driving the network when the step is solved — the same ordering as
+  // hardware, where the port latch changes and then the circuit settles.
+  for(let k=0;k<8;k++){
+    if(mcu){ mcu.run(mcuHost); if(mcu.error) mcuFault(mcu.error); }
+    if(!circuit) break;
+    lastResult=circuit.step(simH); simTime+=simH;
+  }
   // sample the scope once per frame
   const net=simNet, buf=scopeBuf, res=lastResult;
   if(net&&buf&&res){
@@ -1022,7 +1124,7 @@ function renderInspector(){
   const sel=selected;                       // narrowed for the closures below
   const t=TYPES[sel.type];
   let html=`<h3>${t.name}</h3>`;
-  const noValue:PartType[]=['GND','D','QN','QP','MN','MP','OA','VS','SQ'];
+  const noValue:PartType[]=['GND','D','QN','QP','MN','MP','OA','VS','SQ','MCU'];
   if(!noValue.includes(sel.type)){
     html+=`<div class="field"><label>Value (${t.unit}) — e.g. 4.7k, 100n, 12</label>
       <input id="valInput" value="${fmt(sel.value??t.def,'').trim()}"/></div>`;
@@ -1042,6 +1144,13 @@ function renderInspector(){
   if(sel.type==='MN'||sel.type==='MP'){
     html+=`<div class="field"><label>Terminals</label><div class="empty">Gate = single-pin side; drain = upper pin, source = lower pin (arrow). Vth=1V, k=2mA/V².</div></div>`;
   }
+  if(sel.type==='MCU'){
+    html+=`<div class="field"><label>Digital pin number</label>
+      <input id="pinInput" value="${sel.pin??13}"/></div>
+      <div class="field"><div class="empty">Drives 0–5 V when your sketch sets this pin
+        to OUTPUT; reads as HIGH above 2.5 V when set to INPUT. Write the sketch
+        under <b>🔌 Code</b>.</div></div>`;
+  }
   if(sel.type==='OA'){
     html+=`<div class="field"><label>Terminals</label><div class="empty">Two input pins on the left (+ upper, − lower); output on the right. Ideal gain. Needs feedback.</div></div>`;
   }
@@ -1060,6 +1169,7 @@ function renderInspector(){
   bindNum('freqInput',v=>sel.freq=v);
   bindNum('offInput',v=>sel.off=v);
   bindNum('dutyInput',v=>sel.duty=Math.max(0.01,Math.min(0.99,v)));
+  bindNum('pinInput',v=>sel.pin=Math.max(0,Math.round(v)));
   renderReadout();
 }
 function syncValues(){ // push edited values into live sim without restarting
@@ -1229,6 +1339,7 @@ const RAIL:{t:Tool;label:string;icon?:string}[]=[
   {t:'MN',label:'NMOS'},
   {t:'OA',label:'Op-amp'},
   {t:'GND',label:'Ground'},
+  {t:'MCU',label:'MCU pin'},
   {t:'delete',label:'Delete',icon:'M6 7h12l-1 13H7zM9 7V4h6v3'},
 ];
 function buildRail(){
@@ -1260,6 +1371,7 @@ function miniSymbol(t:Tool){
     case 'MN': return s('<path d="M3 12h4M7 6v12M10 6v12M10 8h8M10 16h8M18 4v6M18 14v6"/>');
     case 'OA': return s('<path d="M4 5v14l14-7zM2 9h2M2 15h2"/>');
     case 'GND': return s('<path d="M12 4v8M6 12h12M8 16h8M10 20h4"/>');
+    case 'MCU': return s('<rect x="4" y="7" width="16" height="10" rx="2"/><path d="M12 17v4"/>');
     case 'delete': return s('<path d="M5 7h14M9 7V4h6v3M7 7l1 13h8l1-13"/>');
   }
   return '';
@@ -1279,6 +1391,7 @@ const GALLERY=[
   {name:'RC low-pass (transient)', fn:loadRC},
   {name:'Sine → RC low-pass (scope)', fn:loadSine},
   {name:'Square wave → RC integrator', fn:loadSquare},
+  {name:'MCU: blinking LED', fn:loadBlink},
   {name:'RLC bandpass (Bode)', fn:loadRLC},
   {name:'BJT common-emitter amp', fn:loadAmp},
   {name:'NMOS common-source amp', fn:loadMos},
@@ -1295,12 +1408,14 @@ function buildGallery(){
 // ===========================================================================
 // A circuit is fully described by its parts, wires and probes — nothing else
 // needs to be stored. Runtime state (the solver, animation) is rebuilt on load.
-interface SavedModel { v:number; comps:Comp[]; wires:Wire[]; probes?:Probe[] }
+interface SavedModel { v:number; comps:Comp[]; wires:Wire[]; probes?:Probe[]; sketch?:string }
 function serializeModel():SavedModel{
   return { v:1,
     comps: comps.map(c=>({...c})),
     wires: wires.map(w=>({...w})),
-    probes: scopeProbes.map(p=>({x:p.x,y:p.y,color:p.color})) };
+    probes: scopeProbes.map(p=>({x:p.x,y:p.y,color:p.color})),
+    // The firmware is part of the design: save, open and share carry it too.
+    ...(sketch.trim()?{sketch}:{}) };
 }
 function applyModel(m:SavedModel){
   if(!m||!Array.isArray(m.comps)||!Array.isArray(m.wires)) throw new Error('not a Spark circuit');
@@ -1308,6 +1423,7 @@ function applyModel(m:SavedModel){
   comps=m.comps.map(c=>({...c}));
   wires=m.wires.map(w=>({...w}));
   scopeProbes=(m.probes||[]).map((p,i)=>({x:p.x,y:p.y,color:p.color||SCOPE_COLORS[i%SCOPE_COLORS.length]}));
+  sketch=typeof m.sketch==='string'?m.sketch:'';
   // rebuild the id counter so new parts never collide with loaded ones
   let mx=0; for(const c of comps){ const n=parseInt(String(c.id).replace(/\D/g,''),10); if(n>mx) mx=n; }
   uid=mx+1;
@@ -1402,6 +1518,24 @@ function loadRLC(){
   resetScope();
   selected=null; refreshMeta(); renderInspector(); draw();
   flashHint('Series RLC bandpass. Press <b>Bode</b> for the resonant peak near 1.6kHz — or <b>Run</b> to see it in time.');
+}
+
+// Digital pin 13 driving an LED through a series resistor — the first thing
+// anyone builds on a microcontroller, and the smallest circuit that proves the
+// firmware and the analog solver are genuinely running against each other.
+function loadBlink(){
+  comps=[]; wires=[]; uid=1; scopeProbes=[];
+  comps.push({id:'MCU'+(uid++),type:'MCU',x:6,y:4,pin:13});
+  comps.push({id:'R'+(uid++),type:'R',x:6,y:4,rot:90,value:330});  // (6,4)-(6,6)
+  comps.push({id:'D'+(uid++),type:'D',x:6,y:6,rot:90,value:0});    // (6,6)-(6,8)
+  wires.push({x1:6,y1:8,x2:6,y2:10});
+  comps.push({id:'GND'+(uid++),type:'GND',x:6,y:10});
+  scopeProbes.push({x:6,y:4,color:SCOPE_COLORS[0]});               // the pin itself
+  scopeProbes.push({x:6,y:6,color:SCOPE_COLORS[1]});               // across the LED
+  sketch=BLINK_SKETCH;
+  resetScope();
+  selected=null; refreshMeta(); renderInspector(); draw();
+  flashHint('MCU blink — press <b>Run</b>. The sketch under <b>🔌 Code</b> toggles pin 13 every 500 ms.');
 }
 
 // A 0→5V square wave into an RC whose time constant is a few periods long, so
@@ -1543,6 +1677,49 @@ el('rotateBtn').onclick=()=>{ ghostRot=turn(ghostRot); if(selected){selected.rot
 el('saveBtn').onclick=saveFile;
 el('openBtn').onclick=openFile;
 el('shareBtn').onclick=shareURL;
+
+// ===========================================================================
+//  MCU CODE EDITOR — UI wiring
+// ===========================================================================
+const BLINK_SKETCH=`// Blink an LED on digital pin 13.
+int led = 13;
+
+void setup() {
+  pinMode(led, OUTPUT);
+}
+
+void loop() {
+  digitalWrite(led, HIGH);
+  delay(500);
+  digitalWrite(led, LOW);
+  delay(500);
+}`;
+
+function renderMcuStatus(){
+  const box=document.getElementById('codeStatus');
+  if(!box) return;
+  box.className=mcuStatus.includes('error')?'aibad':mcuStatus?'aigood':'';
+  box.textContent=mcuStatus;
+}
+function openCode(){
+  el('codeModal').hidden=false;
+  (el('codeSrc') as HTMLTextAreaElement).value=sketch;
+  renderMcuStatus();
+  (el('codeSrc') as HTMLTextAreaElement).focus();
+}
+function saveCode(){
+  sketch=(el('codeSrc') as HTMLTextAreaElement).value;
+  const err=sketch.trim()?checkSketch(sketch):null;
+  mcuStatus=err?'Compile error — '+err:sketch.trim()?'Saved':'';
+  commit();                       // the sketch is part of the document
+  renderMcuStatus();
+  if(!err&&sketch.trim()){ resetSim(); startSim(); }
+}
+el('codeBtn').onclick=openCode;
+el('codeClose').onclick=()=>{ el('codeModal').hidden=true; };
+el('codeModal').onclick=e=>{ if(e.target===el('codeModal')) el('codeModal').hidden=true; };
+el('codeSave').onclick=saveCode;
+el('codeBlink').onclick=()=>{ (el('codeSrc') as HTMLTextAreaElement).value=BLINK_SKETCH; };
 
 // ===========================================================================
 //  AI CIRCUIT ASSISTANT — UI wiring

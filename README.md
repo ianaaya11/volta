@@ -19,6 +19,9 @@ spirit of EveryCircuit, but open and built on a from-scratch SPICE-style engine.
   vector, and how Newton-Raphson converged — live, as the circuit runs.
 - **AI circuit assistant** — press **✨ Ask** to build, explain, or debug
   circuits in plain language. Bring your own Anthropic API key (see below).
+- **MCU co-simulation** — press **🔌 Code** and write an Arduino-style sketch
+  that drives **MCU pin** parts on the schematic, running in simulated time
+  against the analog solver.
 - **AC / Bode analysis** — complex-valued sweep with magnitude & phase plots.
 - **Save / open / share** — circuits serialize to JSON and to shareable URLs.
 - **Touch-ready** — pointer-based input and a phone layout, so the same build
@@ -68,6 +71,31 @@ npm run typecheck  # tsc --noEmit, strict
 npm run build      # production build -> dist/
 npm run preview    # serve the production build
 ```
+
+## MCU co-simulation
+
+Place **MCU pin** parts (one pad per digital pin, numbered in the inspector),
+then press **🔌 Code** and write a sketch. Try the *MCU: blinking LED* example.
+
+```c
+int led = 13;
+void setup() { pinMode(led, OUTPUT); }
+void loop() {
+  digitalWrite(led, HIGH); delay(500);
+  digitalWrite(led, LOW);  delay(500);
+}
+```
+
+Supported: `setup`/`loop`, `int`/`float`, `if`/`else`, `while`, `for`,
+arithmetic and comparison, and `pinMode`, `digitalWrite`, `digitalRead`,
+`delay`, `delayMicroseconds`, `millis`, `micros`, `abs`, `min`, `max`,
+`constrain`. An output pin is an ideal 0–5 V source; an input is
+high-impedance and reads HIGH above 2.5 V.
+
+The sketch runs on the **simulated** clock, so `delay(500)` is 500 ms of circuit
+time. It's saved and shared with the circuit. `BUILD-PLAN.md` lists what's
+deliberately not implemented yet (ADC/PWM, serial, interrupts, real AVR
+binaries) and roughly what each would take.
 
 ## AI assistant
 

@@ -23,6 +23,7 @@
     <button class="btn ghost" id="clearBtn">Clear</button>
     <button class="btn" id="rotateBtn" title="Rotate selected (R)">⟳ Rotate</button>
     <button class="btn" id="fitBtn" title="Fit the circuit to the view (0)">⤢ Fit</button>
+    <button class="btn" id="codeBtn" title="Write MCU code that runs against the live circuit">🔌 Code</button>
     <button class="btn" id="aiBtn" title="Build, explain or debug circuits in plain language">✨ Ask</button>
     <button class="btn" id="mathBtn" title="Show the solver's own equations and matrix">∑ Math</button>
     <button class="btn" id="bodeBtn" title="AC frequency sweep of probed nodes">📈 Bode</button>
@@ -40,6 +41,23 @@
   <aside id="inspector">
     <div id="inspectorBody"></div>
   </aside>
+
+  <div id="codeModal" hidden>
+    <div class="sheet">
+      <h3>🔌 MCU code</h3>
+      <p class="empty">Runs against the live circuit in simulated time. Place
+        <b>MCU pin</b> parts on the schematic and address them by number.
+        Supported: <span class="kbd">setup</span> <span class="kbd">loop</span>
+        <span class="kbd">pinMode</span> <span class="kbd">digitalWrite</span>
+        <span class="kbd">digitalRead</span> <span class="kbd">delay</span>
+        <span class="kbd">millis</span>, plus int/float, if, while and for.</p>
+      <div class="field"><textarea id="codeSrc" rows="14" spellcheck="false"></textarea></div>
+      <div id="codeStatus"></div>
+      <button class="btn primary" id="codeSave">Save &amp; run</button>
+      <button class="btn ghost" id="codeBlink">Load blink example</button>
+      <button class="btn ghost" id="codeClose">Close</button>
+    </div>
+  </div>
 
   <div id="aiModal" hidden>
     <div class="sheet">

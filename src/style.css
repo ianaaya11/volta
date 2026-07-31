@@ -67,15 +67,19 @@
   .kbd{font-family:ui-monospace,monospace;background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:0 5px;font-size:11px}
   .btn.active-toggle{border-color:var(--accent);color:var(--accent)}
   /* ---- AI assistant sheet ------------------------------------------------ */
-  #aiModal{position:fixed;inset:0;background:rgba(6,9,14,.6);z-index:50;
+  #aiModal,#codeModal{position:fixed;inset:0;background:rgba(6,9,14,.6);z-index:50;
     display:flex;align-items:center;justify-content:center;padding:20px}
-  #aiModal[hidden]{display:none}
-  #aiModal .sheet{background:var(--panel);border:1px solid var(--line);border-radius:12px;
-    padding:18px;width:min(560px,100%);max-height:86vh;overflow-y:auto}
-  #aiModal h3{margin:0 0 12px;font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted)}
-  #aiModal textarea{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:6px;
-    color:var(--ink);padding:8px;font-size:13px;font-family:inherit;resize:vertical}
-  #aiModal textarea:focus{outline:none;border-color:var(--accent)}
+  #aiModal[hidden],#codeModal[hidden]{display:none}
+  #aiModal .sheet,#codeModal .sheet{background:var(--panel);border:1px solid var(--line);
+    border-radius:12px;padding:18px;width:min(560px,100%);max-height:86vh;overflow-y:auto}
+  #codeModal .sheet{width:min(640px,100%)}
+  #aiModal h3,#codeModal h3{margin:0 0 12px;font-size:12px;text-transform:uppercase;
+    letter-spacing:.6px;color:var(--muted)}
+  #aiModal textarea,#codeModal textarea{width:100%;background:var(--bg);border:1px solid var(--line);
+    border-radius:6px;color:var(--ink);padding:8px;font-size:13px;font-family:inherit;resize:vertical}
+  #codeModal textarea{font-family:ui-monospace,monospace;font-size:12px;line-height:1.5}
+  #aiModal textarea:focus,#codeModal textarea:focus{outline:none;border-color:var(--accent)}
+  #codeStatus{font-size:12px;margin:0 0 10px;min-height:16px}
   #aiOut{margin-top:12px;font-size:13px;line-height:1.6}
   .aitext{white-space:pre-wrap;color:var(--ink)}
   .aigood{color:var(--good)}
