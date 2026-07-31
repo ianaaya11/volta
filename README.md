@@ -12,6 +12,8 @@ spirit of EveryCircuit, but open and built on a from-scratch SPICE-style engine.
   separate axes. Probes can also be placed by hand to compare several nodes.
 - **Undo / redo** — every edit is reversible (⌘Z / ⇧⌘Z), and **Reset** restarts
   the simulation from t=0 without touching the schematic.
+- **Zoom & pan** — wheel or pinch to zoom, drag empty grid to pan, **Fit** (or
+  `0`) to frame the circuit; `+` / `-` zoom, space-drag pans over anything.
 - **AC / Bode analysis** — complex-valued sweep with magnitude & phase plots.
 - **Save / open / share** — circuits serialize to JSON and to shareable URLs.
 - **Touch-ready** — pointer-based input and a phone layout, so the same build

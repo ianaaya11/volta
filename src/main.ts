@@ -53,7 +53,7 @@ let tool:Tool='select';
 let selected:Comp|null=null;
 let running=false;
 let lastResult:Solution|null=null;
-let view={ox:0,oy:0};        // pan offset (grid-aligned drawing origin)
+let view={ox:0,oy:0,scale:1};  // pan offset (screen px) and zoom factor
 
 const DIR:Record<Rot,[number,number]>={0:[1,0],90:[0,1],180:[-1,0],270:[0,-1]};
 const rotOf=(c:Comp):Rot=>c.rot??0;
@@ -245,9 +245,54 @@ function resize(){
 }
 window.addEventListener('resize',resize);
 
-function gx(x:number){ return view.ox + x*GRID; }
-function gy(y:number){ return view.oy + y*GRID; }
-function toGrid(px:number,py:number):Pt{ return {x:Math.round((px-view.ox)/GRID), y:Math.round((py-view.oy)/GRID)}; }
+// Drawing happens in WORLD coordinates — 1 grid unit is always GRID pixels —
+// and the canvas transform applies pan and zoom on top. That way every symbol
+// dimension, lead length and font size in drawComponent scales for free,
+// instead of each one needing a zoom factor threaded through it.
+function gx(x:number){ return x*GRID; }
+function gy(y:number){ return y*GRID; }
+/** Screen pixels -> world pixels. */
+const toWorld=(px:number,py:number):Pt=>({x:(px-view.ox)/view.scale, y:(py-view.oy)/view.scale});
+function toGrid(px:number,py:number):Pt{
+  const w=toWorld(px,py);
+  return {x:Math.round(w.x/GRID), y:Math.round(w.y/GRID)};
+}
+
+const MIN_SCALE=0.25, MAX_SCALE=4;
+/** Zoom by `f` about a screen point, keeping the world point under it fixed. */
+function zoomAt(px:number,py:number,f:number){
+  const s=Math.max(MIN_SCALE,Math.min(MAX_SCALE,view.scale*f));
+  if(s===view.scale) return;
+  const w=toWorld(px,py);
+  view.scale=s; view.ox=px-w.x*s; view.oy=py-w.y*s;
+  draw();
+}
+/** Frame the whole circuit in the viewport, or recentre an empty grid. */
+function fitView(){
+  const W=cv.width/devicePixelRatio, H=cv.height/devicePixelRatio;
+  const pts:Pt[]=[];
+  for(const c of comps) pts.push(...pinsOf(c));
+  for(const w of wires){ pts.push({x:w.x1,y:w.y1},{x:w.x2,y:w.y2}); }
+  if(!pts.length){ view={ox:40,oy:40,scale:1}; draw(); return; }
+  const xs=pts.map(p=>p.x), ys=pts.map(p=>p.y);
+  const minX=Math.min(...xs)-1, maxX=Math.max(...xs)+1;
+  const minY=Math.min(...ys)-1, maxY=Math.max(...ys)+1;
+  const wWorld=(maxX-minX)*GRID, hWorld=(maxY-minY)*GRID;
+  // Reserve whatever the scope panel will actually occupy — it covers the
+  // bottom of the canvas, and it appears while running even with nothing
+  // probed or selected (it shows the "tap a component" prompt).
+  const panelShown=scopeProbes.length>0||!!selected||running;
+  const margin=40, panel=panelShown?225:60;
+  // Cap Fit's magnification: filling the screen with a two-part circuit at 4x
+  // looks broken rather than helpful.
+  const FIT_MAX=2;
+  const s=Math.max(MIN_SCALE,Math.min(FIT_MAX,
+    Math.min((W-2*margin)/wWorld,(H-margin-panel)/hWorld)));
+  view.scale=s;
+  view.ox=W/2-((minX+maxX)/2)*GRID*s;
+  view.oy=(H-panel)/2-((minY+maxY)/2)*GRID*s;
+  draw();
+}
 
 // Voltage -> color (blue low, grey mid, red high) scaled to present range.
 let vRange={min:-1,max:1};
@@ -261,11 +306,22 @@ function voltColor(v:number):string{
 let animPhase=0;
 function draw(){
   const W=cv.width/devicePixelRatio, H=cv.height/devicePixelRatio;
+  const dpr=devicePixelRatio;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
   ctx.clearRect(0,0,W,H);
-  // grid dots
-  ctx.fillStyle='#20293a';
-  const startX=((view.ox%GRID)+GRID)%GRID, startY=((view.oy%GRID)+GRID)%GRID;
-  for(let x=startX;x<W;x+=GRID) for(let y=startY;y<H;y+=GRID){ ctx.fillRect(x-0.5,y-0.5,1,1); }
+  // Everything from here to the matching restore() is drawn in world space.
+  ctx.save();
+  ctx.setTransform(dpr*view.scale,0,0,dpr*view.scale,dpr*view.ox,dpr*view.oy);
+
+  // grid dots, over the visible world rectangle only. Below ~8px of on-screen
+  // spacing they stop reading as a grid and just haze the canvas, so drop them.
+  if(GRID*view.scale>=8){
+    const tl=toWorld(0,0), br=toWorld(W,H);
+    ctx.fillStyle='#20293a';
+    const d=1/view.scale;                      // keep dots ~1 screen pixel
+    const x0=Math.floor(tl.x/GRID)*GRID, y0=Math.floor(tl.y/GRID)*GRID;
+    for(let x=x0;x<br.x;x+=GRID) for(let y=y0;y<br.y;y+=GRID) ctx.fillRect(x-d/2,y-d/2,d,d);
+  }
 
   // node color lookup if running
   let net:Netlist|null=null;
@@ -307,7 +363,8 @@ function draw(){
 
   // wire drawing preview
   if(tool==='wire'&&wireStart){ ctx.strokeStyle='#4dabf7'; ctx.setLineDash([5,4]); ctx.lineWidth=2;
-    ctx.beginPath(); ctx.moveTo(gx(wireStart.x),gy(wireStart.y)); ctx.lineTo(mouse.px,mouse.py); ctx.stroke(); ctx.setLineDash([]); }
+    const mw=toWorld(mouse.px,mouse.py);
+    ctx.beginPath(); ctx.moveTo(gx(wireStart.x),gy(wireStart.y)); ctx.lineTo(mw.x,mw.y); ctx.stroke(); ctx.setLineDash([]); }
   // ghost for placing
   if(isPlaceType(tool)&&mouse.gx!=null&&mouse.gy!=null){ drawGhost(tool,mouse.gx,mouse.gy); }
 
@@ -318,7 +375,15 @@ function draw(){
     const minx=Math.min(...xs)-14,maxx=Math.max(...xs)+14,miny=Math.min(...ys)-14,maxy=Math.max(...ys)+14;
     ctx.strokeRect(minx,miny,maxx-minx,maxy-miny); ctx.setLineDash([]); }
 
+  ctx.restore();
+  // Panels are screen furniture, not part of the schematic: they keep a fixed
+  // size and position regardless of zoom, so they draw in screen space.
+  ctx.setTransform(dpr,0,0,dpr,0,0);
   if(panelMode==='bode') drawBode(); else drawScope();
+  if(view.scale!==1){
+    ctx.fillStyle='#6b7c96'; ctx.font='10px ui-monospace,monospace'; ctx.textAlign='right';
+    ctx.fillText(Math.round(view.scale*100)+'%', W-12, 18); ctx.textAlign='left';
+  }
 }
 
 // ---- Oscilloscope panel ----------------------------------------------------
@@ -654,6 +719,15 @@ let mouse:{px:number;py:number;gx:number|null;gy:number|null}={px:0,py:0,gx:null
 let wireStart:Pt|null=null;
 let ghostRot:Rot=0;
 let dragging:{c:Comp;dx:number;dy:number;x0:number;y0:number}|null=null;
+// Panning the canvas, and the two-pointer pinch that zooms it. Tracking live
+// pointers by id is what lets one finger pan while two fingers pinch.
+let panning:{px:number;py:number;ox:number;oy:number}|null=null;
+const pointers=new Map<number,Pt>();
+let pinchDist=0;
+const pointerPos=(e:PointerEvent):Pt=>{
+  const r=cv.getBoundingClientRect();
+  return {x:e.clientX-r.left, y:e.clientY-r.top};
+};
 
 function hitComponent(gxu:number,gyu:number):Comp|null{
   // nearest component whose centroid is close
@@ -672,17 +746,51 @@ function hitComponent(gxu:number,gyu:number):Comp|null{
 // claiming the same gesture for scroll/zoom, and pointer capture keeps a drag
 // tracking even when the finger leaves the canvas.
 stage.addEventListener('pointermove',e=>{
-  const r=cv.getBoundingClientRect(); mouse.px=e.clientX-r.left; mouse.py=e.clientY-r.top;
+  const p=pointerPos(e);
+  if(pointers.has(e.pointerId)) pointers.set(e.pointerId,p);
+  mouse.px=p.x; mouse.py=p.y;
   const g=toGrid(mouse.px,mouse.py); mouse.gx=g.x; mouse.gy=g.y;
+
+  if(pointers.size>=2){                 // pinch to zoom
+    const [a,b]=[...pointers.values()];
+    const d=Math.hypot(a.x-b.x,a.y-b.y);
+    if(pinchDist>0&&d>0) zoomAt((a.x+b.x)/2,(a.y+b.y)/2,d/pinchDist);
+    pinchDist=d;
+    return;
+  }
+  if(panning){ view.ox=panning.ox+(p.x-panning.px); view.oy=panning.oy+(p.y-panning.py); draw(); return; }
   if(dragging){ dragging.c.x=g.x-dragging.dx; dragging.c.y=g.y-dragging.dy; }
   draw();
 });
+
+// Wheel and trackpad pinch both zoom about the cursor; shift+wheel pans
+// sideways, matching how schematic and CAD editors behave.
+stage.addEventListener('wheel',e=>{
+  e.preventDefault();
+  const p=pointerPos(e as unknown as PointerEvent);
+  if(e.shiftKey&&!e.ctrlKey){ view.ox-=e.deltaY||e.deltaX; draw(); return; }
+  zoomAt(p.x,p.y,Math.exp(-e.deltaY*(e.ctrlKey?0.01:0.0022)));
+},{passive:false});
 stage.addEventListener('pointerdown',e=>{
-  const r=cv.getBoundingClientRect(); const px=e.clientX-r.left, py=e.clientY-r.top;
+  const pt=pointerPos(e); const px=pt.x, py=pt.y;
   const g=toGrid(px,py);
   // A finger reports no position until it touches down, so seed the hover state
   // here — otherwise the first tap of a placement has no ghost to place.
   mouse.px=px; mouse.py=py; mouse.gx=g.x; mouse.gy=g.y;
+
+  pointers.set(e.pointerId,pt);
+  if(pointers.size>=2){                 // second finger down: pinch, not edit
+    const [a,b]=[...pointers.values()];
+    pinchDist=Math.hypot(a.x-b.x,a.y-b.y);
+    panning=null; dragging=null; wireStart=null; draw();
+    return;
+  }
+  // Middle button, or space held, pans regardless of the active tool.
+  if(e.button===1||spaceHeld){
+    panning={px,py,ox:view.ox,oy:view.oy};
+    try{ stage.setPointerCapture(e.pointerId); }catch{ /* best-effort */ }
+    return;
+  }
   if(isPlaceType(tool)){
     const nc:Comp={id:tool+(uid++),type:tool,x:g.x,y:g.y,rot:ghostRot,value:TYPES[tool].def};
     if(tool==='VS'){ nc.amp=5; nc.freq=1000; nc.off=0; }
@@ -723,10 +831,18 @@ stage.addEventListener('pointerdown',e=>{
     dragging={c,dx:g.x-c.x,dy:g.y-c.y,x0:c.x,y0:c.y};
     // Keep receiving moves even if the pointer slides off the canvas mid-drag.
     try{ stage.setPointerCapture(e.pointerId); }catch{ /* capture is best-effort */ }
+  } else {
+    // Dragging empty grid pans the view — the natural gesture, and the only one
+    // available to a single finger on a phone.
+    panning={px,py,ox:view.ox,oy:view.oy};
+    try{ stage.setPointerCapture(e.pointerId); }catch{ /* best-effort */ }
   }
   draw();
 });
-const endDrag=()=>{
+const endDrag=(e?:PointerEvent)=>{
+  if(e) pointers.delete(e.pointerId);
+  if(pointers.size<2) pinchDist=0;
+  panning=null;
   if(!dragging) return;
   const moved=dragging.c.x!==dragging.x0||dragging.c.y!==dragging.y0;
   dragging=null; refreshMeta();
@@ -736,10 +852,20 @@ window.addEventListener('pointerup',endDrag);
 window.addEventListener('pointercancel',endDrag);
 stage.addEventListener('dblclick',()=>{ if(wireStart){ wireStart=null; draw(); } });
 const turn=(r:Rot):Rot=>((r+90)%360) as Rot;
+let spaceHeld=false;
+window.addEventListener('keyup',e=>{ if(e.code==='Space') spaceHeld=false; });
 window.addEventListener('keydown',e=>{
+  const typing=(e.target as HTMLElement|null)?.tagName==='INPUT';
+  if(typing) return;              // never steal keys from the value fields
   const meta=e.metaKey||e.ctrlKey;
+  if(e.code==='Space'){ spaceHeld=true; e.preventDefault(); }
   if(meta&&(e.key==='z'||e.key==='Z')){ e.preventDefault(); e.shiftKey?redo():undo(); return; }
   if(meta&&(e.key==='y'||e.key==='Y')){ e.preventDefault(); redo(); return; }
+  // Zoom shortcuts, about the middle of the canvas.
+  const cx=cv.width/devicePixelRatio/2, cy=cv.height/devicePixelRatio/2;
+  if(e.key==='+'||e.key==='='){ zoomAt(cx,cy,1.2); return; }
+  if(e.key==='-'||e.key==='_'){ zoomAt(cx,cy,1/1.2); return; }
+  if(e.key==='0'){ fitView(); return; }
   if(e.key==='r'||e.key==='R'){ ghostRot=turn(ghostRot); if(selected){ selected.rot=turn(rotOf(selected)); refreshMeta(); commit(); } draw(); }
   if(e.key==='Escape'){ wireStart=null; selected=null; setTool('select'); renderInspector(); draw(); }
   if((e.key==='Delete'||e.key==='Backspace')&&selected){ comps=comps.filter(k=>k!==selected); selected=null; refreshMeta(); commit(); renderInspector(); draw(); }
@@ -1286,6 +1412,7 @@ el('runBtn').onclick=()=>{ running?stopSim():startSim(); };
 el('clearBtn').onclick=()=>{ stopSim(); comps=[];wires=[];lastResult=null;selected=null; scopeProbes=[]; scopeBuf=null; bodeData=null; panelMode='scope'; refreshMeta(); commit(); renderInspector(); draw(); };
 el('bodeBtn').onclick=runBode;
 el('resetBtn').onclick=resetSim;
+el('fitBtn').onclick=fitView;
 el('undoBtn').onclick=undo;
 el('redoBtn').onclick=redo;
 el('rotateBtn').onclick=()=>{ ghostRot=turn(ghostRot); if(selected){selected.rot=turn(rotOf(selected)); refreshMeta(); commit();} draw(); };
@@ -1295,9 +1422,9 @@ el('shareBtn').onclick=shareURL;
 
 // ---- boot ----
 buildRail(); buildGallery(); setTool('select'); renderInspector();
-view.ox=40; view.oy=40;
 resize();
 if(!loadFromHash()) loadRC();   // restore a shared circuit, else the default example
+fitView();                      // frame whatever we loaded rather than stranding it
 // The circuit we boot with is the baseline: undo can't rewind past it.
 historyPrev=snapshot();
 updateHistoryButtons();

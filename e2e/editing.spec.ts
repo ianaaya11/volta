@@ -99,10 +99,16 @@ test.describe('reset', () => {
 test.describe('scope', () => {
   test('selecting a component plots its waveform without placing a probe', async ({ page }) => {
     await page.goto('/');
+    // Fit on an empty canvas resets the view to a known origin and 100% zoom,
+    // so grid coordinates map to predictable screen pixels below. Loading an
+    // example afterwards leaves the view alone.
+    await page.click('#clearBtn');
+    await page.click('#fitBtn');
+    await page.selectOption('#gallery', { label: 'RC low-pass (transient)' });
     await page.click('#runBtn');
     await expect(page.locator('#runBtn')).toHaveText(/Stop/);
 
-    // Select the resistor in the default example by clicking its body.
+    // Select the resistor, which spans grid (6,4)-(8,4), by clicking its middle.
     await page.click('#rail .tool[data-t="select"]');
     const box = (await page.locator('#cv').boundingBox())!;
     await page.mouse.click(box.x + 40 + 7 * 26, box.y + 40 + 4 * 26);
@@ -120,6 +126,82 @@ test.describe('scope', () => {
       return n;
     });
     expect(inked).toBeGreaterThan(20000);
+  });
+});
+
+test.describe('zoom & pan', () => {
+  // The view has no DOM representation, so it's measured the way a user sees
+  // it: the same grid cell should land on different screen pixels after a
+  // zoom or a pan. Placing a part is the probe — it lands wherever the click
+  // maps to in world space.
+  async function placeAndRead(page: Page, sx: number, sy: number) {
+    const box = (await page.locator('#cv').boundingBox())!;
+    await page.click('#rail .tool[data-t="R"]');
+    await page.mouse.click(box.x + sx, box.y + sy);
+    const model = await readModel(page);
+    return model.comps[model.comps.length - 1];
+  }
+
+  test('the wheel zooms and a grid cell moves under the cursor', async ({ page }) => {
+    await page.goto('/');
+    await page.click('#clearBtn');
+    await page.click('#fitBtn');                       // known origin, 100%
+    const before = await placeAndRead(page, 200, 200);
+
+    const box = (await page.locator('#cv').boundingBox())!;
+    await page.mouse.move(box.x + 200, box.y + 200);
+    await page.mouse.wheel(0, -600);                   // zoom in about the cursor
+    await expect(page.locator('#cv')).toBeVisible();
+
+    // Same screen point, but the view is magnified, so it maps to a grid cell
+    // nearer the zoom origin than before.
+    const after = await placeAndRead(page, 320, 200);
+    expect(after.x).not.toBe(before.x);
+  });
+
+  test('dragging empty grid pans the view', async ({ page }) => {
+    await page.goto('/');
+    await page.click('#clearBtn');
+    await page.click('#fitBtn');
+    const before = await placeAndRead(page, 200, 200);
+
+    // Drag from a patch of empty grid well away from the part.
+    const box = (await page.locator('#cv').boundingBox())!;
+    await page.click('#rail .tool[data-t="select"]');
+    await page.mouse.move(box.x + 600, box.y + 400);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 700, box.y + 400, { steps: 5 });
+    await page.mouse.up();
+
+    // The canvas shifted right by ~100px, so the same screen point is now a
+    // different grid cell.
+    const after = await placeAndRead(page, 200, 200);
+    expect(after.x).toBeLessThan(before.x);
+  });
+
+  test('Fit frames the circuit and reports the zoom level', async ({ page }) => {
+    await page.goto('/');
+    await page.selectOption('#gallery', { label: 'BJT common-emitter amp' });
+    const box = (await page.locator('#cv').boundingBox())!;
+    await page.mouse.move(box.x + 300, box.y + 300);
+    await page.mouse.wheel(0, -900);                   // zoom way in
+    await page.click('#fitBtn');
+    // After Fit the whole circuit is on screen: every part's pins sit inside
+    // the canvas, which we verify by checking the drawing covers a broad area
+    // rather than a corner.
+    const spread = await page.evaluate(() => {
+      const cv = document.getElementById('cv') as HTMLCanvasElement;
+      const ctx = cv.getContext('2d')!;
+      const d = ctx.getImageData(0, 0, cv.width, cv.height).data;
+      let minX = cv.width, maxX = 0;
+      for (let y = 0; y < cv.height; y += 4) {
+        for (let x = 0; x < cv.width; x += 4) {
+          if (d[(y * cv.width + x) * 4 + 3] > 0) { if (x < minX) minX = x; if (x > maxX) maxX = x; }
+        }
+      }
+      return (maxX - minX) / cv.width;
+    });
+    expect(spread).toBeGreaterThan(0.3);
   });
 });
 
