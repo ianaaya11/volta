@@ -29,15 +29,22 @@ async function blankGrid(page: Page) {
   };
 }
 
-/** How many pixels on the canvas are painted in the moving-current colour
- *  (--cv-current, #e0952a). This is the thing the user actually sees, so it is
- *  the thing worth asserting on. */
+/** How many pixels on the canvas are painted in the moving-current colour.
+ *  This is the thing the user actually sees, so it is the thing worth asserting
+ *  on — but it means the test has to know the colour, so it reads it from the
+ *  stylesheet rather than hardcoding one and going stale the next time somebody
+ *  restyles the schematic. */
 const currentDots = (page: Page) => page.evaluate(() => {
+  const hex = getComputedStyle(document.documentElement)
+    .getPropertyValue('--cv-current').trim();
+  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+  if (!m) throw new Error(`--cv-current is not a plain hex colour: ${hex}`);
+  const [r, g, b] = m.slice(1).map(h => parseInt(h, 16));
   const cv = document.getElementById('cv') as HTMLCanvasElement;
   const d = cv.getContext('2d')!.getImageData(0, 0, cv.width, cv.height).data;
   let n = 0;
   for (let i = 0; i < d.length; i += 4) {
-    if (Math.abs(d[i] - 224) < 26 && Math.abs(d[i + 1] - 149) < 26 && Math.abs(d[i + 2] - 42) < 40) n++;
+    if (Math.abs(d[i] - r) < 26 && Math.abs(d[i + 1] - g) < 26 && Math.abs(d[i + 2] - b) < 40) n++;
   }
   return n;
 });
