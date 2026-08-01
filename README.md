@@ -134,6 +134,18 @@ about one and a quarter cycles so they react quickly; averages use eight, over
 completed whole-cycle windows, which is what makes a 3 V sine read 2.12 V rms
 rather than 2.23.
 
+## Getting around, and reshaping a wire
+Select a wire and it grows a handle at each end; drag one to extend the wire,
+shorten it, or swing it somewhere else. The result is routed the same way the
+Wire tool routes, so an end dragged off the wire's own axis becomes a
+right-angled pair rather than a diagonal, and dragging one end onto the other
+removes the wire. Nothing else on the schematic moves.
+
+There is a **Pan** tool next to Select. Dragging empty grid has always panned,
+and so do the middle button and space-drag, but a schematic that fills the
+screen leaves no empty grid to grab and a phone has neither a middle button nor
+a spacebar.
+
 ## Blocks
 Select part of a circuit and press **Make a block** to wrap it up and reuse it
 as a single symbol. The terminals are worked out rather than asked for: a node

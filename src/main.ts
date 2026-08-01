@@ -37,7 +37,7 @@ export type PartType = 'R' | 'V' | 'I' | 'C' | 'L' | 'VS' | 'SQ' | 'D'
   // instance into the devices its definition contains.
   | 'SUB';
 /** Everything the tool rail can be set to: a part to place, or a mode. */
-type Tool = PartType | 'select' | 'wire' | 'probe' | 'delete';
+type Tool = PartType | 'select' | 'wire' | 'probe' | 'delete' | 'pan';
 type Rot = 0 | 90 | 180 | 270;
 
 /** A placed part. (x,y) are grid coords of pin A (the anchor). */
@@ -966,6 +966,8 @@ function draw(){
   // wires
   const wc = running? solveWireCurrents(lastResult) : new Map<number,number>();
   wires.forEach((w,wi)=>{
+    // The wire being re-routed is drawn as its preview instead, below.
+    if(wireEdit&&w===wireEdit.w) return;
     const col = lastResult? nodeColor(w.x1,w.y1) : T.wire;
     // A selected wire gets a soft accent halo under it. Same reasoning as a
     // selected part: say "this one" without drawing another boundary — and a
@@ -979,6 +981,27 @@ function draw(){
     ctx.beginPath(); ctx.moveTo(gx(w.x1),gy(w.y1)); ctx.lineTo(gx(w.x2),gy(w.y2)); ctx.stroke();
     if(running){ drawFlow(gx(w.x1),gy(w.y1),gx(w.x2),gy(w.y2), wc.get(wi)||0); }
   });
+
+  // The wire being dragged, as it will be once released.
+  if(wireEdit){
+    const segs=routeWire(wireEdit.fixed,wireEdit.to,null,null,comps.map(pinBox));
+    ctx.strokeStyle=T.accent; ctx.lineWidth=3; ctx.lineCap='round';
+    ctx.setLineDash([6,4]);
+    for(const sgm of segs){
+      ctx.beginPath(); ctx.moveTo(gx(sgm.x1),gy(sgm.y1)); ctx.lineTo(gx(sgm.x2),gy(sgm.y2)); ctx.stroke();
+    }
+    ctx.setLineDash([]);
+  }
+
+  // Handles on the selected wire's ends. Without them nothing says an endpoint
+  // can be grabbed, and a feature nobody can see is a feature nobody has.
+  if(selectedWire&&!wireEdit){
+    const w=selectedWire;
+    ctx.fillStyle=T.body; ctx.strokeStyle=T.accent; ctx.lineWidth=2;
+    for(const pt of [{x:w.x1,y:w.y1},{x:w.x2,y:w.y2}]){
+      ctx.beginPath(); ctx.arc(gx(pt.x),gy(pt.y),5,0,7); ctx.fill(); ctx.stroke();
+    }
+  }
 
   // components
   // Selection reads as COLOUR, not as a box. A dashed rectangle round a part
@@ -2024,6 +2047,8 @@ function drawGhost(type:PartType,x:number,y:number){
 // ===========================================================================
 //  PART 5 — INTERACTION
 // ===========================================================================
+// 'pan', 'select', 'wire', 'probe' and 'delete' are modes; everything here is
+// something you can drop on the grid.
 const PLACE_TYPES:PartType[]=['R','POT','V','VS','SQ','I','C','CP','L','XF','D','LED','LAMP','VM','AM','OM','WM',
   'SW','PB','PBNC','RLY','MOT','QN','QP','MN','MP','OA','E','G','F','H','GND','MCU',
   'LOGIC','SUB',...(Object.keys(DIGITAL) as DigitalType[])];
@@ -2032,6 +2057,11 @@ const isPlaceType=(t:Tool):t is PartType=>(PLACE_TYPES as string[]).includes(t);
  *  schematic that could be drawn but never selected, so the ordinary
  *  click-then-Delete that works on every part did nothing to them. */
 let selectedWire:Wire|null=null;
+/** An endpoint of the selected wire being dragged. `fixed` is the end staying
+ *  put; `to` is where the dragged end currently is. The wire itself is left
+ *  alone until the drag ends — draw() paints the routed preview in its place —
+ *  so abandoning a drag costs nothing and the undo stack sees one edit. */
+let wireEdit:{w:Wire;fixed:Pt;to:Pt}|null=null;
 let mouse:{px:number;py:number;gx:number|null;gy:number|null}={px:0,py:0,gx:null,gy:null};
 let wireStart:Pt|null=null;
 
@@ -2540,6 +2570,7 @@ stage.addEventListener('pointermove',e=>{
     return;
   }
   if(panning){ view.ox=panning.ox+(p.x-panning.px); view.oy=panning.oy+(p.y-panning.py); draw(); return; }
+  if(wireEdit){ wireEdit.to={x:g.x,y:g.y}; draw(); return; }
   if(dragging){
     const nx=g.x-dragging.dx, ny=g.y-dragging.dy;
     const ddx=nx-dragging.x0, ddy=ny-dragging.y0;
@@ -2580,8 +2611,11 @@ stage.addEventListener('pointerdown',e=>{
     panning=null; dragging=null; endWireDrag(); wireStart=null; wireExit=null; wireBox=null; draw();
     return;
   }
-  // Middle button, or space held, pans regardless of the active tool.
-  if(e.button===1||spaceHeld){
+  // The Pan tool, the middle button, or space held: pan from anywhere,
+  // whatever is under the pointer. Dragging empty grid pans too (see the tail
+  // of this handler), but on a schematic that fills the screen there is no
+  // empty grid to find, and a phone has neither a middle button nor a spacebar.
+  if(tool==='pan'||e.button===1||spaceHeld){
     panning={px,py,ox:view.ox,oy:view.oy};
     try{ stage.setPointerCapture(e.pointerId); }catch{ /* best-effort */ }
     return;
@@ -2643,6 +2677,21 @@ stage.addEventListener('pointerdown',e=>{
     else if(t.wire){ wires.splice(t.wire.i,1); if(selectedWire===t.wire.w) selectedWire=null; }
     refreshMeta(); commit(); renderInspector(); draw(); return;
   }
+  // Grabbing the end of the wire already selected. Checked before anything
+  // else, because those grid points are usually a part's pin as well and the
+  // part would otherwise win — which is right everywhere except here, where the
+  // handle is drawn precisely to say "this one is grabbable".
+  if(tool==='select'&&selectedWire&&!e.shiftKey){
+    const w=selectedWire;
+    const grabbed = (g.x===w.x1&&g.y===w.y1) ? {fixed:{x:w.x2,y:w.y2}}
+                  : (g.x===w.x2&&g.y===w.y2) ? {fixed:{x:w.x1,y:w.y1}}
+                  : null;
+    if(grabbed){
+      wireEdit={w,fixed:grabbed.fixed,to:{x:g.x,y:g.y}};
+      try{ stage.setPointerCapture(e.pointerId); }catch{ /* best-effort */ }
+      draw(); return;
+    }
+  }
   // select tool
   const target=pickTarget(g.x,g.y);
   const c=target.comp??null;
@@ -2695,9 +2744,31 @@ stage.addEventListener('pointerdown',e=>{
   }
   draw();
 });
+/** Replace an edited wire with the run its new endpoint calls for.
+ *
+ *  Routed rather than moved, so an endpoint dragged off the wire's own axis
+ *  becomes a right-angled pair instead of a diagonal — the same rule the Wire
+ *  tool follows, and the reason the schematic stays readable. Dragging ALONG
+ *  the axis, which is what extending a wire means, still gives a single
+ *  segment, because that is what routeWire returns when two points already line
+ *  up. */
+function endWireEdit(){
+  if(!wireEdit) return;
+  const {w,fixed,to}=wireEdit;
+  wireEdit=null;
+  const i=wires.indexOf(w);
+  if(i<0){ selectedWire=null; draw(); return; }
+  const segs=routeWire(fixed,to,null,null,comps.map(pinBox));
+  // Dragged onto its own other end: the wire has no length left, so it goes.
+  wires.splice(i,1,...segs);
+  selectedWire=segs[0]??null;
+  refreshMeta(); commit(); renderInspector(); draw();
+}
+
 const endDrag=(e?:PointerEvent)=>{
   if(e) pointers.delete(e.pointerId);
   if(pointers.size<2) pinchDist=0;
+  if(wireEdit) endWireEdit();
   panning=null;
   // A push button is momentary — releasing the pointer releases the contact.
   if(heldButton){ heldButton.on=false; heldButton=null; syncValues(); renderInspector(); draw(); }
@@ -3216,7 +3287,8 @@ function renderInspector(){
     body.innerHTML=`<h3>Wire</h3>
       <div class="empty">A ${len===0?'joint':`${len}-square`} link from
         (${w.x1}, ${w.y1}) to (${w.x2}, ${w.y2}).
-        Deleting it breaks whatever it joined — the parts stay put.</div>
+        Drag either end to extend or reroute it — the rest of the circuit stays
+        where it is. Deleting it breaks whatever it joined; the parts stay put.</div>
       <hr><div class="inspectoract">
         <button class="btn danger" id="wireDel"><svg class="ic" viewBox="0 0 24 24"><use href="#i-trash"/></svg>Delete wire</button>
         <button class="btn" id="wireNone">Deselect</button>
@@ -3804,6 +3876,7 @@ const RAIL_GROUPS:RailGroup[]=[
   {name:'Blocks',items:[]},
   {name:'Tools',items:[
     {t:'select',label:'Select'},
+    {t:'pan',label:'Pan',full:'Pan / move the view around'},
     {t:'wire',label:'Wire',full:'Wire / connect pins'},
     {t:'probe',label:'Probe',full:'Voltage probe'},
     {t:'delete',label:'Delete',full:'Delete component or wire'},
@@ -3985,6 +4058,7 @@ function miniSymbol(t:Tool){
   const s=(inner:string)=>`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">${inner}</svg>`;
   switch(t){
     case 'select': return s('<path d="M5 3l6 15 2-6 6-2z"/>');
+    case 'pan': return s('<path d="M12 3v9M12 21v-4M3 12h9M21 12h-4"/><path d="M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3"/>');
     case 'wire': return s('<path d="M3 16h6a3 3 0 003-3 3 3 0 013-3h6"/>');
     case 'R': return s('<path d="M2 12h3l1.5-4 3 8 3-8 3 8 1.5-4H21"/>');
     case 'SUB': return s('<rect x="6" y="5" width="12" height="14" rx="2"/><path d="M2 9h4M2 15h4M18 9h4M18 15h4"/>');
@@ -4041,7 +4115,8 @@ function setTool(t:Tool){ tool=t; wireStart=null; wireExit=null; wireBox=null; u
   const hints:Partial<Record<Tool,string>>={select:'Click a part to select & drag, or a wire to select and delete it.',
     wire:'Click pin to pin to lay wire. Double-click to finish a run.',
     probe:'Click a node/wire to scope its voltage. Click again to remove. Then press Run.',
-    delete:'Click a component or wire to remove it.'};
+    delete:'Click a component or wire to remove it.',
+    pan:'Drag anywhere to move the view. Scroll or pinch to zoom.'};
   el('hint').innerHTML=hints[t]??`Click the grid to place a <b>${isPlaceType(t)?TYPES[t].name:t}</b>. Press <span class="kbd">R</span> to rotate.`;
   draw();
 }
