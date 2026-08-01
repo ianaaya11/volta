@@ -1166,6 +1166,12 @@ function plotChannels(chs:Channel[], t:number[], x:number, y:number, w:number, h
   let mn=Infinity,mx=-Infinity;
   for(const c of chs) for(const v of c.data){ if(v<mn)mn=v; if(v>mx)mx=v; }
   if(!isFinite(mn)){ mn=-1; mx=1; }
+  // A plot that fits itself to its data will happily magnify 1e-13 V of
+  // arithmetic residue into a full-height waveform, which is the most
+  // convincing lie the app can tell — it looks exactly like a real signal on a
+  // circuit that is doing nothing. Below the floor there is no signal, so the
+  // axis stops shrinking and the trace reads as the flat line it is.
+  if(Math.max(Math.abs(mn),Math.abs(mx))<ZERO_FLOOR){ mn=-ZERO_FLOOR; mx=ZERO_FLOOR; }
   if(mn===mx){ mn-=Math.abs(mn)*0.5+1e-9; mx+=Math.abs(mx)*0.5+1e-9; }
   const pad=(mx-mn)*0.1; mn-=pad; mx+=pad;
   const t0=t[0], t1=t[t.length-1], dt=(t1-t0)||1;
@@ -1234,7 +1240,7 @@ function drawScope(){
     // Label and value stack on two lines, so the column only needs the wider
     // of the two — measuring them joined reserves space nothing occupies.
     legendW=Math.max(legendW,ctx.measureText(c.label).width);
-    if(last!=null) legendW=Math.max(legendW,ctx.measureText(fmt(last,c.unit)).width);
+    if(last!=null) legendW=Math.max(legendW,ctx.measureText(fmt(denoise(last),c.unit)).width);
   }
   const legendCol=chs.length?Math.min(legendW+37,Math.max(pw*0.3,110)):0;
   const plotX=px+56, plotY=py+38, plotW=pw-56-16-legendCol, plotH=ph-38-22;
@@ -1249,7 +1255,7 @@ function drawScope(){
     ctx.fillText(c.label,lx+17,ly+1);
     if(last!=null){
       ctx.fillStyle=T.label;
-      ctx.fillText(fmt(last,c.unit),lx+17,ly+13);
+      ctx.fillText(fmt(denoise(last),c.unit),lx+17,ly+13);
     }
     ly+=last!=null?28:19;
   }
@@ -2901,6 +2907,23 @@ function mcuFault(msg:string){
   flashHint('Sketch stopped: '+msg);
   renderMcuStatus();
 }
+// ---------------------------------------------------------------------------
+//  Numerical zero
+// ---------------------------------------------------------------------------
+//  A circuit that has finished discharging does not solve to exactly zero. It
+//  solves to 2.7e-35 V, and printed as-is that reads like a measurement — the
+//  panel goes on reporting voltages and currents on a dead circuit, and the
+//  oscilloscope, which scales itself to fit its data, blows a few times 1e-13
+//  up to full height and draws a confident-looking waveform out of nothing.
+//
+//  So a solved value below this is shown as zero. A picovolt or a picoamp is
+//  several decades below anything this solver claims: its Newton loop stops
+//  when the update falls under 1e-9, and the smallest current any part here
+//  deals in is the ~50 nA a voltmeter draws through its 100 MΩ. Nothing real
+//  gets rounded away, and nothing imaginary gets printed.
+const ZERO_FLOOR=1e-12;
+const denoise=(v:number)=>Math.abs(v)<ZERO_FLOOR?0:v;
+
 // ===========================================================================
 //  STEADY READINGS — numbers you can actually read while it runs
 // ===========================================================================
@@ -3056,11 +3079,12 @@ function isFlat(b:{min:number;max:number}):boolean{
  *  not. `inst` is the instantaneous value, used in live mode and before the
  *  first window has filled. */
 function reads(key:string,inst:number,unit:string):string{
-  if(readMode==='live'||!running) return fmt(inst,unit);
+  if(readMode==='live'||!running) return fmt(denoise(inst),unit);
   const b=readings.get(key)?.band();
-  if(!b) return fmt(inst,unit);
-  if(isFlat(b)) return fmt((b.min+b.max)/2,unit);
+  if(!b) return fmt(denoise(inst),unit);
+  if(isFlat(b)) return fmt(denoise((b.min+b.max)/2),unit);
   const peak=Math.max(Math.abs(b.min),Math.abs(b.max));
+  if(peak<ZERO_FLOOR) return fmt(0,unit);
   // A bound that is a billionth of the peak is the solver's rounding, not a
   // measurement. Power touches zero every half cycle and was reporting its
   // floor as 2.01e-14 W.
@@ -3082,16 +3106,18 @@ function statOf(key:string,unit:string,kind:'rms'|'avg'='rms'):string{
   if(readMode==='live'||!running) return '';
   const b=readings.get(key)?.band();
   if(!b||isFlat(b)) return '';
-  return kind==='avg' ? `${fmt(b.mean,unit)} avg` : `${fmt(b.rms,unit)} rms`;
+  if(Math.max(Math.abs(b.min),Math.abs(b.max))<ZERO_FLOOR) return '';
+  return kind==='avg' ? `${fmt(denoise(b.mean),unit)} avg` : `${fmt(denoise(b.rms),unit)} rms`;
 }
 
 /** One line for a canvas label, where there is no room for a range. A true-RMS
  *  meter is what this is imitating, so RMS is the number it shows. */
 function meterLabel(key:string,inst:number,unit:string):string{
-  if(readMode==='live'||!running) return fmt(inst,unit);
+  if(readMode==='live'||!running) return fmt(denoise(inst),unit);
   const b=readings.get(key)?.band();
-  if(!b) return fmt(inst,unit);
-  if(isFlat(b)) return fmt((b.min+b.max)/2,unit);
+  if(!b) return fmt(denoise(inst),unit);
+  if(isFlat(b)) return fmt(denoise((b.min+b.max)/2),unit);
+  if(Math.max(Math.abs(b.min),Math.abs(b.max))<ZERO_FLOOR) return fmt(0,unit);
   return fmt(b.rms,unit)+' rms';
 }
 

@@ -183,3 +183,49 @@ test('deleting the part that forced a fine timestep speeds the run back up',
       { message: 'the discharge should finish in a moment, not in minutes',
         timeout: 10_000, intervals: [400] }).toBe(0);
   });
+
+test('a circuit that has finished discharging reads zero, not 2.7e-35',
+  async ({ page }) => {
+    // Backward Euler does not land on exactly zero; it lands on a few times
+    // 1e-35. Printed as-is that reads like a measurement, and the panel goes on
+    // reporting voltages and currents on a dead circuit.
+    // Live readings, which is what the instantaneous solution looks like — and
+    // where the residue showed up. The steady readout keeps a rolling window on
+    // purpose, so it goes on reporting the discharge it just watched until that
+    // window has rolled past; that is the window working, not residue.
+    await page.addInitScript(() => localStorage.setItem('volta.readMode', 'live'));
+    const g = await blankGrid(page);
+    await page.click('#rail .tool[data-t="select"]');
+    await page.keyboard.press('r');
+    await g.place('V', 2, 2); await g.place('C', 10, 2);
+    await g.place('R', 14, 2); await g.place('GND', 2, 8);
+    await page.click('#rail .tool[data-t="select"]');
+    for (let i = 0; i < 3; i++) await page.keyboard.press('r');
+    await g.place('R', 4, 2);
+    await page.click('#rail .tool[data-t="select"]');
+    await g.wire([2, 2], [4, 2]); await g.wire([6, 2], [10, 2]); await g.wire([10, 2], [14, 2]);
+    await g.wire([2, 4], [10, 4]); await g.wire([10, 4], [14, 4]); await g.wire([2, 4], [2, 8]);
+    await page.click('#rail .tool[data-t="select"]');
+
+    await page.click('#runBtn');
+    await expect(page.locator('#runBtn')).toHaveText(/Stop/);
+    await page.mouse.click(g.at(10, 3).x, g.at(10, 3).y);       // scope the capacitor
+    await page.click('#rail .tool[data-t="delete"]');
+    await page.mouse.click(g.at(2, 3).x, g.at(2, 3).y);         // remove the source
+    await page.click('#rail .tool[data-t="select"]');
+    await page.mouse.click(g.at(10, 3).x, g.at(10, 3).y);
+
+    // Wait for the discharge to actually finish, then check HOW it is reported.
+    await expect.poll(() => page.locator('#roLive').innerText(),
+      { message: 'the capacitor should reach zero', timeout: 20_000, intervals: [300] })
+      .toMatch(/Voltage across\s*0V/);
+
+    const live = await page.locator('#roLive').innerText();
+    expect(live, 'no residue dressed up as a reading').not.toMatch(/e-\d/);
+    expect(live).toMatch(/Current\s*0A/);
+    expect(live).toMatch(/Power\s*0W/);
+
+    const table = await page.locator('#roTable').innerText();
+    expect(table, 'and the node table too').not.toMatch(/e-\d/);
+    expect(table).toMatch(/0V/);
+  });
