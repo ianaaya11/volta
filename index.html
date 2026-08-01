@@ -166,6 +166,7 @@
       <button class="btn" id="galleryMine">My designs</button>
       <button class="btn" id="galleryAll">Everything</button>
       <!-- Shown only to a moderator, and only because the database said so. -->
+      <button class="btn" id="galleryMembers" hidden>Members <span id="pendingCount" class="pill" hidden></span></button>
       <button class="btn" id="galleryReports" hidden>Reports <span id="reportCount" class="pill" hidden></span></button>
       <button class="btn" id="galleryAbout">About</button>
       <button class="btn primary" id="galleryClose"><svg class="ic" viewBox="0 0 24 24"><use href="#i-back"/></svg><span>Back to the editor</span></button>
@@ -177,6 +178,7 @@
     <div id="galleryGrid" class="galgrid"></div>
     <div id="galleryEmpty" class="galempty" hidden></div>
     <div id="reportQueue" class="galgrid" hidden></div>
+    <div id="memberQueue" class="memberlist" hidden></div>
   </div>
 
   <!-- ==== About ======================================================== -->
@@ -509,6 +511,7 @@
       <div id="authSignedIn" hidden>
         <p class="empty">Signed in as <b id="authWho"></b>. This is how you appear on
           anything you share.</p>
+        <div id="approvalNote"></div>
         <div class="field"><label>Handle — lowercase letters, numbers and underscores</label>
           <input id="profHandle" maxlength="20" placeholder="ada_k" /></div>
         <div class="field"><label>Display name</label>

@@ -80,7 +80,7 @@ test('the publish and gallery dialogs exist but are closed', async ({ page }) =>
   // They ship in the markup so the feature is one env var away, but nothing
   // may be visible or focusable until it is switched on.
   await page.goto('/');
-  for (const id of ['#galleryView', '#authModal', '#publishModal']) {
+  for (const id of ['#galleryView', '#authModal', '#publishModal', '#legalView']) {
     await expect(page.locator(id)).toBeHidden();
   }
 });
@@ -123,3 +123,13 @@ test('the terms and the privacy notice are readable without an account',
     await page.keyboard.press('Escape');
     await expect(page.locator('#legalView')).toBeHidden();
   });
+
+test('the admin tabs are not in an unconfigured build', async ({ page }) => {
+  // Members and Reports are moderator-only, and a build with no backend has no
+  // moderators — nor any way to become one. They must be absent rather than
+  // present-and-empty, which would advertise a control panel that is not there.
+  await page.goto('/');
+  await expect(page.locator('#galleryMembers')).toBeHidden();
+  await expect(page.locator('#galleryReports')).toBeHidden();
+  await expect(page.locator('#memberQueue')).toBeHidden();
+});

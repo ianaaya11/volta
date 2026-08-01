@@ -322,6 +322,47 @@ write-only from the client: a reporter can file one and can never read any,
 including their own, so the table cannot be used to enumerate what has been
 reported. Read them from the Supabase dashboard.
 
+### Running a closed test
+The commons is **invitation-only**: anyone can create an account, nobody can
+publish until a moderator approves them. That is what makes a private pilot
+possible without a separate build — the editor has always been public and stays
+public, and only the shared part is gated.
+
+Approval lives on the **Members** tab in the commons, next to Reports and
+visible only to moderators. It lists every account with the address it signed up
+with, waiting ones first and highlighted, with the count on the tab so a new
+sign-up is noticed. Approve lets someone publish; Revoke stops them publishing
+any more without touching what they have already shared.
+
+Enforced by the database, not by the button: `designs_insert` requires a profile
+that is `approved`, and approving goes through `set_approved()`, a
+security-definer function that checks `is_moderator()` and touches one boolean.
+A moderator counts as approved automatically — otherwise the first one would
+have to approve themselves before they could use the thing they moderate, which
+is a locked door with the key on the inside.
+
+#### Getting a pilot running
+
+1. **Deploy.** Push to `main`; the workflow in `.github/workflows/deploy.yml`
+   builds and publishes to Pages. One-time: Settings → Pages → Source: GitHub
+   Actions, and add `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` as Actions
+   secrets.
+2. **Run `supabase/schema.sql`** in the SQL editor. It is idempotent.
+3. **Make yourself a moderator**, which also makes you approved:
+   ```sql
+   insert into public.moderators (id, note)
+   select id, 'founder' from auth.users where email = 'you@example.com';
+   ```
+4. **Turn OFF email confirmation** for the pilot — Authentication → Sign In / Up
+   → "Confirm email". Supabase's built-in mailer only delivers to your own team
+   members, so with confirmation on, no tester can finish signing up. Approval
+   is doing the gatekeeping anyway, so an unconfirmed address costs nothing
+   while the door is closed. **Password reset will not work until you configure
+   custom SMTP** — during a short pilot you can reset one from the dashboard.
+5. **Add the Pages URL** to Authentication → URL Configuration → Redirect URLs.
+6. Send testers the link. They sign up, land on "waiting for approval", and you
+   let them in from the Members tab.
+
 ### Moderation
 Every card has a Report button. Reports are invisible to everyone except a
 moderator, who gets a queue in the commons: the design, its author, the reason,

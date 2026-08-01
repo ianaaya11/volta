@@ -44,6 +44,13 @@ create table if not exists public.profiles (
   age_confirmed    boolean not null default false,
   terms_version    text check (char_length(terms_version) <= 20),
   terms_accepted_at timestamptz,
+  -- ---- Approval ------------------------------------------------------------
+  -- The commons is invitation-only: anyone may create an account, nobody may
+  -- publish into it until a moderator says so. This is what makes a closed
+  -- pilot possible without a separate build — the editor is public and always
+  -- was, and only the shared part is gated.
+  approved     boolean not null default false,
+  approved_at  timestamptz,
   created_at   timestamptz not null default now(),
   updated_at   timestamptz not null default now()
 );
@@ -194,6 +201,11 @@ create policy designs_insert on public.designs for insert
        where p.id = auth.uid()
          and p.age_confirmed
          and p.terms_version is not null
+         -- A moderator is approved by definition. Without this the first
+         -- moderator would have to approve themselves before they could use
+         -- the thing they are moderating, which is a locked door with the key
+         -- on the inside.
+         and (p.approved or public.is_moderator())
     )
   );
 create policy designs_update on public.designs for update using (auth.uid() = author_id)
@@ -305,6 +317,66 @@ create or replace view public.report_queue as
 
 alter view public.report_queue set (security_invoker = on);
 grant select on public.report_queue to authenticated;
+
+-- ---------------------------------------------------------------------------
+--  Approving members
+-- ---------------------------------------------------------------------------
+--  Same shape as moderate_set_published, and for the same reason: a moderator
+--  needs to flip one boolean on somebody else's row and nothing more. A blanket
+--  UPDATE on profiles would also let them rewrite a member's handle, display
+--  name and school, which is a different and much larger power than the job.
+create or replace function public.set_approved(member uuid, state boolean)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not public.is_moderator() then
+    raise exception 'not a moderator' using errcode = '42501';
+  end if;
+  update public.profiles
+     set approved = state,
+         approved_at = case when state then now() else null end
+   where id = member;
+end $$;
+
+revoke all on function public.set_approved(uuid, boolean) from public;
+grant execute on function public.set_approved(uuid, boolean) to authenticated;
+
+-- ---------------------------------------------------------------------------
+--  member_queue — who is waiting, and who let them in
+-- ---------------------------------------------------------------------------
+--  A function rather than a view, because it reads auth.users: deciding whether
+--  to approve a stranger means knowing which address they signed up with, and
+--  no client-side key may read that table. security definer gets at it; the
+--  WHERE clause is what keeps it shut to everyone else, returning zero rows
+--  rather than an error so a non-moderator learns nothing about who exists.
+--
+--  This is the one place in the schema where a member's email is visible to
+--  anyone but themselves. That is a real disclosure, made deliberately and
+--  limited to the people who run the service.
+create or replace function public.member_queue()
+returns table (
+  id uuid, handle text, display_name text, country text, school text,
+  email text, approved boolean, approved_at timestamptz, created_at timestamptz,
+  designs integer
+)
+language sql
+security definer
+set search_path = public
+as $$
+  select p.id, p.handle, p.display_name, p.country, p.school,
+         u.email::text, p.approved, p.approved_at, p.created_at,
+         (select count(*)::integer from public.designs d where d.author_id = p.id)
+    from public.profiles p
+    join auth.users u on u.id = p.id
+   where public.is_moderator()
+   order by p.approved asc, p.created_at desc;
+$$;
+
+revoke all on function public.member_queue() from public;
+grant execute on function public.member_queue() to authenticated;
 
 -- ---------------------------------------------------------------------------
 --  delete_me — leaving, properly

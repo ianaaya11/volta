@@ -127,6 +127,23 @@ export function mountCommunity(hooks: CommunityHooks) {
     }
   }
 
+  /** Where someone stands. An account waiting for approval is the normal state
+   *  during a closed test, not an error, and it should read like one — the
+   *  alternative is a member who concludes the app is broken. */
+  function paintApproval() {
+    const host = el('approvalNote');
+    if (!profile) { host.innerHTML = ''; return; }
+    if (profile.approved || moderator) {
+      host.innerHTML = '<div class="aigood">Your account is approved — you can '
+        + 'publish to the commons.</div>';
+      return;
+    }
+    host.innerHTML = '<div class="empty"><b>Waiting for approval.</b> The commons '
+      + 'is invitation-only while Volta is being tested. Your account is set up and '
+      + 'the editor works in full — you can build, save and share circuits by link. '
+      + 'Publishing opens up once you are approved.</div>';
+  }
+
   async function refreshAccount() {
     const s = await C.session();
     el('authRecovery').hidden = !recovering;
@@ -149,13 +166,15 @@ export function mountCommunity(hooks: CommunityHooks) {
       // stays in the toolbar for the next person to use this browser.
       profile = null; moderator = false;
       el('galleryReports').hidden = true;
-      if (showingReports) { showReports(false); void renderGallery(); }
+      el('galleryMembers').hidden = true;
+      if (showingReports || showingMembers) { showPane('gallery'); void renderGallery(); }
       paintAccount(false);
       return;
     }
     el('authWho').textContent = s.user.email ?? '';
     profile = await C.myProfile();
     paintAccount(true, s.user.email ?? undefined);
+    paintApproval();
     void refreshModerator();
     if (profile) {
       input('profHandle').value = profile.handle;
@@ -293,7 +312,7 @@ export function mountCommunity(hooks: CommunityHooks) {
         terms_version: profile?.terms_version ?? consentThisSession.terms,
       });
       say('profStatus', 'Saved.', 'good');
-      paintAccount(true);
+      paintAccount(true); paintApproval();
     } catch (e) { say('profStatus', msg(e), 'bad'); }
   };
 
@@ -304,6 +323,13 @@ export function mountCommunity(hooks: CommunityHooks) {
     if (!s) { await openAuth(); say('authStatus', 'Sign in to share a design.', ''); return; }
     if (!profile) profile = await C.myProfile();
     if (!profile) { await openAuth(); say('profStatus', 'Set up your profile before sharing.', ''); return; }
+    // The database would refuse this anyway. Meeting it here means a sentence
+    // that explains, rather than a policy violation the member cannot act on.
+    if (!profile.approved && !moderator) {
+      await openAuth();
+      hooks.hint('Your account is waiting for approval — publishing opens up then.');
+      return;
+    }
 
     el('publishModal').hidden = false;
     say('pubStatus', '');
@@ -346,7 +372,7 @@ export function mountCommunity(hooks: CommunityHooks) {
   let mineOnly = false;
 
   async function renderGallery() {
-    showReports(false);
+    showPane('gallery');
     const grid = el('galleryGrid');
     const empty = el('galleryEmpty');
     grid.innerHTML = '<div class="galempty">Loading…</div>';
@@ -416,12 +442,27 @@ export function mountCommunity(hooks: CommunityHooks) {
   // anyone else the queue simply comes back empty.
   let moderator = false;
   let showingReports = false;
+  let showingMembers = false;
 
   async function refreshModerator() {
     moderator = await C.amModerator().catch(() => false);
     el('galleryReports').hidden = !moderator;
-    if (!moderator && showingReports) { showingReports = false; void renderGallery(); }
-    if (moderator) void countReports();
+    el('galleryMembers').hidden = !moderator;
+    if (!moderator && (showingReports || showingMembers)) {
+      showingReports = false; showingMembers = false; void renderGallery();
+    }
+    if (moderator) { void countReports(); void countPending(); }
+  }
+
+  /** How many accounts are waiting. Shown on the tab, because the whole point
+   *  of an invitation-only commons is that somebody has to notice. */
+  async function countPending() {
+    try {
+      const n = (await C.memberQueue()).filter(m => !m.approved).length;
+      const pill = el('pendingCount');
+      pill.textContent = n ? String(n) : '';
+      pill.hidden = !n;
+    } catch { /* the badge is not worth an error message */ }
   }
 
   async function countReports() {
@@ -433,13 +474,68 @@ export function mountCommunity(hooks: CommunityHooks) {
     } catch { /* the badge is not worth an error message */ }
   }
 
-  /** Both panes live in the same view; only one is ever on screen. */
-  function showReports(on: boolean) {
-    showingReports = on;
-    el('reportQueue').hidden = !on;
-    el('galleryGrid').hidden = on;
-    if (on) el('galleryEmpty').hidden = true;
+  /** The three panes live in the same view; only one is ever on screen. */
+  function showPane(which: 'gallery' | 'reports' | 'members') {
+    showingReports = which === 'reports';
+    showingMembers = which === 'members';
+    el('reportQueue').hidden = which !== 'reports';
+    el('memberQueue').hidden = which !== 'members';
+    el('galleryGrid').hidden = which !== 'gallery';
+    if (which !== 'gallery') el('galleryEmpty').hidden = true;
   }
+  const showReports = (on: boolean) => showPane(on ? 'reports' : 'gallery');
+
+  // ---- members ------------------------------------------------------------
+  async function renderMembers() {
+    showPane('members');
+    const q = el('memberQueue');
+    q.innerHTML = '<div class="memberempty">Loading…</div>';
+    let rows: C.MemberRow[];
+    try { rows = await C.memberQueue(); }
+    catch (e) { q.innerHTML = `<div class="memberempty">${esc(msg(e))}</div>`; return; }
+    if (!rows.length) {
+      q.innerHTML = '<div class="memberempty">Nobody has signed up yet.</div>';
+      return;
+    }
+    const waiting = rows.filter(r => !r.approved).length;
+    q.innerHTML = `<p class="galnote" style="padding-left:0">`
+      + `${rows.length} account${rows.length === 1 ? '' : 's'}`
+      + (waiting ? ` · <b>${waiting} waiting for approval</b>` : ' · none waiting')
+      + `. Nobody can publish to the commons until you approve them.</p>`;
+    for (const m of rows) q.appendChild(memberRow(m));
+    void countPending();
+  }
+
+  function memberRow(m: C.MemberRow): HTMLElement {
+    const d = document.createElement('div');
+    d.className = 'memberrow' + (m.approved ? '' : ' waiting');
+    const joined = new Date(m.created_at).toLocaleDateString();
+    const bits = [m.school, m.country && C.flag(m.country)].filter(Boolean).join(' · ');
+    d.innerHTML =
+      `<div class="memberwho">`
+      + `<div class="membername">${esc(m.display_name)} <span class="membermeta">@${esc(m.handle)}</span></div>`
+      + `<div class="membermeta"><span class="membermail">${esc(m.email)}</span>`
+      + `${bits ? ' · ' + esc(bits) : ''} · joined ${joined}`
+      + ` · ${m.designs} design${m.designs === 1 ? '' : 's'}`
+      + `${m.approved ? '' : ' · <b>waiting</b>'}</div></div>`
+      + `<div class="memberact">`
+      + `<button class="btn ${m.approved ? '' : 'primary'}" data-approve="${m.id}">`
+      + `${m.approved ? 'Revoke' : 'Approve'}</button></div>`;
+
+    d.querySelector<HTMLElement>('[data-approve]')!.onclick = async () => {
+      // Revoking is the destructive direction: their published work stays, but
+      // they cannot add to it, so it deserves a question.
+      if (m.approved && !confirm(
+        `Revoke ${m.display_name}'s access to the commons?\n\n`
+        + 'Designs they have already published stay where they are — this stops '
+        + 'them publishing anything more.')) return;
+      try { await C.setApproved(m.id, !m.approved); await renderMembers(); }
+      catch (e) { alert(msg(e)); }
+    };
+    return d;
+  }
+
+  el('galleryMembers').onclick = () => { void renderMembers(); };
 
   async function renderReports() {
     showReports(true);
@@ -552,8 +648,8 @@ export function mountCommunity(hooks: CommunityHooks) {
 
   el('galleryBtn').onclick = () => { void openGallery(); mineOnly = false; renderGallery(); };
   el('galleryClose').onclick = closeGallery;
-  el('galleryAll').onclick = () => { mineOnly = false; showReports(false); renderGallery(); };
-  el('galleryMine').onclick = () => { mineOnly = true; showReports(false); renderGallery(); };
+  el('galleryAll').onclick = () => { mineOnly = false; renderGallery(); };
+  el('galleryMine').onclick = () => { mineOnly = true; renderGallery(); };
   let t: number | undefined;
   el('gallerySearch').addEventListener('input', () => {
     clearTimeout(t);

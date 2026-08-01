@@ -30,6 +30,10 @@ export interface Profile {
   show_school: boolean;
   /** Confirmed old enough, once, through the age screen. */
   age_confirmed: boolean;
+  /** The commons is invitation-only. Until this is set the editor works in
+   *  full and nothing can be published. */
+  approved: boolean;
+  approved_at: string | null;
   /** Which version of the terms was accepted, and when. */
   terms_version: string | null;
   terms_accepted_at: string | null;
@@ -231,7 +235,9 @@ export async function myProfile(): Promise<Profile | null> {
   return (data as Profile) ?? null;
 }
 
-export async function saveProfile(p: Omit<Profile, 'id' | 'terms_accepted_at'>): Promise<Profile> {
+export async function saveProfile(
+  p: Omit<Profile, 'id' | 'terms_accepted_at' | 'approved' | 'approved_at'>,
+): Promise<Profile> {
   const bad = validateProfile(p);
   if (bad) throw new Error(bad);
   const s = await session();
@@ -340,6 +346,36 @@ export async function report(designId: string, reason: string) {
   if (!s) throw new Error('Sign in to report a design.');
   const { error } = await (await client()).from('reports')
     .insert({ design_id: designId, reporter_id: s.user.id, reason: reason.trim() });
+  if (error) throw new Error(error.message);
+}
+
+// ---- Members and approval --------------------------------------------------
+export interface MemberRow {
+  id: string;
+  handle: string;
+  display_name: string;
+  country: string | null;
+  school: string | null;
+  /** Visible to moderators only — this is how you know who is asking. */
+  email: string;
+  approved: boolean;
+  approved_at: string | null;
+  created_at: string;
+  designs: number;
+}
+
+/** Everyone who has an account, waiting ones first. Returns nothing at all to
+ *  anyone who is not a moderator; that is enforced inside the function. */
+export async function memberQueue(): Promise<MemberRow[]> {
+  const { data, error } = await (await client()).rpc('member_queue');
+  if (error) throw new Error(error.message);
+  return (data ?? []) as MemberRow[];
+}
+
+/** Let someone into the commons, or take them back out. */
+export async function setApproved(memberId: string, approved: boolean) {
+  const { error } = await (await client())
+    .rpc('set_approved', { member: memberId, state: approved });
   if (error) throw new Error(error.message);
 }
 

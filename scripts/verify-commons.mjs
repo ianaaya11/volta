@@ -84,10 +84,10 @@ const CIRCUIT = {
 
 // ---- members ---------------------------------------------------------------
 const stamp = Date.now().toString(36);
-// Supabase runs its own validator over the address and rejects example.com and
-// most unregistered domains outright. `.test` is reserved by RFC 2606 —
-// guaranteed never to resolve, so a confirmation email cannot reach a stranger
-// — and it gets through. Override if your project's validator disagrees.
+// Supabase validates the domain and rejects anything that will not resolve,
+// which rules out every placeholder worth using — example.com, .test, .invalid.
+// So there is no default that reliably works: pass real addresses (a +tag on
+// your own is ideal) and this is only a fallback worth one attempt.
 const DOMAIN = env.VOLTA_TEST_DOMAIN ?? 'volta.test';
 async function member(tag) {
   const email = env[`VOLTA_TEST_${tag}_EMAIL`] ?? `volta-verify-${tag.toLowerCase()}-${stamp}@${DOMAIN}`;
@@ -105,6 +105,15 @@ async function member(tag) {
           + 'necessary before real members ever sign up — configure custom SMTP under '
           + 'Authentication -> Emails.');
       }
+      if (up.error.code === 'email_address_invalid') {
+        throw new Error(
+          `${tag}: ${up.error.message}\n\nSupabase validates the domain, and `
+          + 'rejects addresses that cannot resolve — which is every placeholder '
+          + 'domain worth using in a test. Pass two real addresses you control:\n'
+          + '  VOLTA_TEST_A_EMAIL=... VOLTA_TEST_A_PASSWORD=... \\\n'
+          + '  VOLTA_TEST_B_EMAIL=... VOLTA_TEST_B_PASSWORD=... npm run verify:commons\n'
+          + 'Gmail-style +tags work: you@example.com -> you+volta-a@example.com.');
+      }
       throw new Error(`${tag}: cannot sign up — ${up.error.message}`);
     }
     if (!up.data.session) {
@@ -121,6 +130,9 @@ async function member(tag) {
 
 // ---- the walk --------------------------------------------------------------
 const created = { designs: [] };
+// Left in place when the script stops early to wait for approval, so the same
+// two accounts can be approved and the run repeated rather than starting over.
+
 let A, B;
 try {
   section('Members');
@@ -147,6 +159,28 @@ try {
   // created or edited on somebody else's behalf.
   denied('B cannot edit A\'s profile', await B.sb.from('profiles')
     .update({ display_name: 'hijacked' }).eq('id', A.id).select());
+
+  section('The commons is invitation-only');
+  // The gate that makes a closed pilot possible. Checked before anything else
+  // in this section, because if it does not hold, none of what follows means
+  // what it looks like it means.
+  const own = await A.sb.from('profiles').select('approved').eq('id', A.id).single();
+  const approved = !!own.data?.approved;
+  if (!approved) {
+    const blocked = await A.sb.from('designs').insert({
+      author_id: A.id, title: 'should not appear', circuit: CIRCUIT,
+    }).select();
+    denied('an unapproved member cannot publish', blocked);
+    console.log(`\n${pass} passed, ${fail} failed`);
+    console.log(
+      '\nThe rest of this script needs an approved account. Approve the two it '
+      + 'just made, from the Members tab in the app, or in SQL:\n'
+      + `  update public.profiles set approved = true\n`
+      + `   where handle in ('${handleA}', '${handleB}');\n`
+      + 'then run it again. Everything it created is left in place for that.');
+    process.exit(fail ? 1 : 0);
+  }
+  check('an approved member is let through', approved);
 
   section('Publishing');
   const ins = await A.sb.from('designs').insert({
