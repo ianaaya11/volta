@@ -314,8 +314,10 @@
   #railGroups{flex:1 1 auto;overflow-y:auto;overscroll-behavior:contain;padding:6px 0 16px}
   .railgroup{padding:0 8px}
   /* The Blocks shelf before anything is on it: an empty grid reads as broken,
-     a sentence reads as an invitation. */
-  .railnote{margin:0;padding:2px 8px 8px;font-size:11px;line-height:1.5;color:var(--faint)}
+     a sentence reads as an invitation. It has to span the whole row — dropped
+     into one of the three tile columns it wraps to a word a line. */
+  .railnote{grid-column:1/-1;margin:0;padding:2px 8px 8px;
+    font-size:11px;line-height:1.5;color:var(--faint);text-wrap:pretty}
   .grouphead{display:flex;align-items:center;gap:5px;width:100%;background:none;border:none;
     padding:8px 4px 5px;cursor:pointer;font-family:inherit;font-size:10px;font-weight:600;
     letter-spacing:.07em;text-transform:uppercase;color:var(--faint)}
@@ -872,6 +874,10 @@
     .railgroup .grid{display:flex;flex-direction:row;gap:2px}
     .tool{aspect-ratio:auto;width:50px;height:54px;flex:0 0 auto}
     .railempty{padding:0 12px;white-space:nowrap;align-self:center}
+    /* The phone rail is one horizontal scrolling strip of tiles. A sentence in
+       it is a sentence in front of every tool, so the hint goes away here — the
+       "Make a block" button in the inspector is where the action is anyway. */
+    .railnote{display:none}
 
     #stage{grid-row:3;grid-column:1}
     /* Bottom inset clears the gesture pill / navigation bar. */
