@@ -3046,6 +3046,7 @@ function startSim(){
   mechanics=hasMechanics(); digital=hasDigital();
   circuit.captureTrace=mathMode;
   simNet=net; for(const p of scopeProbes) p.node=net.nodeOf(p.x,p.y);
+  liveShape=netShape(net);
   resetScope(); panelMode='scope';
   simTime=0; running=true;
   setRunButton(true);
@@ -3492,6 +3493,57 @@ function stepDigital(res:Solution){
 }
 /** True when the document holds anything the digital evaluator must run for. */
 const hasDigital=()=>comps.some(c=>isDigital(c.type));
+
+/** A cheap description of the circuit's SHAPE — what is connected to what.
+ *  Values are excluded deliberately: turning a resistor from 1k to 2k must not
+ *  count as a structural change, because syncValues already handles that
+ *  without disturbing the run. */
+function netShape(net:Netlist):string{
+  return (net.grounded?'g':'-')+'|'
+    + net.netComps.map(c=>c.id+':'+c.type+':'+c.nodes.join(',')).sort().join(';');
+}
+let liveShape='';
+
+/** Bring the running solver back in line with a schematic that has changed
+ *  shape.
+ *
+ *  Values reached the live circuit already; topology never did. The netlist was
+ *  built once at Run, so deleting a wire, removing a part or dragging one to a
+ *  new node left the solver happily solving the circuit as it USED to be —
+ *  current still flowing round a loop the user had just cut open, which is the
+ *  simulator telling a confident lie about the thing on screen.
+ *
+ *  Transient history is carried across by component id, so a capacitor that
+ *  survived the edit keeps its charge and the waveform continues instead of
+ *  jumping back to zero. Anything that has just appeared starts from rest,
+ *  which is what a part you have only now added should do. */
+function rebuildLive(){
+  if(!running) return;
+  const net=buildNetlist();
+  const shape=netShape(net);
+  if(shape===liveShape) return;        // values changed, not connections
+  liveShape=shape;
+
+  // A schematic that no longer solves stops, rather than freezing on its last
+  // good answer — a still picture of flowing current is the same lie told once.
+  if(!net.grounded||!net.netComps.length){
+    stopSim();
+    flashHint(net.netComps.length
+      ? 'Simulation stopped — the circuit has no ground reference any more.'
+      : 'Simulation stopped — there is nothing left to solve.');
+    return;
+  }
+
+  const next=new Circuit(net.netComps.map(c=>({...c})));
+  next.t=circuit?circuit.t:simTime;
+  next.captureTrace=mathMode;
+  if(circuit) for(const [id,h] of circuit.state) if(next.state.has(id)) next.state.set(id,{...h});
+  circuit=next; simNet=net; liveIndex=null;
+  mechanics=hasMechanics(); digital=hasDigital();
+  // Probes are pinned to node ids at Run so a drag doesn't flatline a trace;
+  // the ids have just been reassigned, so they have to be pinned again.
+  for(const p of scopeProbes) p.node=net.nodeOf(p.x,p.y);
+}
 
 function syncValues(){ // push edited values into live sim without restarting
   if(!circuit) return;
@@ -4247,6 +4299,10 @@ const snapshot=()=>JSON.stringify(serializeModel());
 
 /** Call after any change to the document to make it undoable. */
 function commit(){
+  // An edit while the simulation is running has to reach the solver. Values
+  // already did, through syncValues; TOPOLOGY did not, and that is what this
+  // is for — see rebuildLive.
+  if(running) rebuildLive();
   undoStack.push(historyPrev);
   if(undoStack.length>HISTORY_LIMIT) undoStack.shift();
   redoStack.length=0;
