@@ -140,3 +140,46 @@ test('changing a value mid-run does not restart the simulation', async ({ page }
     { message: 'a value edit should not stop the simulation' }).toBeGreaterThan(0);
   await expect(page.locator('#runBtn')).toHaveText(/Stop/);
 });
+
+test('deleting the part that forced a fine timestep speeds the run back up',
+  async ({ page }) => {
+    // The timestep comes from the fastest time constant in the circuit. A 1 mH
+    // inductor against a 2 k resistor is 0.5 us where a 1 uF capacitor is 1 ms,
+    // so the inductor wins by a factor of two thousand and every other part
+    // crawls — and it gets that vote even when it is wired to nothing.
+    //
+    // Deleting it mid-run used to leave the step where it was, because
+    // rebuildLive rebuilt the netlist and the solver but never chose the step
+    // again. The RC discharge below then took minutes of real time instead of
+    // a second, which looks exactly like current that will not stop.
+    const g = await blankGrid(page);
+    await page.click('#rail .tool[data-t="select"]');
+    await page.keyboard.press('r');                       // vertical
+    await g.place('V', 2, 2);
+    await g.place('C', 10, 2);
+    await g.place('R', 14, 2);
+    await g.place('L', 22, 2);                            // wired to nothing
+    await g.place('GND', 2, 8);
+    await page.click('#rail .tool[data-t="select"]');
+    for (let i = 0; i < 3; i++) await page.keyboard.press('r');   // back to horizontal
+    await g.place('R', 4, 2);
+    await page.click('#rail .tool[data-t="select"]');
+    await g.wire([2, 2], [4, 2]); await g.wire([6, 2], [10, 2]); await g.wire([10, 2], [14, 2]);
+    await g.wire([2, 4], [10, 4]); await g.wire([10, 4], [14, 4]); await g.wire([2, 4], [2, 8]);
+    await page.click('#rail .tool[data-t="select"]');
+
+    await page.click('#runBtn');
+    await expect(page.locator('#runBtn')).toHaveText(/Stop/);
+    await expect.poll(() => currentDots(page)).toBeGreaterThan(20);
+
+    // Take out the inductor, then the source. What is left is a charged cap
+    // across 1k || 2k — about 0.67 ms of time constant, which should be gone
+    // almost as soon as it is looked at.
+    await page.click('#rail .tool[data-t="delete"]');
+    await page.mouse.click(g.at(22, 3).x, g.at(22, 3).y);
+    await page.mouse.click(g.at(2, 3).x, g.at(2, 3).y);
+
+    await expect.poll(() => currentDots(page),
+      { message: 'the discharge should finish in a moment, not in minutes',
+        timeout: 10_000, intervals: [400] }).toBe(0);
+  });

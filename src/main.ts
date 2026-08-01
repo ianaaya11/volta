@@ -3614,6 +3614,24 @@ function rebuildLive(){
     return;
   }
 
+  // The timestep is chosen from the fastest time constant in the circuit, so a
+  // circuit that has just changed shape needs it chosen again. Without this,
+  // deleting the one part that forced a fine step — even a part connected to
+  // nothing, which still gets a vote — leaves the run stuck at that step for
+  // good, and everything else crawls for the rest of the session. Backward
+  // Euler takes a varying step without complaint: each step uses the current h,
+  // and the stored history is a voltage and a current, neither of which depends
+  // on how it was reached.
+  const prevH=simH;
+  simH=chooseTimestep(net.netComps);
+  if(simH!==prevH){
+    // The reading windows are measured in cycles, converted to frames through
+    // the timestep — so they are wrong now, and the statistics gathered under
+    // the old step are averages over a window that no longer means what it did.
+    sizeReadWindows(net.netComps,simH);
+    readings=new Map();
+  }
+
   const next=new Circuit(net.netComps.map(c=>({...c})));
   next.t=circuit?circuit.t:simTime;
   next.captureTrace=mathMode;
