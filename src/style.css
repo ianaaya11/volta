@@ -710,10 +710,19 @@
      out of it. */
   #aboutView .aboutme,
   :root[data-theme="dark"] #aboutView .aboutme{
-    /* 30% transparent. The blur underneath does most of the separating, which
-       is what lets the fill go this far without the backdrop starting to
-       compete with three paragraphs of light text. */
-    --glass:rgba(24,31,44,.70);
+    /* Barely blurred, and that is the part that actually matters. The shared
+       glass recipe blurs by 16px, which is right behind a feature card whose
+       job is to be a surface and fatal here: the circuits are 2px lines, and
+       16px of blur flattens them into a wash however transparent the fill
+       gets. Lowering the fill alone changes nothing you can see.
+
+       The fill itself has to differ by theme, because "60% transparent" means
+       two different things over two different pages. Over the dark page the
+       card stays dark and light type keeps its contrast. Over the light one
+       the same value blends toward mid-grey, and light type on mid-grey is
+       unreadable — so it holds at 38% there, which with the blur gone is
+       still enough to see the schematic through. */
+    --glass:rgba(24,31,44,.62);
     --glass-edge:transparent;
     --glass-top:rgba(255,255,255,.08);
     --ink:#f2f5fa;
@@ -725,9 +734,17 @@
     --panel2:#2b3446;
     --panel3:#333d51;
     --line:#3a4457;
+    -webkit-backdrop-filter:blur(2px) saturate(1.15);
+    backdrop-filter:blur(2px) saturate(1.15);
     box-shadow:0 2px 8px rgba(0,0,0,.30), 0 18px 44px rgba(0,0,0,.34);
   }
-  :root[data-theme="dark"] #aboutView .aboutme{ --glass:rgba(26,33,46,.72); }
+  /* The dark page can take the full 60%: what shows through is dark too, so
+     the card stays dark enough for light type however far the fill drops.
+     (This replaces a second, later declaration of the same selector that was
+     quietly winning at .72 — two rules for one card, and the wrong one last.) */
+  :root[data-theme="dark"] #aboutView .aboutme{
+    --glass:rgba(26,33,46,.40);
+  }
 
   /* Small gold label above the name. */
   .abouteyebrow{margin:0 0 4px;font-size:11px;font-weight:600;letter-spacing:.14em;
