@@ -710,10 +710,10 @@
      out of it. */
   #aboutView .aboutme,
   :root[data-theme="dark"] #aboutView .aboutme{
-    /* Translucent, but not so far that the backdrop starts competing with the
-       text: a portrait and three paragraphs still have to be the thing you
-       read. The blur underneath does most of the separating. */
-    --glass:rgba(24,31,44,.78);
+    /* 30% transparent. The blur underneath does most of the separating, which
+       is what lets the fill go this far without the backdrop starting to
+       compete with three paragraphs of light text. */
+    --glass:rgba(24,31,44,.70);
     --glass-edge:transparent;
     --glass-top:rgba(255,255,255,.08);
     --ink:#f2f5fa;
