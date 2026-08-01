@@ -967,7 +967,15 @@ function draw(){
   const wc = running? solveWireCurrents(lastResult) : new Map<number,number>();
   wires.forEach((w,wi)=>{
     const col = lastResult? nodeColor(w.x1,w.y1) : T.wire;
-    ctx.strokeStyle=col||T.wire; ctx.lineWidth=3; ctx.lineCap='round';
+    // A selected wire gets a soft accent halo under it. Same reasoning as a
+    // selected part: say "this one" without drawing another boundary — and a
+    // wire is a line, so a box round it would be all box and no wire.
+    if(w===selectedWire){
+      ctx.strokeStyle=T.accent; ctx.globalAlpha=0.28; ctx.lineWidth=11; ctx.lineCap='round';
+      ctx.beginPath(); ctx.moveTo(gx(w.x1),gy(w.y1)); ctx.lineTo(gx(w.x2),gy(w.y2)); ctx.stroke();
+      ctx.globalAlpha=1;
+    }
+    ctx.strokeStyle=(w===selectedWire?T.accent:col||T.wire); ctx.lineWidth=3; ctx.lineCap='round';
     ctx.beginPath(); ctx.moveTo(gx(w.x1),gy(w.y1)); ctx.lineTo(gx(w.x2),gy(w.y2)); ctx.stroke();
     if(running){ drawFlow(gx(w.x1),gy(w.y1),gx(w.x2),gy(w.y2), wc.get(wi)||0); }
   });
@@ -2020,6 +2028,10 @@ const PLACE_TYPES:PartType[]=['R','POT','V','VS','SQ','I','C','CP','L','XF','D',
   'SW','PB','PBNC','RLY','MOT','QN','QP','MN','MP','OA','E','G','F','H','GND','MCU',
   'LOGIC','SUB',...(Object.keys(DIGITAL) as DigitalType[])];
 const isPlaceType=(t:Tool):t is PartType=>(PLACE_TYPES as string[]).includes(t);
+/** A wire picked out with the Select tool. Wires were the one thing on the
+ *  schematic that could be drawn but never selected, so the ordinary
+ *  click-then-Delete that works on every part did nothing to them. */
+let selectedWire:Wire|null=null;
 let mouse:{px:number;py:number;gx:number|null;gy:number|null}={px:0,py:0,gx:null,gy:null};
 let wireStart:Pt|null=null;
 
@@ -2136,7 +2148,7 @@ let multi:Comp[]=[];
 
 /** Take the whole schematic — the setup for "move it" or "delete it". */
 function selectAll(){
-  multi=comps.slice(); selected=null;
+  multi=comps.slice(); selected=null; selectedWire=null;
   renderInspector(); draw();
   if(multi.length) flashHint(`${multi.length} part${multi.length===1?'':'s'} selected — drag to move them together, `
     +'<span class="kbd">Del</span> to remove them.');
@@ -2446,23 +2458,65 @@ const pointerPos=(e:PointerEvent):Pt=>{
 // pins used to serve, but a digital chip has all its inputs down one edge, so
 // its pin centroid sits off the body entirely and the middle of the symbol —
 // the obvious place to click — missed it.
-function hitComponent(gxu:number,gyu:number):Comp|null{
-  let best:Comp|null=null, bd=1e9, bc=1e9;
+/** The part under a click, and how far outside its actual outline that click
+ *  landed.
+ *
+ *  Two distances, and the difference matters. `d` is measured from a footprint
+ *  PADDED by 0.7 of a square, which is what makes a part easy to grab — you can
+ *  aim near it rather than at it. `bare` is measured from the outline itself.
+ *
+ *  Anything choosing between a part and a wire has to compare `bare`. The
+ *  padding reaches 1.4 squares past the pins, and every wire in the schematic
+ *  starts at a pin, so judging by `d` makes the first stretch of every wire
+ *  unreachable and a short link between two adjacent parts unclickable
+ *  altogether. */
+function hitComponentAt(gxu:number,gyu:number):{c:Comp;d:number;bare:number}|null{
+  let best:Comp|null=null, bd=1e9, bc=1e9, bbare=1e9;
   for(const c of comps){
     const ps=pinsOf(c);
     const xs=ps.map(p=>p.x), ys=ps.map(p=>p.y);
     const x0=Math.min(...xs), x1=Math.max(...xs), y0=Math.min(...ys), y1=Math.max(...ys);
     const cxu=(x0+x1)/2, cyu=(y0+y1)/2;
-    // Distance outside the footprint, padded so the leads count as part of it.
-    const dx=Math.max(0,Math.abs(gxu-cxu)-((x1-x0)/2+0.7));
-    const dy=Math.max(0,Math.abs(gyu-cyu)-((y1-y0)/2+0.7));
+    const hw=(x1-x0)/2, hh=(y1-y0)/2;
+    const dx=Math.max(0,Math.abs(gxu-cxu)-(hw+0.7));
+    const dy=Math.max(0,Math.abs(gyu-cyu)-(hh+0.7));
     const d=Math.hypot(dx,dy);
     if(d>=0.7) continue;
     // Overlapping parts all score 0, so break the tie on which centre is nearer.
     const cd=Math.hypot(cxu-gxu,cyu-gyu);
-    if(d<bd-1e-9||(Math.abs(d-bd)<1e-9&&cd<bc)){ bd=d; bc=cd; best=c; }
+    if(d<bd-1e-9||(Math.abs(d-bd)<1e-9&&cd<bc)){
+      bd=d; bc=cd; best=c;
+      bbare=Math.hypot(Math.max(0,Math.abs(gxu-cxu)-hw),Math.max(0,Math.abs(gyu-cyu)-hh));
+    }
   }
-  return best;
+  return best?{c:best,d:bd,bare:bbare}:null;
+}
+function hitComponent(gxu:number,gyu:number):Comp|null{
+  return hitComponentAt(gxu,gyu)?.c??null;
+}
+
+/** The wire under a click, and how far off it the click landed. */
+function hitWireAt(gxu:number,gyu:number):{w:Wire;i:number;d:number}|null{
+  let bi=-1,bd=WIRE_GRAB;
+  wires.forEach((w,i)=>{ const d=distToSeg(gxu,gyu,w); if(d<bd){ bd=d; bi=i; } });
+  return bi>=0?{w:wires[bi],i:bi,d:bd}:null;
+}
+/** How near a click has to be, in grid squares, to count as on a wire. */
+const WIRE_GRAB=0.55;
+
+/** Which of the two the user meant.
+ *
+ *  A part wins whenever the click is ON it — inside its outline, pins included.
+ *  That matters at a pin, where a wire starts and both are at distance zero:
+ *  handing that to the wire would make a part undraggable by its own lead.
+ *  Anywhere else the nearer of the two wins, measured from the part's real
+ *  outline rather than from its generous grab padding. */
+function pickTarget(gxu:number,gyu:number):{comp?:Comp;wire?:{w:Wire;i:number}}{
+  const c=hitComponentAt(gxu,gyu), w=hitWireAt(gxu,gyu);
+  if(c&&w) return (c.bare<1e-9||c.bare<w.d)?{comp:c.c}:{wire:w};
+  if(w) return {wire:w};
+  if(c) return {comp:c.c};
+  return {};
 }
 
 // Input is handled through POINTER events, not mouse events, so one code path
@@ -2584,15 +2638,25 @@ stage.addEventListener('pointerdown',e=>{
     resetScope(); commit(); draw(); return;
   }
   if(tool==='delete'){
-    const c=hitComponent(g.x,g.y); if(c){ comps=comps.filter(k=>k!==c); if(selected===c)selected=null; }
-    else { // delete nearest wire
-      let bi=-1,bd=0.5; wires.forEach((w,i)=>{ const d=distToSeg(g.x,g.y,w); if(d<bd){bd=d;bi=i;} });
-      if(bi>=0) wires.splice(bi,1);
-    }
+    const t=pickTarget(g.x,g.y);
+    if(t.comp){ const c=t.comp; comps=comps.filter(k=>k!==c); if(selected===c)selected=null; }
+    else if(t.wire){ wires.splice(t.wire.i,1); if(selectedWire===t.wire.w) selectedWire=null; }
     refreshMeta(); commit(); renderInspector(); draw(); return;
   }
   // select tool
-  const c=hitComponent(g.x,g.y);
+  const target=pickTarget(g.x,g.y);
+  const c=target.comp??null;
+  // A wire the user aimed at, and no part nearer. Selecting it is the whole
+  // point: Delete then works on it exactly as it works on a component.
+  if(!c&&target.wire&&!e.shiftKey){
+    selectedWire=target.wire.w; selected=null; clearMulti();
+    renderInspector(); draw();
+    // Still fall through to panning so a drag from here moves the view.
+    panning={px,py,ox:view.ox,oy:view.oy};
+    try{ stage.setPointerCapture(e.pointerId); }catch{ /* best-effort */ }
+    return;
+  }
+  selectedWire=null;
   // While the simulation runs, the schematic doubles as a control panel:
   // tapping a switch throws it and holding a push button presses it, which is
   // what these parts are for. Stopped, the same tap just selects the part.
@@ -2668,10 +2732,18 @@ window.addEventListener('keydown',e=>{
   if(e.key==='-'||e.key==='_'){ zoomAt(cx,cy,1/1.2); return; }
   if(e.key==='0'){ fitView(); return; }
   if(e.key==='r'||e.key==='R'){ ghostRot=turn(ghostRot); if(selected){ selected.rot=turn(rotOf(selected)); refreshMeta(); commit(); } draw(); }
-  if(e.key==='Escape'){ wireStart=null; wireExit=null; wireBox=null; selected=null; clearMulti(); setTool('select'); renderInspector(); draw(); }
+  if(e.key==='Escape'){ wireStart=null; wireExit=null; wireBox=null; selected=null; selectedWire=null; clearMulti(); setTool('select'); renderInspector(); draw(); }
   if((e.key==='Delete'||e.key==='Backspace')&&multi.length){ deleteMulti(); return; }
-  if((e.key==='Delete'||e.key==='Backspace')&&selected){ comps=comps.filter(k=>k!==selected); selected=null; refreshMeta(); commit(); renderInspector(); draw(); }
+  if((e.key==='Delete'||e.key==='Backspace')&&selected){ comps=comps.filter(k=>k!==selected); selected=null; refreshMeta(); commit(); renderInspector(); draw(); return; }
+  if((e.key==='Delete'||e.key==='Backspace')&&selectedWire){ deleteSelectedWire(); return; }
 });
+function deleteSelectedWire(){
+  const i=selectedWire?wires.indexOf(selectedWire):-1;
+  if(i<0){ selectedWire=null; return; }
+  wires.splice(i,1); selectedWire=null;
+  refreshMeta(); commit(); renderInspector(); draw();
+}
+
 function distToSeg(x:number,y:number,w:Wire){
   const x1=w.x1,y1=w.y1,x2=w.x2,y2=w.y2; const dx=x2-x1,dy=y2-y1;
   const t=Math.max(0,Math.min(1,((x-x1)*dx+(y-y1)*dy)/(dx*dx+dy*dy||1)));
@@ -3132,6 +3204,26 @@ function updateVRange(){
 // ===========================================================================
 function renderInspector(){
   const body=el('inspectorBody');
+  // A wire selection is a reference INTO the wires array, and several paths
+  // replace that array wholesale — Open, Clear, every gallery loader. Checking
+  // it is still present here catches all of them at once, which is better than
+  // remembering to clear it in each and missing one.
+  if(selectedWire&&!wires.includes(selectedWire)) selectedWire=null;
+  if(!selected&&selectedWire){
+    const w=selectedWire;
+    const len=Math.abs(w.x2-w.x1)+Math.abs(w.y2-w.y1);
+    body.innerHTML=`<h3>Wire</h3>
+      <div class="empty">A ${len===0?'joint':`${len}-square`} link from
+        (${w.x1}, ${w.y1}) to (${w.x2}, ${w.y2}).
+        Deleting it breaks whatever it joined — the parts stay put.</div>
+      <hr><div class="inspectoract">
+        <button class="btn danger" id="wireDel"><svg class="ic" viewBox="0 0 24 24"><use href="#i-trash"/></svg>Delete wire</button>
+        <button class="btn" id="wireNone">Deselect</button>
+      </div>`;
+    document.getElementById('wireDel')?.addEventListener('click',deleteSelectedWire);
+    document.getElementById('wireNone')?.addEventListener('click',()=>{ selectedWire=null; renderInspector(); draw(); });
+    renderReadout(); return;
+  }
   if(!selected&&multi.length){
     body.innerHTML=`<h3>Selection</h3>
       <div class="empty"><b>${multi.length}</b> part${multi.length===1?'':'s'} selected.
@@ -3894,7 +3986,7 @@ function miniSymbol(t:Tool){
   return '';
 }
 function setTool(t:Tool){ tool=t; wireStart=null; wireExit=null; wireBox=null; updateRail();
-  const hints:Partial<Record<Tool,string>>={select:'Click a part to select & drag. Edit its value on the right.',
+  const hints:Partial<Record<Tool,string>>={select:'Click a part to select & drag, or a wire to select and delete it.',
     wire:'Click pin to pin to lay wire. Double-click to finish a run.',
     probe:'Click a node/wire to scope its voltage. Click again to remove. Then press Run.',
     delete:'Click a component or wire to remove it.'};
@@ -4371,7 +4463,7 @@ el('runBtn').onclick=()=>{ running?stopSim():startSim(); };
 // `multi` holds references to parts, so clearing the document without clearing
 // it leaves the inspector offering to delete two components that no longer
 // exist — and "Make a block" offering to wrap them up.
-el('clearBtn').onclick=()=>{ stopSim(); comps=[];wires=[];lastResult=null;selected=null; multi=[]; scopeProbes=[]; scopeBuf=null; bodeData=null; panelMode='scope'; refreshMeta(); commit(); renderInspector(); draw(); };
+el('clearBtn').onclick=()=>{ stopSim(); comps=[];wires=[];lastResult=null;selected=null; multi=[]; selectedWire=null; scopeProbes=[]; scopeBuf=null; bodeData=null; panelMode='scope'; refreshMeta(); commit(); renderInspector(); draw(); };
 el('bodeBtn').onclick=runBode;
 el('resetBtn').onclick=resetSim;
 el('fitBtn').onclick=fitView;
