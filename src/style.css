@@ -46,19 +46,21 @@
     --cv-label:#7a879b;        /* value labels and axes */
     --cv-accent:#1f6feb;
     --cv-junction:#55627a;
-    /* Moving current dots. Lime rather than amber: amber is the app's warm
+    /* Moving current dots. Green rather than amber: amber is the app's warm
        chrome colour now (the primary buttons, the developer card), and current
        is the one thing on the canvas that should not share a hue with anything
-       in the frame around it. Deep enough here to hold up on a white canvas —
-       a lime bright enough for the dark theme washes out on this one. */
-    --cv-current:#5cb300;
+       in the frame around it.
+       One value for both themes, unusually — normally a colour this bright is
+       unreadable on a white page, but these dots are only ever drawn ON a wire,
+       and against the blue and red of the voltage ramp it reads either way. */
+    --cv-current:#3dff4e;
     --cv-panel-bg:rgba(252,253,255,0.96);
     --cv-panel-line:#ccd5e2;
     --cv-panel-ink:#2b3440;
     --cv-plot-grid:#e6ebf3;
     --cv-zero-line:#aab6c8;
     --cv-sel-v:#2b3440;
-    --cv-sel-i:#5cb300;        /* the scope's current trace — same idea, same colour */
+    --cv-sel-i:#3dff4e;        /* the scope's current trace — same idea, same colour */
     --cv-mcu-on:#a4670f; --cv-mcu-off:#eef2f7; --cv-mcu-on-ink:#ffffff;
     --cv-seg-on:#d8382c; --cv-seg-off:#e9edf3;
     --cv-highlight:#ffe487;
@@ -101,14 +103,14 @@
     --cv-label:#96a1b3;
     --cv-accent:#5b9cff;
     --cv-junction:#8b97ad;
-    --cv-current:#a3e635;
+    --cv-current:#3dff4e;
     --cv-panel-bg:rgba(35,40,51,0.96);
     --cv-panel-line:#3c4455;
     --cv-panel-ink:#dde3ec;
     --cv-plot-grid:#313847;
     --cv-zero-line:#5a6479;
     --cv-sel-v:#d7dde7;
-    --cv-sel-i:#a3e635;
+    --cv-sel-i:#3dff4e;
     --cv-mcu-on:#e0a04a; --cv-mcu-off:#2b3140; --cv-mcu-on-ink:#111620;
     /* Off segments must stay visible against --cv-body, or the display reads as
        a floating glyph instead of a seven-segment digit. */

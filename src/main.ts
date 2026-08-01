@@ -92,13 +92,13 @@ const T={
   label:'#7a879b',        // value labels and axes
   accent:'#1f6feb',
   junction:'#55627a',
-  current:'#5cb300',      // moving current dots
+  current:'#3dff4e',      // moving current dots
   panelBg:'rgba(252,253,255,0.96)',
   panelLine:'#ccd5e2',
   panelInk:'#2b3440',
   plotGrid:'#e6ebf3',
   zeroLine:'#aab6c8',
-  selV:'#2b3440', selI:'#5cb300',
+  selV:'#2b3440', selI:'#3dff4e',
   mcuOn:'#a4670f', mcuOff:'#eef2f7', mcuOnInk:'#ffffff',
   segOn:'#d8382c', segOff:'#e9edf3',
   selBody:'#eaf1fe',     // body fill while selected, so the tint reads through
