@@ -254,6 +254,38 @@ reconfiguration. Verified by serving `dist/` from a subdirectory: the app boots,
 the service worker registers with the right scope, and pulling the network still
 leaves a working editor.
 
+### Age, consent and leaving
+The commons is for members of **15 and over**. The editor is not age-gated at
+all — it needs no account and keeps nothing, so nobody is turned away from the
+thing the app is actually for.
+
+Creating an account asks for a date of birth and for the terms to be accepted.
+The date is used to work out an age and then **discarded** — storing it would
+mean holding a stronger identifier than anything else in the table, on exactly
+the members it would matter most for, to answer a question already answered.
+What is kept is `age_confirmed`, and which version of the terms was accepted and
+when; a boolean cannot answer "did they agree to *these* terms".
+
+Both are enforced by the database, not by the dialog that asks: the
+`designs_insert` policy requires a profile with `age_confirmed` set and a
+`terms_version` recorded. The browser talks to Postgres directly, so anything
+checked only in client code is a suggestion.
+
+Members can delete their own account from the account panel. That removes the
+login, which cascades through the profile to every design published under it.
+It goes through `delete_me()`, a security-definer function whose only subject is
+`auth.uid()` — the caller can delete themselves and nobody else. Without it the
+row in `auth.users` would survive, leaving an email address behind after
+somebody had asked to be forgotten.
+
+> **`MIN_AGE = 15` is a starting point, not legal advice.** GDPR sets the age at
+> which a person can consent for themselves at 16 unless a member state lowers
+> it, and several have not — Ireland, Germany, the Netherlands and Poland among
+> them, where a 15-year-old still needs a parent. The constant lives in
+> `src/community.ts` so that decision has one home. **The Terms and Privacy
+> notice in the app are drafts and say so on their face; they need a lawyer
+> before launch.**
+
 ### Email delivery — do this before inviting anyone
 Supabase's built-in mailer is for development only: **two messages an hour**,
 and on a free project it delivers **only to your own team members' addresses**.

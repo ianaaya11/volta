@@ -28,6 +28,53 @@ export interface Profile {
   country: string | null;
   school: string | null;
   show_school: boolean;
+  /** Confirmed old enough, once, through the age screen. */
+  age_confirmed: boolean;
+  /** Which version of the terms was accepted, and when. */
+  terms_version: string | null;
+  terms_accepted_at: string | null;
+}
+
+// ---- Age and consent -------------------------------------------------------
+//  Volta's commons is for members of 15 and over. Below that the editor still
+//  works in full — it needs no account and keeps nothing — so an age screen
+//  turns nobody away from the thing the app is for. It only decides who can
+//  have an account, publish, and be seen by strangers.
+//
+//  15 is not a universally safe line. GDPR sets the age at which a person can
+//  consent for themselves at 16 unless a member state lowers it, and several
+//  have not: Ireland, Germany, the Netherlands and Poland among them. A
+//  15-year-old there still needs a parent. This constant is where that decision
+//  lives so it can be raised, or made to depend on country, without hunting
+//  through the UI for it — and it is a decision for a lawyer, not for this file.
+export const MIN_AGE = 15;
+
+/** Which terms these are. Bumping this makes every member accept again, which
+ *  is the point of recording a version rather than a boolean. */
+export const TERMS_VERSION = '2026-08-01';
+
+/** Whole years old on `on`, from a date of birth. */
+export function ageOn(dob: Date, on: Date): number {
+  let age = on.getFullYear() - dob.getFullYear();
+  const m = on.getMonth() - dob.getMonth();
+  if (m < 0 || (m === 0 && on.getDate() < dob.getDate())) age--;
+  return age;
+}
+
+/** Is this date of birth old enough? Returns null if it is, or why not.
+ *
+ *  A neutral screen — "when were you born" — rather than "are you over 15",
+ *  which asks a child a leading question and gets the answer it invited. */
+export function checkAge(dobText: string, now: Date = new Date()): string | null {
+  if (!dobText) return 'Enter your date of birth.';
+  const dob = new Date(dobText + 'T00:00:00');
+  if (Number.isNaN(dob.getTime())) return 'That date does not look right.';
+  if (dob > now) return 'That date is in the future.';
+  const age = ageOn(dob, now);
+  if (age > 120) return 'That date does not look right.';
+  if (age < MIN_AGE) return `Volta's commons is for members aged ${MIN_AGE} and over. `
+    + 'The editor itself is free to use without an account, and always will be.';
+  return null;
 }
 
 export interface GalleryItem {
@@ -77,6 +124,7 @@ export const HANDLE_RE = /^[a-z0-9_]{3,20}$/;
 export function validateProfile(p: {
   handle: string; display_name: string; country?: string | null;
   school?: string | null; show_school?: boolean;
+  age_confirmed?: boolean; terms_version?: string | null;
 }): string | null {
   if (!HANDLE_RE.test(p.handle)) {
     return 'Handle must be 3–20 characters: lowercase letters, numbers or underscores.';
@@ -87,6 +135,10 @@ export function validateProfile(p: {
   if (p.school && p.school.length > 80) return 'School name must be 80 characters or fewer.';
   // Switching the school on without naming one would publish an empty label.
   if (p.show_school && !p.school?.trim()) return 'Add your school, or leave "show my school" off.';
+  // The database refuses to publish without these; saying so here is kinder
+  // than a policy violation coming back from a round trip.
+  if (p.age_confirmed === false) return 'Confirm your date of birth first.';
+  if (p.terms_version === null) return 'Accept the terms and the privacy notice first.';
   return null;
 }
 
@@ -179,13 +231,16 @@ export async function myProfile(): Promise<Profile | null> {
   return (data as Profile) ?? null;
 }
 
-export async function saveProfile(p: Omit<Profile, 'id'>): Promise<Profile> {
+export async function saveProfile(p: Omit<Profile, 'id' | 'terms_accepted_at'>): Promise<Profile> {
   const bad = validateProfile(p);
   if (bad) throw new Error(bad);
   const s = await session();
   if (!s) throw new Error('Sign in first.');
   const row = { ...p, id: s.user.id, display_name: p.display_name.trim(),
-    school: p.school?.trim() || null };
+    school: p.school?.trim() || null,
+    // Stamped here rather than taken from the client, so the record is of when
+    // the server saw the acceptance.
+    ...(p.terms_version ? { terms_accepted_at: new Date().toISOString() } : {}) };
   const { data, error } = await (await client())
     .from('profiles').upsert(row).select().single();
   // 23505 is Postgres' unique violation — here it can only be the handle.
@@ -264,6 +319,20 @@ export async function myDesigns(): Promise<GalleryItem[]> {
 export async function deleteDesign(id: string) {
   const { error } = await (await client()).from('designs').delete().eq('id', id);
   if (error) throw new Error(error.message);
+}
+
+/** Leave, and take everything with you.
+ *
+ *  Deletes the login, which cascades through the profile to every design
+ *  published under it. Irreversible, and deliberately so — a "deactivated"
+ *  account that still holds an email address is not what someone asking to be
+ *  deleted has asked for. */
+export async function deleteAccount() {
+  const s = await session();
+  if (!s) throw new Error('Sign in first.');
+  const { error } = await (await client()).rpc('delete_me');
+  if (error) throw new Error(error.message);
+  await signOut();
 }
 
 export async function report(designId: string, reason: string) {

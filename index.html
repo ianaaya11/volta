@@ -241,12 +241,10 @@
           work automatically.</p></article>
       </section>
 
-      <!-- ==== EDIT ME ==================================================
-           Everything below is yours. Replace the photo by dropping a file at
-           public/about-photo.jpg, and rewrite the two paragraphs in your own
-           words — they are a starting point, not a biography I can write for
-           you.
-           ============================================================== -->
+      <!-- The bio below is written from what Isaac told me about himself:
+           six years a software engineer, some computer engineering at
+           university, and a long-standing pull toward electronics. Reword
+           freely — it should sound like you saying it, not like me. -->
       <section class="aboutme">
         <div class="aboutphoto">
           <img id="aboutImg" src="./about-photo.webp" alt="Mizzina" />
@@ -260,15 +258,25 @@
           <h2>Mizzina</h2>
           <p class="aboutrole">Software / ML Engineer</p>
           <p>
-            I build tools that make hard things legible. Volta came out of wanting a circuit
-            simulator that shows you what is happening rather than just what the answer is —
-            one that runs on whatever device a student already owns, needs no licence, no
-            install and no reliable internet connection, and is honest enough to show its own
-            working when you ask.
+            I have spent the last six years building software. Somewhere in the middle of a
+            computer engineering course at university I met the other side of it — the side
+            where the abstractions stop and something physical is actually happening — and I
+            have been quietly fascinated by electronics design ever since. Volta is what
+            happens when those two interests stop taking turns.
           </p>
           <p>
-            The commons is the other half of the idea: circuits are easier to learn from when
-            you can open someone else's, take it apart, and put it back together differently.
+            The tools I learned on would tell you the answer without ever showing you the
+            circuit thinking. I wanted one that does the opposite: current you can watch
+            moving, wires that take their colour from their voltage, and a Math panel that
+            will show you the matrix it just solved if you ask it to. It runs on whatever
+            device a student already owns, needs no licence and no install, and keeps working
+            when the connection does not.
+          </p>
+          <p>
+            The commons is the other half of the idea. Circuits are far easier to learn from
+            when you can open somebody else's, take it apart, and put it back together
+            differently — which is roughly how I learned to write software, and there is no
+            reason electronics should be lonelier than that.
           </p>
         </div>
       </section>
@@ -290,7 +298,165 @@
       <footer class="aboutfoot">
         Volta · MIT-licensed source · designs in the commons shared under
         <a id="aboutLicLink" target="_blank" rel="noopener">CC BY-SA 4.0</a>
+        · <button class="linkbtn inline" id="aboutTerms">Terms</button>
+        · <button class="linkbtn inline" id="aboutPrivacy">Privacy</button>
       </footer>
+    </div>
+  </div>
+
+  <!-- ==== Terms & privacy ============================================== -->
+  <div id="legalView" hidden>
+    <header class="galhead">
+      <div class="brand">
+        <svg class="bolt" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2L4 14h6l-1 8 9-12h-6z"/></svg>
+        <b class="wordmark">Volta</b><span class="brandsub" id="legalWhich">Terms</span>
+      </div>
+      <!-- The two are companion documents and get read together, so switching
+           between them should not mean backing out to the page that linked
+           here — which, when that page is the sign-up form, means losing what
+           has been typed into it. -->
+      <div class="segs">
+        <button type="button" class="seg" data-legal="terms">Terms</button>
+        <button type="button" class="seg" data-legal="privacy">Privacy</button>
+      </div>
+      <div class="sep"></div>
+      <button class="btn primary" id="legalClose"><svg class="ic" viewBox="0 0 24 24"><use href="#i-back"/></svg><span>Back</span></button>
+    </header>
+    <div class="legalbody">
+      <p class="draftbanner"><b>Draft — not yet reviewed by a lawyer.</b>
+        This was written to be accurate about what Volta actually does, so that
+        somebody qualified has a real document to correct rather than a blank
+        page. Do not publish it as it stands.</p>
+
+      <article id="legalTerms">
+        <h1>Terms of use</h1>
+        <p class="legalmeta">Version 2026-08-01</p>
+
+        <h2>1. What Volta is</h2>
+        <p>Volta is a circuit simulator that runs in your browser. The editor
+          needs no account, sends nothing anywhere, and keeps working offline.
+          Everything in these terms concerns <b>the commons</b> — the optional
+          part where members publish designs for others to open and build on.</p>
+
+        <h2>2. Who may join</h2>
+        <p>You must be at least 15 years old to create an account. If the law
+          where you live sets a higher age at which you can agree to this
+          yourself, that age applies to you instead. Under 15, the editor
+          remains free to use in full; only the commons is closed to you.</p>
+
+        <h2>3. Your account</h2>
+        <p>Keep your password to yourself. Tell us if you think someone else has
+          it. You are responsible for what is published from your account.</p>
+
+        <h2>4. What you publish</h2>
+        <p>You keep the copyright in your designs. By publishing one to the
+          commons you licence it to everyone under
+          <b>Creative Commons Attribution-ShareAlike 4.0</b>: anyone may use it,
+          change it and republish it, provided they credit you and share their
+          version on the same terms.</p>
+        <p>That licence cannot be withdrawn. You may delete a design, and it will
+          leave the commons — but copies others have already made, and work they
+          have already built on it, remain theirs to keep and to share. This is
+          what makes a commons a commons, and it is why the licence is shown and
+          agreed to at the moment of publishing rather than buried here.</p>
+
+        <h2>5. What you may not publish</h2>
+        <p>Anything unlawful; anything that harasses, bullies or endangers
+          another person; anyone else's work presented as your own; personal
+          information about someone who has not agreed to it; or anything that
+          exists to interfere with the service or with other members.</p>
+
+        <h2>6. Moderation</h2>
+        <p>Every published design carries a Report button. A moderator can
+          remove a design from the commons. We may suspend or remove an account
+          that repeatedly breaks these terms.</p>
+
+        <h2>7. Leaving</h2>
+        <p>You can delete your account at any time from the account panel. That
+          removes your login, your profile and every design you have published.
+          It is immediate and cannot be undone.</p>
+
+        <h2>8. No warranty</h2>
+        <p>Volta is a teaching and design tool, not a certified engineering
+          instrument. Its results are as good as its models and its author can
+          make them, and they are not a substitute for your own judgement.
+          <b>Do not rely on it for anything where a wrong answer is dangerous or
+          expensive.</b> It is provided as it is, without warranty of any kind.</p>
+
+        <h2>9. Changes</h2>
+        <p>If these terms change materially, the version number changes and you
+          will be asked to accept the new ones before publishing again.</p>
+      </article>
+
+      <article id="legalPrivacy" hidden>
+        <h1>Privacy notice</h1>
+        <p class="legalmeta">Version 2026-08-01</p>
+
+        <h2>The short version</h2>
+        <p>The editor collects nothing. If you join the commons, we hold the
+          least we can get away with: an email address so you can sign in, a
+          display name and a handle so your work can be credited, and
+          optionally a country and a school. Nothing is sold, and nothing is
+          shared with advertisers, because there are none.</p>
+
+        <h2>Using Volta without an account</h2>
+        <p>Nothing leaves your device. Your circuits, your preferences and your
+          Anthropic API key if you set one are stored in your own browser and
+          are never sent to us. There is no analytics and there are no tracking
+          cookies.</p>
+
+        <h2>If you join the commons</h2>
+        <table class="legaltable">
+          <tr><th>What</th><th>Why</th><th>Shown publicly</th></tr>
+          <tr><td>Email address</td><td>To sign you in and let you reset a password</td><td>No</td></tr>
+          <tr><td>Handle and display name</td><td>To credit your published designs</td><td>Yes</td></tr>
+          <tr><td>Country</td><td>Optional. To show the commons is worldwide</td><td>Yes, if given</td></tr>
+          <tr><td>School</td><td>Optional, and off by default</td><td>Only if you switch it on</td></tr>
+          <tr><td>That you confirmed your age and accepted these terms</td><td>To show we asked</td><td>No</td></tr>
+          <tr><td>Designs you publish</td><td>They are the point of the commons</td><td>Yes</td></tr>
+        </table>
+
+        <h2>Your date of birth</h2>
+        <p>Asked once, when you create an account, to work out whether you are
+          old enough. It is used and thrown away. We do not store it, because
+          storing it would mean holding a stronger identifier than anything else
+          here in order to answer a question we already have the answer to.</p>
+
+        <h2>Your school</h2>
+        <p>Off unless you switch it on, and the rule is applied by the database
+          rather than by the page — a design cannot show a school its author did
+          not choose to show, whatever any part of the app asks for. Your name
+          next to your school and your town is the combination that says where
+          to find you, which is why this one is opt-in.</p>
+
+        <h2>How long we keep it</h2>
+        <p>Until you delete your account, which you can do yourself at any time
+          from the account panel. That removes your login, your profile and
+          every design you have published, immediately. Designs others have
+          already copied or built on remain theirs, under the licence you
+          published them with.</p>
+
+        <h2>Your rights</h2>
+        <p>You can see everything we hold about you in the account panel and in
+          <b>My designs</b>. You can correct it there, and you can delete all of
+          it there. If you would rather ask a person, or you want a copy of your
+          data in a portable form, get in touch.</p>
+
+        <h2>Where it lives</h2>
+        <p>Accounts and published designs are stored with Supabase, our database
+          provider, in the region chosen when the project was set up. Email for
+          sign-up confirmation and password resets is sent through our email
+          provider. Neither uses your data for anything but providing that
+          service to us.</p>
+
+        <h2>Children</h2>
+        <p>The commons is for members of 15 and over. If you believe a younger
+          member has an account, tell us and we will remove it.</p>
+
+        <h2>Contact</h2>
+        <p class="legalgap">[Contact address to be filled in before publishing.
+          A privacy notice without a way to reach a human is not one.]</p>
+      </article>
     </div>
   </div>
 
@@ -306,7 +472,18 @@
           members' work. Everything in the editor keeps working without an account.</p>
         <div class="field"><label>Email</label><input id="authEmail" type="email" autocomplete="email" /></div>
         <div class="field"><label>Password</label><input id="authPassword" type="password" autocomplete="current-password" /></div>
+        <!-- Only needed to CREATE an account. Asked as a date rather than as
+             "are you over 15", which is a leading question and gets the answer
+             it invites. The date is used and discarded — never stored. -->
+        <div id="authNewOnly" hidden>
+          <div class="field"><label>Date of birth — used to check your age, then discarded</label>
+            <input id="authDob" type="date" autocomplete="bday" /></div>
+          <label class="check"><input type="checkbox" id="authTerms" />
+            <span>I have read and accept the <a href="#" id="authTermsLink">Terms</a>
+              and the <a href="#" id="authPrivacyLink">Privacy notice</a>.</span></label>
+        </div>
         <button class="linkbtn" id="authForgot">Forgot your password?</button>
+        <button class="linkbtn" id="authWhyAge" hidden>Why is Volta asking my age?</button>
         <div id="authStatus"></div>
         <div class="sheetfoot">
           <button class="btn ghost" id="authSignUp">Create account</button>
@@ -347,6 +524,14 @@
         <div class="sheetfoot">
           <button class="btn ghost" id="authSignOut">Sign out</button>
           <button class="btn primary" id="profSave">Save profile</button>
+        </div>
+        <hr>
+        <p class="empty small">Leaving deletes your account, your profile and
+          every design you have shared. It cannot be undone, and anything others
+          have already built on stays theirs — that is what the licence means.</p>
+        <div id="delStatus"></div>
+        <div class="sheetfoot">
+          <button class="btn danger" id="profDelete">Delete my account</button>
         </div>
       </div>
     </div>

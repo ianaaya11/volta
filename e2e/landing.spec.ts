@@ -10,7 +10,7 @@ test.use({ storageState: { cookies: [], origins: [] } });
 test('a first visit lands on About, not the editor', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('#aboutView')).toBeVisible();
-  await expect(page.locator('h1')).toContainText('A circuit you can watch working');
+  await expect(page.locator('#aboutView h1')).toContainText('A circuit you can watch working');
   // Two ways in, one at the top and one at the foot of the page.
   await expect(page.locator('#aboutClose')).toBeVisible();
   await expect(page.locator('#aboutOpen')).toBeVisible();

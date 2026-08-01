@@ -3,11 +3,17 @@
 // presentation rules that decide what about a member becomes public.
 import { describe, expect, it } from 'vitest';
 import {
-  LICENSE, LICENSE_NAME, HANDLE_RE, PASSWORD_MIN, byline, configured, flag,
+  LICENSE, LICENSE_NAME, HANDLE_RE, MIN_AGE, PASSWORD_MIN, TERMS_VERSION,
+  ageOn, byline, checkAge, configured, flag,
   isRecoveryLink, validateDesign, validatePassword, validateProfile,
 } from '../src/community';
 
 const ok = { handle: 'ada_k', display_name: 'Ada K.', country: 'GH', school: null, show_school: false };
+// Local midday, matching how checkAge builds a date of birth (local midnight).
+// Mixing the two is how an off-by-one hides: '2011-08-02' parses as UTC
+// midnight, which is the day before in any timezone west of Greenwich.
+const NOW = new Date('2026-08-01T12:00:00');
+const dob = (iso: string) => new Date(iso + 'T00:00:00');
 
 describe('configuration', () => {
   it('is off when no credentials are built in, which is a supported state', () => {
@@ -133,5 +139,51 @@ describe('flag', () => {
 
   it('returns nothing for anything that is not a code', () => {
     for (const bad of ['', 'g', 'gh', 'GHA', '12']) expect(flag(bad)).toBe('');
+  });
+});
+
+describe('the age screen', () => {
+  it('counts whole years, and does not round a birthday up', () => {
+    // Fifteen tomorrow is fourteen today. Off-by-one here is the difference
+    // between a gate and a formality.
+    expect(ageOn(dob('2011-08-01'), NOW)).toBe(15);
+    expect(ageOn(dob('2011-08-02'), NOW)).toBe(14);
+    expect(ageOn(dob('2011-07-31'), NOW)).toBe(15);
+    // Across a year boundary, where the month arithmetic is easiest to get wrong.
+    expect(ageOn(dob('2011-12-31'), new Date('2026-01-01T12:00:00'))).toBe(14);
+  });
+
+  it(`lets ${MIN_AGE} and over through`, () => {
+    expect(checkAge('2011-08-01', NOW)).toBeNull();      // exactly 15 today
+    expect(checkAge('1990-01-01', NOW)).toBeNull();
+  });
+
+  it('turns younger members away, and says the editor is still theirs', () => {
+    const why = checkAge('2011-08-02', NOW);             // 15 tomorrow
+    expect(why).toMatch(new RegExp(`${MIN_AGE} and over`));
+    expect(why, 'refusing an account must not read as refusing the app')
+      .toMatch(/editor.*without an account/i);
+  });
+
+  it('rejects nonsense rather than guessing', () => {
+    expect(checkAge('', NOW)).toMatch(/date of birth/i);
+    expect(checkAge('not-a-date', NOW)).toMatch(/does not look right/i);
+    expect(checkAge('2030-01-01', NOW)).toMatch(/future/i);
+    expect(checkAge('1850-01-01', NOW)).toMatch(/does not look right/i);
+  });
+});
+
+describe('consent', () => {
+  it('records which terms were accepted, not merely that some were', () => {
+    // A boolean cannot answer "did they agree to THESE terms", which is the
+    // only question worth being able to answer later.
+    expect(TERMS_VERSION).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  it('will not save a profile that has not been through both gates', () => {
+    expect(validateProfile({ ...ok, age_confirmed: false })).toMatch(/date of birth/i);
+    expect(validateProfile({ ...ok, terms_version: null })).toMatch(/terms/i);
+    expect(validateProfile({ ...ok, age_confirmed: true, terms_version: TERMS_VERSION }))
+      .toBeNull();
   });
 });

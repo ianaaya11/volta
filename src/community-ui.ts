@@ -20,6 +20,9 @@ export interface CommunityHooks {
   hint(html: string): void;
   /** True when there is anything worth sharing. */
   hasCircuit(): boolean;
+  /** Show the terms or the privacy notice. Owned by the editor, not by this
+   *  module, since both apply with or without an account. */
+  openLegal(which: 'terms' | 'privacy'): void;
   /** The built-in examples, and how to measure and draw one. Used for the
    *  Commons backdrop, so it shows real circuits rather than invented ones. */
   backdrop(): {
@@ -81,6 +84,11 @@ export function mountCommunity(hooks: CommunityHooks) {
   // the profile form to somebody whose only reason for being here is that they
   // cannot get in.
   let recovering = false;
+  // What the age screen and the consent box collected during THIS sign-up. The
+  // profile is created later — a member signs up first and fills in who they
+  // are afterwards — so the answers have to survive the gap. Not persisted:
+  // once the profile row exists, that row is the record.
+  const consentThisSession = { age: false, terms: null as string | null };
 
   // Set when the open document came from someone else's design, so publishing
   // it records the lineage instead of quietly presenting it as original work.
@@ -182,10 +190,35 @@ export function mountCommunity(hooks: CommunityHooks) {
     } catch (e) { say('authStatus', msg(e), 'bad'); }
   };
 
+  // The extra fields belong to creating an account, not to signing in to one.
+  // Showing them from the start makes signing in look like a form to fill.
+  const showNewOnly = (on: boolean) => {
+    el('authNewOnly').hidden = !on;
+    el('authWhyAge').hidden = !on;
+  };
+  el('authEmail').addEventListener('input', () => showNewOnly(true));
+
+  el('authWhyAge').onclick = () => say('authStatus',
+    `The commons is for members of ${C.MIN_AGE} and over, because publishing means `
+    + 'strangers can see your name and your work. The editor needs no account and '
+    + 'always works in full. Your date of birth is used to check your age and then '
+    + 'discarded — it is never stored.');
+
   el('authSignUp').onclick = async () => {
+    showNewOnly(true);
+    // Both gates before the account exists, so an account is never created for
+    // somebody who cannot have one.
+    const bad = C.checkAge(input('authDob').value);
+    if (bad) { say('authStatus', bad, 'bad'); return; }
+    if (!input('authTerms').checked) {
+      say('authStatus', 'Please read and accept the terms and the privacy notice.', 'bad');
+      return;
+    }
     say('authStatus', 'Creating your account…');
     try {
       await C.signUp(input('authEmail').value.trim(), input('authPassword').value);
+      consentThisSession.age = true;
+      consentThisSession.terms = C.TERMS_VERSION;
       // Whether a confirmation email is required is a project setting, so say
       // what is true in both cases rather than guessing.
       say('authStatus', 'Account created. If your project requires email confirmation, '
@@ -229,6 +262,22 @@ export function mountCommunity(hooks: CommunityHooks) {
     hooks.hint('Signed out. The editor keeps working — an account is only needed to share.');
   };
 
+  el('profDelete').onclick = async () => {
+    // Two steps, because it cannot be undone and the button sits next to Save.
+    if (!confirm('Delete your account?\n\nThis removes your login, your profile '
+      + 'and every design you have published. It cannot be undone.')) return;
+    const typed = prompt('This is permanent. Type DELETE to confirm.');
+    if (typed?.trim().toUpperCase() !== 'DELETE') { say('delStatus', 'Cancelled.'); return; }
+    say('delStatus', 'Deleting…');
+    try {
+      await C.deleteAccount();
+      profile = null;
+      el('authModal').hidden = true;
+      await refreshAccount();
+      hooks.hint('Your account and everything you published have been deleted.');
+    } catch (e) { say('delStatus', msg(e), 'bad'); }
+  };
+
   el('profSave').onclick = async () => {
     say('profStatus', 'Saving…');
     try {
@@ -238,6 +287,10 @@ export function mountCommunity(hooks: CommunityHooks) {
         country: sel.value || null,
         school: input('profSchool').value || null,
         show_school: input('profShowSchool').checked,
+        // Carried from the account that was created, or from the row that
+        // already has them. The database refuses to publish without both.
+        age_confirmed: profile?.age_confirmed ?? consentThisSession.age,
+        terms_version: profile?.terms_version ?? consentThisSession.terms,
       });
       say('profStatus', 'Saved.', 'good');
       paintAccount(true);
@@ -455,6 +508,15 @@ export function mountCommunity(hooks: CommunityHooks) {
   }
 
   el('galleryReports').onclick = () => { void renderReports(); };
+
+  // ---- terms & privacy ----------------------------------------------------
+  // The view itself is owned by main.ts, because it exists whether or not the
+  // commons is configured — the privacy notice describes the offline editor
+  // too, and "we collect nothing" is a thing worth being able to read. These
+  // are the links inside the sign-up form, where the terms are being agreed to
+  // and so have to be reachable without losing what has been typed.
+  el('authTermsLink').onclick = e => { e.preventDefault(); hooks.openLegal('terms'); };
+  el('authPrivacyLink').onclick = e => { e.preventDefault(); hooks.openLegal('privacy'); };
 
   // ---- cross-links --------------------------------------------------------
   // The commons and the About page each need a way to the other and back to

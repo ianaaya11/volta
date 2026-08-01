@@ -30,6 +30,20 @@ create table if not exists public.profiles (
   country      text check (country ~ '^[A-Z]{2}$'),
   school       text check (char_length(school) <= 80),
   show_school  boolean not null default false,
+  -- ---- Consent -------------------------------------------------------------
+  -- What was agreed to, and when. The version matters: terms change, and
+  -- "they accepted the terms" is not a useful record unless you know which
+  -- ones. Kept on the profile because that is the row a member must have
+  -- before anything of theirs becomes public.
+  --
+  -- Note what is NOT here: a date of birth. The age screen asks for one, works
+  -- out whether the person is old enough, and throws it away. Storing it would
+  -- mean holding a stronger identifier than anything else in this table, on
+  -- exactly the members it would matter most for, in order to answer a
+  -- yes-or-no question we already have the answer to.
+  age_confirmed    boolean not null default false,
+  terms_version    text check (char_length(terms_version) <= 20),
+  terms_accepted_at timestamptz,
   created_at   timestamptz not null default now(),
   updated_at   timestamptz not null default now()
 );
@@ -168,7 +182,20 @@ drop policy if exists designs_update on public.designs;
 drop policy if exists designs_delete on public.designs;
 create policy designs_read   on public.designs for select
   using (published or auth.uid() = author_id);
-create policy designs_insert on public.designs for insert with check (auth.uid() = author_id);
+-- Publishing requires a profile that has confirmed its age and accepted the
+-- terms. Enforced here rather than by the dialog that asks, because a dialog is
+-- a request and a policy is a rule: the browser talks to this database
+-- directly, and anything checked only in client code is a suggestion.
+create policy designs_insert on public.designs for insert
+  with check (
+    auth.uid() = author_id
+    and exists (
+      select 1 from public.profiles p
+       where p.id = auth.uid()
+         and p.age_confirmed
+         and p.terms_version is not null
+    )
+  );
 create policy designs_update on public.designs for update using (auth.uid() = author_id)
                                                  with check (auth.uid() = author_id);
 create policy designs_delete on public.designs for delete using (auth.uid() = author_id);
@@ -278,6 +305,32 @@ create or replace view public.report_queue as
 
 alter view public.report_queue set (security_invoker = on);
 grant select on public.report_queue to authenticated;
+
+-- ---------------------------------------------------------------------------
+--  delete_me — leaving, properly
+-- ---------------------------------------------------------------------------
+--  Deleting the profile row already cascades to everything published under it,
+--  and a member can do that themselves. What it cannot reach is the login: the
+--  row in auth.users, which no client-side key may touch. That leaves an email
+--  address behind after someone has asked to be forgotten, which is not what
+--  "delete my account" means to the person clicking it.
+--
+--  security definer closes that gap, and the whole function is one statement
+--  with auth.uid() as its only subject — it can delete the caller and nobody
+--  else. Signed out, auth.uid() is null and the statement matches no row.
+--  Deleting the user cascades back through profiles to designs, so one call
+--  removes the account and every trace of its work.
+create or replace function public.delete_me()
+returns void
+language sql
+security definer
+set search_path = public
+as $$
+  delete from auth.users where id = auth.uid();
+$$;
+
+revoke all on function public.delete_me() from public;
+grant execute on function public.delete_me() to authenticated;
 
 -- ---------------------------------------------------------------------------
 --  gallery — the commons listing, without shipping every circuit body

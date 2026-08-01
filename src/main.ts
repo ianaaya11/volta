@@ -5101,6 +5101,33 @@ function backdropApi(){
       drawDoc(c,d as SavedModel,ox,oy,rev,flow) };
 }
 
+// ---- Terms & privacy -------------------------------------------------------
+// Wired here rather than in community-ui for the same reason About is: these
+// documents apply whether or not the commons is switched on. The privacy notice
+// describes the offline editor as much as the accounts — and "nothing leaves
+// your device" is exactly the sort of claim a person should be able to go and
+// read for themselves.
+function openLegal(which:'terms'|'privacy'){
+  el('legalTerms').hidden = which!=='terms';
+  el('legalPrivacy').hidden = which!=='privacy';
+  el('legalWhich').textContent = which==='terms'?'Terms':'Privacy';
+  el('legalView').hidden=false;
+  document.querySelectorAll<HTMLElement>('[data-legal]').forEach(b=>
+    b.classList.toggle('on',b.dataset.legal===which));
+  const body=el('legalView').querySelector('.legalbody');
+  if(body) body.scrollTop=0;
+}
+{
+  el('legalClose').onclick=()=>{ el('legalView').hidden=true; };
+  document.querySelectorAll<HTMLElement>('[data-legal]').forEach(b=>
+    b.onclick=()=>openLegal(b.dataset.legal as 'terms'|'privacy'));
+  el('aboutTerms').onclick=()=>openLegal('terms');
+  el('aboutPrivacy').onclick=()=>openLegal('privacy');
+  window.addEventListener('keydown',e=>{
+    if(e.key==='Escape'&&!el('legalView').hidden){ el('legalView').hidden=true; }
+  });
+}
+
 // ---- About -----------------------------------------------------------------
 // A plain view, not a modal: it is a page about the project, and it should be
 // readable and scrollable rather than boxed. Wired here rather than in
@@ -5176,6 +5203,7 @@ if(community.configured){
       thumbnail:()=>thumbnailDataURL(),
       hint:(html)=>flashHint(html),
       hasCircuit:()=>comps.length>0,
+      openLegal,
       // Built on first Commons open, then reused for every figure.
       backdrop:backdropApi,
     });

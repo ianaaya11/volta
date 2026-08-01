@@ -777,6 +777,37 @@
   .aboutcta h3{margin:0 0 6px;font-size:18px;font-weight:650;color:var(--ink)}
   .aboutcta p{margin:0 0 16px;font-size:13.5px;color:var(--ink-soft)}
   .aboutctabtns{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+  /* ---- Terms & privacy ------------------------------------------------- */
+  /* Above the account dialog, not level with the other full-screen views. The
+     Terms are opened FROM the sign-up form, at the moment of agreeing to them,
+     so at z-index 60 they appeared behind it — visible, unreadable and with an
+     unclickable Close button. Anything a modal can summon has to outrank it. */
+  #legalView{position:fixed;inset:0;z-index:80;background:var(--bg);
+    display:flex;flex-direction:column}
+  #legalView[hidden]{display:none}
+  .legalbody{flex:1 1 auto;overflow-y:auto;padding:0 24px 72px}
+  .legalbody>*{max-width:720px;margin-left:auto;margin-right:auto}
+  /* Unmissable, because the one way this document can do harm is by being
+     published as though somebody qualified had read it. */
+  .draftbanner{margin:24px auto 8px;padding:12px 14px;border-radius:var(--r);
+    background:var(--bad-soft);border:1px solid var(--bad-line);color:var(--ink);
+    font-size:13px;line-height:1.6}
+  .legalbody h1{font-size:26px;letter-spacing:-.01em;margin:28px 0 4px;color:var(--ink)}
+  .legalbody h2{font-size:15px;margin:26px 0 6px;color:var(--ink);font-weight:650}
+  .legalbody p{margin:0 0 12px;font-size:14px;line-height:1.75;color:var(--ink-soft)}
+  /* After `.legalbody p`, which would otherwise zero the auto side-margins and
+     drop the banner out of the column everything else sits in. */
+  p.draftbanner{margin:24px auto 8px}
+  .legalbody b{color:var(--ink)}
+  .legalmeta{font-size:12px;color:var(--faint);font-family:ui-monospace,monospace}
+  .legalgap{background:var(--panel2);border-left:3px solid var(--accent2);
+    padding:10px 12px;border-radius:0 var(--r-sm) var(--r-sm) 0}
+  .legaltable{width:100%;border-collapse:collapse;margin:8px 0 16px;font-size:13px}
+  .legaltable th{text-align:left;color:var(--muted);font-weight:600;
+    border-bottom:1px solid var(--line);padding:6px 10px 6px 0}
+  .legaltable td{padding:7px 10px 7px 0;border-bottom:1px solid var(--line);
+    color:var(--ink-soft);vertical-align:top}
+  .linkbtn.inline{margin:0;font-size:inherit;color:var(--accent)}
   .aboutfoot{max-width:1040px;margin:40px auto 0;text-align:center;
     font-size:12px;color:var(--faint)}
   .aboutfoot a{color:var(--muted)}

@@ -97,3 +97,29 @@ test('a recovery link does nothing when the commons is switched off', async ({ p
   await page.click('#runBtn');
   await expect(page.locator('#runBtn')).toHaveText(/Stop/);
 });
+
+test('the terms and the privacy notice are readable without an account',
+  async ({ page }) => {
+    // They describe the offline editor too — "nothing leaves your device" is
+    // exactly the sort of claim a person should be able to go and check — so
+    // they are wired by the editor, not by the community layer, and are
+    // reachable in a build with no backend at all.
+    await page.goto('/');
+    await page.click('#aboutBtn');
+    await page.click('#aboutTerms');
+    await expect(page.locator('#legalView')).toBeVisible();
+    await expect(page.locator('#legalTerms')).toContainText('Terms of use');
+    await expect(page.locator('#legalTerms')).toContainText(/15 years old/);
+    await expect(page.locator('#legalPrivacy')).toBeHidden();
+
+    await page.click('[data-legal="privacy"]');
+    await expect(page.locator('#legalPrivacy')).toContainText('Privacy notice');
+    await expect(page.locator('#legalPrivacy')).toContainText(/We do not store it/);
+    await expect(page.locator('#legalTerms')).toBeHidden();
+
+    // Marked as a draft, unmissably, so it cannot be published by accident.
+    await expect(page.locator('.draftbanner')).toContainText(/not yet reviewed by a lawyer/i);
+
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#legalView')).toBeHidden();
+  });
