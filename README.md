@@ -114,6 +114,26 @@ reverts it like any other edit. Asking a question about the circuit on screen
 ("why is this transistor saturated?") just answers in text. The SDK is
 code-split, so the offline app doesn't download it unless you open the panel.
 
+## Reading the numbers while it runs
+The readouts show **settled figures, not the instantaneous solution**. A value
+that is oscillating reads as its bounds — `±3 V` when the swing is symmetric,
+`0 … 2.7 mW` when it is not — with RMS underneath for a voltage or a current,
+and the average for a power. A value that is genuinely steady collapses to a
+single figure, so DC circuits read exactly as they always did. The meters on the
+schematic show RMS, which is what a true-RMS multimeter shows.
+
+A **Steady / Live** switch sits on the Node voltages heading. Live puts the
+instantaneous value back, updated every frame — which is the right mode when
+what you want to see is a number *changing*: a capacitor charging, a motor's
+stall current falling away, a flip-flop toggling.
+
+The window is sized in cycles of the slowest source, not in frames or seconds,
+because how much simulated time a frame covers depends on which constraint set
+the timestep and those differ by more than an order of magnitude. Bounds use
+about one and a quarter cycles so they react quickly; averages use eight, over
+completed whole-cycle windows, which is what makes a 3 V sine read 2.12 V rms
+rather than 2.23.
+
 ## Blocks
 Select part of a circuit and press **Make a block** to wrap it up and reuse it
 as a single symbol. The terminals are worked out rather than asked for: a node

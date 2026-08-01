@@ -1384,7 +1384,7 @@ function fourPinLabel(c:Comp):string{
   if(c.type==='WM'){
     if(!running||!lastResult) return 'watts';
     const I=pinCurrents(c,lastResult);
-    return fmt(wattReading(c,lastResult,I[0]),'W');
+    return meterLabel(c.id+':w',wattReading(c,lastResult,I[0]),'W');
   }
   return `${fmt(v,'').trim()} ${TYPES[c.type].unit}`;
 }
@@ -1985,8 +1985,8 @@ function drawComponent(c:Comp,nodeColor:NodeColor){
   if(c.type==='VM'||c.type==='AM'||c.type==='OM'){
     if(running&&lastResult){
       const {v,i}=partVI(c,lastResult);
-      valTxt = c.type==='VM' ? fmt(v,'V')
-             : c.type==='AM' ? fmt(i,'A')
+      valTxt = c.type==='VM' ? meterLabel(c.id+':v',v,'V')
+             : c.type==='AM' ? meterLabel(c.id+':i',i,'A')
              : ohmReading(v);
     } else valTxt = c.type==='VM'?'volts':c.type==='AM'?'amps':'ohms';
   }
@@ -2682,6 +2682,9 @@ function distToSeg(x:number,y:number,w:Wire){
 //  PART 6 — SIMULATION LOOP
 // ===========================================================================
 let circuit:Circuit|null=null, simTime=0, simH=1e-5, rafId:number|null=null;
+/** Solver steps per animation frame. Named because the reading windows have to
+ *  convert frames to simulated time, and a bare 8 in two places is a trap. */
+const STEPS_PER_FRAME=8;
 // ---- Oscilloscope state ----
 // t and series[] run the full window; selV/selI restart whenever the selection
 // changes, so they can be shorter and are drawn aligned to the newest samples.
@@ -2747,7 +2750,203 @@ function mcuFault(msg:string){
   flashHint('Sketch stopped: '+msg);
   renderMcuStatus();
 }
+// ===========================================================================
+//  STEADY READINGS — numbers you can actually read while it runs
+// ===========================================================================
+//  Every readout used to print the instantaneous solution at whatever timestep
+//  the frame happened to land on. On anything oscillating that means the digits
+//  churn through the whole waveform and none of them can be read — which is
+//  exactly the thing a real instrument does not do. A bench multimeter shows one
+//  settled number; a scope shows min, max and RMS.
+//
+//  So each measured quantity keeps a rolling band. Two buckets rather than a
+//  ring buffer: the current one fills, and when it is full it becomes the
+//  previous one and a fresh one starts. The reading is the union of the two, so
+//  it covers between one and two bucket-lengths of recent history at O(1) memory
+//  per quantity, and old history falls off instead of accumulating forever — a
+//  switch-on surge should not sit in the bounds for the rest of the run.
+//
+//  The bucket is counted in FRAMES, not in seconds, and that is deliberate. The
+//  solver picks its timestep from the circuit — 1/(200f) for a sine source, a
+//  fiftieth of the time constant for a reactive network — so a fixed number of
+//  frames is a fixed number of periods whatever the circuit is doing. A fixed
+//  number of seconds would be two cycles of a 1 kHz sine and ten thousand of a
+//  1 MHz one.
+//  Two windows, not one, because the bounds and the averages want opposite
+//  things. min/max should react quickly — you want to see a swing grow as you
+//  turn a pot — and a short window costs them nothing, because a bound is
+//  exact from a single sample that happens to be the peak.
+//
+//  RMS and mean are the opposite: they are integrals, and integrating over a
+//  fractional number of cycles is where the error comes from. A window of ~1.6
+//  cycles put a 3 V sine's RMS at 2.23 V when the answer is 2.12 — five per
+//  cent out, on a figure this app has no business rounding. Eight cycles brings
+//  that under half a per cent, and nobody minds an average taking a second
+//  longer to settle than a bound does.
+//  Both windows are measured in PERIODS of the slowest source, and both are
+//  therefore sized when Run is pressed rather than fixed here. A frame count
+//  cannot do the job: how much simulated time a frame covers depends on which
+//  constraint set the timestep, and those differ by more than an order of
+//  magnitude. In the sine-into-RC example the capacitor's time constant wins
+//  and a frame is 1/78th of a period; if the source frequency had won it would
+//  have been 1/25th. Forty frames is 1.6 cycles in one case and half a cycle in
+//  the other — and half a cycle contains one peak, so the upper bound sagged
+//  and crawled while the lower bound sat still.
+const BAND_CYCLES=1.25;      // bounds: enough to be sure of catching both peaks
+const AVG_CYCLES=8;          // averages: enough that RMS is right to ~0.5%
+// Fallbacks for a circuit with no periodic source at all — DC, digital, a
+// transient settling. Nothing there has a period to count, and such signals are
+// flat or monotonic, so a plain frame count is the honest choice.
+const BAND_FRAMES_DC=40, AVG_FRAMES_DC=200;
+
+let bandFrames=BAND_FRAMES_DC, avgFrames=AVG_FRAMES_DC;
+
+/** Size the reading windows for the circuit about to run. */
+function sizeReadWindows(nc:Component[],h:number){
+  const freqs=nc.flatMap(c=>c.type==='VS'&&(c.freq??0)>0?[c.freq!]:[]);
+  if(!freqs.length){ bandFrames=BAND_FRAMES_DC; avgFrames=AVG_FRAMES_DC; return; }
+  // The slowest source is the one that needs the longest window; anything
+  // faster fits inside it several times over.
+  const framesPerCycle=(1/Math.min(...freqs))/(STEPS_PER_FRAME*h);
+  const clamp=(v:number,lo:number,hi:number)=>Math.max(lo,Math.min(hi,Math.round(v)));
+  bandFrames=clamp(framesPerCycle*BAND_CYCLES,8,400);
+  // Rounded to a whole cycle FIRST, then multiplied — so the bucket is a whole
+  // number of cycles rather than eight-and-a-bit, which is what makes the
+  // average over a completed bucket come out right.
+  avgFrames =clamp(Math.max(1,Math.round(framesPerCycle))*AVG_CYCLES,40,4000);
+}
+
+interface Band { min:number; max:number; sum:number; sum2:number; n:number }
+const emptyBand=():Band=>({min:Infinity,max:-Infinity,sum:0,sum2:0,n:0});
+
+/** A pair of buckets: one filling, one complete. Reporting their union covers
+ *  between one and two window-lengths of recent history at fixed cost, and old
+ *  history falls off rather than accumulating forever. */
+class Window_ {
+  private cur=emptyBand();
+  private prev=emptyBand();
+  constructor(private readonly size:number){}
+  push(v:number){
+    const b=this.cur;
+    if(v<b.min) b.min=v;
+    if(v>b.max) b.max=v;
+    b.sum+=v; b.sum2+=v*v; b.n++;
+    if(b.n>=this.size){ this.prev=this.cur; this.cur=emptyBand(); }
+  }
+  /** Union of both buckets: responsive, covers one to two windows. */
+  get(){
+    const a=this.prev,b=this.cur,n=a.n+b.n;
+    if(!n) return null;
+    return { min:Math.min(a.min,b.min), max:Math.max(a.max,b.max),
+             mean:(a.sum+b.sum)/n, rms:Math.sqrt((a.sum2+b.sum2)/n) };
+  }
+  /** The last COMPLETED bucket only.
+   *
+   *  For an integral this matters more than being current. A bucket is sized to
+   *  a whole number of cycles, so its average is over whole cycles; the union
+   *  is however full the second bucket happens to be, which is a fractional
+   *  cycle and exactly the error that put a 3 V sine's RMS at 2.14 instead of
+   *  2.12. The cost is that averages step once per window instead of easing —
+   *  which is what a settled instrument does anyway. */
+  completed(){
+    const a=this.prev;
+    if(!a.n) return this.get();
+    return { min:a.min, max:a.max, mean:a.sum/a.n, rms:Math.sqrt(a.sum2/a.n) };
+  }
+}
+
+class Reading {
+  // Sized at construction from the values Run computed, which is safe because
+  // the map is thrown away and rebuilt on every Run.
+  private bounds=new Window_(bandFrames);
+  private avg=new Window_(avgFrames);
+  push(v:number){
+    if(!Number.isFinite(v)) return;
+    this.bounds.push(v); this.avg.push(v);
+  }
+  /** Bounds from the short window, averages from the long one. */
+  band():{min:number;max:number;rms:number;mean:number}|null{
+    const s=this.bounds.get(), l=this.avg.completed();
+    if(!s||!l) return null;
+    return { min:s.min, max:s.max, rms:l.rms, mean:l.mean };
+  }
+}
+
+/** Every quantity being tracked this run, keyed by what it measures. */
+let readings=new Map<string,Reading>();
+function track(key:string,v:number){
+  let r=readings.get(key);
+  if(!r) readings.set(key,r=new Reading());
+  r.push(v);
+}
+
+// 'steady' shows the band, 'live' the instantaneous value. Some circuits are
+// easier to understand watching the number move — a capacitor charging, say —
+// so this is a toggle and not a decision made on the user's behalf.
+type ReadMode='steady'|'live';
+const READ_MODE_KEY='volta.readMode';
+let readMode:ReadMode=(()=>{ try{ return localStorage.getItem(READ_MODE_KEY)==='live'?'live':'steady'; }
+  catch{ return 'steady'; } })();
+function setReadMode(m:ReadMode){
+  readMode=m;
+  try{ localStorage.setItem(READ_MODE_KEY,m); }catch{}
+  renderReadout(); draw();
+}
+
+/** Is this quantity actually sitting still? A band whose whole swing is a
+ *  rounding error on its own magnitude is a DC value, and printing
+ *  "5.00 … 5.00 V" for it would be worse than printing "5 V". */
+function isFlat(b:{min:number;max:number}):boolean{
+  const peak=Math.max(Math.abs(b.min),Math.abs(b.max));
+  return (b.max-b.min)<=Math.max(1e-12,peak*0.005);
+}
+
+/** The headline figure for a quantity: one number when steady, a range when
+ *  not. `inst` is the instantaneous value, used in live mode and before the
+ *  first window has filled. */
+function reads(key:string,inst:number,unit:string):string{
+  if(readMode==='live'||!running) return fmt(inst,unit);
+  const b=readings.get(key)?.band();
+  if(!b) return fmt(inst,unit);
+  if(isFlat(b)) return fmt((b.min+b.max)/2,unit);
+  const peak=Math.max(Math.abs(b.min),Math.abs(b.max));
+  // A bound that is a billionth of the peak is the solver's rounding, not a
+  // measurement. Power touches zero every half cycle and was reporting its
+  // floor as 2.01e-14 W.
+  const clean=(v:number)=>Math.abs(v)<peak*1e-9?0:v;
+  const lo=clean(b.min), hi=clean(b.max);
+  // A symmetric swing is how AC actually reads, and ±3 V says it in a third of
+  // the space that "-3 … 3 V" takes.
+  if(lo<0&&hi>0&&Math.abs(lo+hi)<=peak*0.02) return '±'+fmt(peak,unit);
+  return `${fmt(lo,'').trim()} … ${fmt(hi,unit)}`;
+}
+
+/** The supporting line under a range, or '' when there is nothing to add.
+ *
+ *  RMS for a voltage or a current, because that is the figure a true-RMS meter
+ *  gives and the one that decides heating. Power is different: the useful
+ *  number is the AVERAGE, since that is the energy actually delivered per
+ *  second. The RMS of a power waveform is a quantity with no physical job. */
+function statOf(key:string,unit:string,kind:'rms'|'avg'='rms'):string{
+  if(readMode==='live'||!running) return '';
+  const b=readings.get(key)?.band();
+  if(!b||isFlat(b)) return '';
+  return kind==='avg' ? `${fmt(b.mean,unit)} avg` : `${fmt(b.rms,unit)} rms`;
+}
+
+/** One line for a canvas label, where there is no room for a range. A true-RMS
+ *  meter is what this is imitating, so RMS is the number it shows. */
+function meterLabel(key:string,inst:number,unit:string):string{
+  if(readMode==='live'||!running) return fmt(inst,unit);
+  const b=readings.get(key)?.band();
+  if(!b) return fmt(inst,unit);
+  if(isFlat(b)) return fmt((b.min+b.max)/2,unit);
+  return fmt(b.rms,unit)+' rms';
+}
+
 function startSim(){
+  // Readings are per-run: last run's bounds must not colour this one.
+  readings=new Map();
   // Boot the MCU with the circuit: pin state must not leak between runs.
   mcuOut.clear(); mcuMode.clear(); mcu=null; mcuStatus='';
   // Mechanical state is part of the simulation, not the schematic — a motor
@@ -2770,6 +2969,7 @@ function startSim(){
   if(net.netComps.length===0){ flashHint('Place some components first.'); return; }
   // choose timestep from smallest reactive time constant present
   simH=chooseTimestep(net.netComps);
+  sizeReadWindows(net.netComps,simH);
   circuit=new Circuit(net.netComps.map(c=>({...c}))); liveIndex=null;
   mechanics=hasMechanics(); digital=hasDigital();
   circuit.captureTrace=mathMode;
@@ -2855,7 +3055,7 @@ function loop(){
   // runs BEFORE each solver step, so a pin written this instant is already
   // driving the network when the step is solved — the same ordering as
   // hardware, where the port latch changes and then the circuit settles.
-  for(let k=0;k<8;k++){
+  for(let k=0;k<STEPS_PER_FRAME;k++){
     if(mcu){ mcu.run(mcuHost); if(mcu.error) mcuFault(mcu.error); }
     if(!circuit) break;
     lastResult=circuit.step(simH); simTime+=simH;
@@ -2864,6 +3064,29 @@ function loop(){
     // in the same instant its coil reaches the pull-in current.
     if(mechanics) stepMechanics(lastResult,simH);
     if(digital) stepDigital(lastResult);
+  }
+  // Feed the steady readings once per frame, on the same solution the scope
+  // samples. Every node, because the node table shows every node; the selected
+  // part, because its live panel does; and every meter, because a meter that
+  // flickers is a meter you cannot read.
+  if(lastResult){
+    const r=lastResult;
+    // nodeVoltage is keyed by node id, and the internal range starts far above
+    // the grid nodes, so the readout's own count is what to walk.
+    const upTo=simNet?simNet.nodeCount:0;
+    for(let n=0;n<upTo;n++) track('n'+n,r.nodeVoltage[n]??0);
+    for(const c of comps){
+      const isMeter=c.type==='VM'||c.type==='AM'||c.type==='OM'||c.type==='WM';
+      if(!isMeter&&c!==selected) continue;
+      if(c.type==='GND') continue;
+      if(c.type==='WM'){
+        const I=pinCurrents(c,r);
+        track(c.id+':w',wattReading(c,r,I[0]));
+        continue;
+      }
+      const {v,i}=partVI(c,r);
+      track(c.id+':v',v); track(c.id+':i',i); track(c.id+':p',Math.abs(v*i));
+    }
   }
   // sample the scope once per frame
   const net=simNet, buf=scopeBuf, res=lastResult;
@@ -2887,7 +3110,12 @@ function loop(){
   updateVRange(); animPhase=(animPhase+0.02)%1;
   // The math panel rebuilds a chunk of DOM, so it updates a few times a second
   // rather than every frame — fast enough to read, cheap enough not to matter.
-  if(mathMode&&(++mathTick%12===0)){ refreshMath(); }
+  // The matrix cannot show a range without becoming unreadable, so in steady
+  // mode it slows to one snapshot per window instead — still a genuine instant,
+  // just one that sits still long enough to be read. renderMath says which.
+  if(mathMode&&(++mathTick%(readMode==='steady'?Math.max(12,bandFrames):12)===0)){
+    mathAt=simTime; refreshMath();
+  }
   draw(); renderReadout();
   rafId=requestAnimationFrame(loop);
 }
@@ -3238,6 +3466,8 @@ function kclEquations(netComps:Component[]):string[]{
 }
 
 /** Recompute the trace: from the live solver when running, else a DC solve. */
+/** Simulated time the displayed matrix was captured at. */
+let mathAt=0;
 function refreshMath(){
   if(!mathMode){ mathTrace=null; return; }
   if(running&&circuit){ mathTrace=circuit.lastTrace; return; }
@@ -3260,6 +3490,12 @@ function renderMath(){
       before there are equations to show.</div>`;
     return;
   }
+  // Say which instant this is. A matrix that updates slowly and does not say
+  // when it was taken is a matrix you cannot trust.
+  const stamp=running
+    ? `<div class="mathat">snapshot at t = ${fmt(mathAt,'s')}`
+      + (readMode==='steady'?' · slowed so it can be read':'')+`</div>`
+    : '';
   const eqs=kclEquations(buildNetlist().netComps);
   // Entries many orders below the largest one are numerically zero — a
   // reverse-biased junction stamps things like 7e-71. Printing them in full
@@ -3279,7 +3515,7 @@ function renderMath(){
   });
   m+='</table>';
 
-  host.innerHTML=`<hr><h3>Show the math</h3>
+  host.innerHTML=`<hr><h3>Show the math</h3>${stamp}
     <div class="mathnote">Kirchhoff's current law at each node — the sum of
       currents leaving is zero:</div>
     <div class="eqs">${eqs.map(e=>`<div>${e}</div>`).join('')}</div>
@@ -3296,11 +3532,61 @@ function renderMath(){
       ${t.h!=null?`Timestep h = ${fmt(t.h,'s')} at t = ${fmt(t.t,'s')}.`:'DC operating point (caps open, inductors shorted).'}</div>`;
 }
 
-function renderReadout(){
+/** One readout line, with an optional second line under the value. */
+function row(label:string,value:string,sub:string):string{
+  return `<div><span class="k">${label}</span><span class="v">${value}`
+    + (sub?`<em>${sub}</em>`:'') + `</span></div>`;
+}
+
+/** Steady / Live. Only offered while running — stopped, there is one number
+ *  and nothing to steady. */
+function modeToggle():string{
+  if(!running) return '';
+  const b=(m:ReadMode,label:string,title:string)=>
+    `<button type="button" class="seg${readMode===m?' on':''}" data-read="${m}" title="${title}">${label}</button>`;
+  return `<div class="segs">`
+    + b('steady','Steady','Bounds and RMS over the last moment of simulated time')
+    + b('live','Live','The instantaneous value, updated every frame')
+    + `</div>`;
+}
+
+// The readout is rewritten every animation frame, so anything the user has to
+// AIM at cannot live in the rewritten part — a button replaced between mousedown
+// and mouseup is a button that cannot be pressed. The panel is therefore three
+// containers: two that churn, and one holding the Steady/Live switch that is
+// written only when what it says changes.
+function readoutParts(){
   const body=el('inspectorBody');
   let host=document.getElementById('readoutHost');
-  if(!host){ host=document.createElement('div'); host.id='readoutHost'; body.appendChild(host); }
-  if(!lastResult){ host.innerHTML=''; renderMath(); return; }
+  if(!host){
+    host=document.createElement('div'); host.id='readoutHost';
+    host.innerHTML='<div id="roLive"></div><div id="roHead"></div><div id="roTable"></div>';
+    body.appendChild(host);
+    // renderInspector rebuilds the whole panel and takes this container with
+    // it, so the cached signature has to go too — otherwise the switch is
+    // "already up to date" on an element that no longer exists, and the heading
+    // never comes back.
+    headSig='';
+    // Bound once, on the container that survives, so the handler outlives every
+    // rebuild of what is inside it.
+    host.addEventListener('click',e=>{
+      const b=(e.target as HTMLElement).closest<HTMLElement>('[data-read]');
+      if(b) setReadMode(b.dataset.read as ReadMode);
+    });
+  }
+  return { host,
+    live:document.getElementById('roLive')!,
+    head:document.getElementById('roHead')!,
+    table:document.getElementById('roTable')! };
+}
+
+/** What the switch currently says. Rewritten only when this changes. */
+let headSig='';
+
+function renderReadout(){
+  const { host,live,head,table }=readoutParts();
+  if(!lastResult){ live.innerHTML=''; head.innerHTML=''; table.innerHTML=''; headSig='';
+    renderMath(); return; }
   const res=lastResult;      // narrowed for the closures below
   let rows='';
   // A meter's live panel should read like the instrument, not like a generic
@@ -3311,8 +3597,9 @@ function renderReadout(){
     const I=pinCurrents(selected,lastResult);
     const ps=pinsOf(selected);
     const nv=(p:Pt)=>simNet?(res.nodeVoltage[simNet.nodeOf(p.x,p.y)]??0):0;
-    rows+=`<hr><h3>Reading — ${selected.id}</h3><div class="readout">
-      <div><span class="k">Power</span><span class="v">${fmt(wattReading(selected,lastResult,I[0]),'W')}</span></div>
+    const id=selected.id;
+    rows+=`<hr><h3>Reading — ${id}</h3><div class="readout">
+      ${row('Power',reads(id+':w',wattReading(selected,lastResult,I[0]),'W'),statOf(id+':w','W','avg'))}
       <div><span class="k">Load voltage</span><span class="v">${fmt(nv(ps[2])-nv(ps[3]),'V')}</span></div>
       <div><span class="k">Load current</span><span class="v">${fmt(I[0],'A')}</span></div></div>`;
   } else if(selected&&selected.type==='OM'){
@@ -3322,21 +3609,32 @@ function renderReadout(){
       <div><span class="k">Test current</span><span class="v">${fmt(OHM_TEST_I,'A')}</span></div></div>`;
   } else if(selected&&selected.type!=='GND'){
     const {v,i}=partVI(selected,lastResult);
-    rows+=`<hr><h3>Live — ${selected.id}</h3><div class="readout">
-      <div><span class="k">Voltage across</span><span class="v">${fmt(v,'V')}</span></div>
-      <div><span class="k">Current</span><span class="v">${fmt(i,'A')}</span></div>
-      <div><span class="k">Power</span><span class="v">${fmt(Math.abs(v*i),'W')}</span></div></div>`;
+    const id=selected.id;
+    rows+=`<hr><h3>${running&&readMode==='steady'?'Reading':'Live'} — ${id}</h3><div class="readout">
+      ${row('Voltage across',reads(id+':v',v,'V'),statOf(id+':v','V'))}
+      ${row('Current',reads(id+':i',i,'A'),statOf(id+':i','A'))}
+      ${row('Power',reads(id+':p',Math.abs(v*i),'W'),statOf(id+':p','W','avg'))}
+      </div>`;
   }
-  // node table
-  rows+=`<hr><h3>Node voltages</h3><table class="probes">`;
+  live.innerHTML=rows;
+  rows='';
+
+  const sig=`${running?1:0}|${readMode}`;
+  if(sig!==headSig){
+    headSig=sig;
+    head.innerHTML=`<hr><div class="readhead"><h3>Node voltages</h3>${modeToggle()}</div>`;
+  }
+  rows+=`<table class="probes">`;
   for(const [k,v] of Object.entries(lastResult.nodeVoltage)){
     // Skip nodes that exist only inside a part. They are real unknowns to the
     // solver, but they correspond to nothing the user drew, so listing them
     // just makes the schematic look like it has nodes it doesn't.
     if(Number(k)>=INTERNAL_NODE_BASE) continue;
-    rows+=`<tr><td>node ${k===''?0:k}</td><td>${fmt(v,'V')}</td></tr>`; }
+    const n=k===''?'0':k;
+    rows+=`<tr><td>node ${n}</td><td>${reads('n'+n,v,'V')}</td></tr>`; }
   rows+=`</table>`;
-  host.innerHTML=rows;
+  table.innerHTML=rows;
+  void host;
   renderMath();   // the math panel sits below the live readout
 }
 // Exposed on window because the inspector markup wires them with inline onclick.

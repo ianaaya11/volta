@@ -364,9 +364,30 @@
   .field input:focus{outline:none;border-color:var(--accent);background:var(--panel);
     box-shadow:0 0 0 3px var(--accent-soft)}
   .field input[type=range]{padding:0;background:none;border:none;box-shadow:none;accent-color:var(--accent)}
-  .readout{font-size:13px;line-height:1.9;color:var(--ink)}
-  .readout .k{color:var(--muted)}
-  .readout .v{float:right;font-variant-numeric:tabular-nums;font-weight:500}
+  /* The Steady/Live switch sits on the Node voltages heading — next to the
+     numbers it governs, rather than in a settings panel away from them. */
+  .readhead{display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .readhead h3{margin:0}
+  .segs{display:inline-flex;border:1px solid var(--line);border-radius:var(--r-sm);
+    overflow:hidden;flex:0 0 auto}
+  .seg{background:var(--panel);border:0;border-right:1px solid var(--line);
+    padding:3px 8px;font:inherit;font-size:10.5px;color:var(--muted);cursor:pointer}
+  .seg:last-child{border-right:0}
+  .seg:hover{color:var(--ink);background:var(--panel2)}
+  .seg.on{background:var(--accent-soft);color:var(--accent);font-weight:600}
+  /* The RMS line under a range. Smaller and quieter — it is the supporting
+     figure, not the headline. */
+  .readout .v em{display:block;font-style:normal;font-size:11px;
+    color:var(--muted);font-weight:400;margin-top:1px}
+  .mathat{margin:-2px 0 8px;font-size:11px;color:var(--faint);
+    font-family:ui-monospace,monospace}
+  .readout{font-size:13px;line-height:1.7;color:var(--ink)}
+  /* Flex rather than a float: the value can now be two lines — a range with its
+     RMS underneath — and a float would let the next label slide up beside it. */
+  .readout>div{display:flex;justify-content:space-between;align-items:baseline;
+    gap:12px;padding:2px 0}
+  .readout .k{color:var(--muted);flex:0 0 auto}
+  .readout .v{text-align:right;font-variant-numeric:tabular-nums;font-weight:500}
   .empty{color:var(--muted);font-size:12.5px;line-height:1.65}
   hr{border:none;border-top:1px solid var(--line);margin:16px 0}
   .swatch-row{display:flex;align-items:center;gap:9px;font-size:12px;color:var(--muted);margin:6px 0}

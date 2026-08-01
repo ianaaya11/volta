@@ -101,6 +101,11 @@ test('a T flip-flop halves its clock — the propagation delay makes feedback wo
   await page.click('#rail .tool[data-t="select"]');
   await page.click('#runBtn');
   await expect(page.locator('#runBtn')).toHaveText(/Stop/);
+  // The whole test is about which STATE the node is in right now, and the
+  // readout defaults to steady bounds — a node that has been both high and low
+  // during the window reads "0 … 5 V", which is true and erases the very
+  // distinction being measured. See e2e/readings.spec.ts.
+  await page.click('[data-read="live"]');
   const T = g.at(2, 2), CLK = g.at(2, 6);
 
   // Compare whole ordered snapshots rather than counting rail-high nodes: with

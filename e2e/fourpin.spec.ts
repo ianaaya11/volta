@@ -91,6 +91,11 @@ test('a VCVS placed on the canvas multiplies its input, pins in the drawn order'
 });
 
 test('the transformer example steps 10 V up to 20 V', async ({ page }) => {
+  // Instantaneous values, deliberately: this checks that the two windings are
+  // in step at every moment, which is a statement about the waveform and not
+  // about its bounds. The readout defaults to steady figures — see
+  // e2e/readings.spec.ts — so this asks for the live ones.
+  await page.addInitScript(() => localStorage.setItem('volta.readMode', 'live'));
   await page.goto('/');
   await page.selectOption('#gallery', { label: 'Transformer steps 10 V up to 20 V' });
   await page.click('#runBtn');
@@ -184,6 +189,11 @@ test.describe('relay and motor', () => {
 
     await page.click('#runBtn');
     await expect(page.locator('#runBtn')).toHaveText(/Stop/);
+    // This test watches a number CHANGE, so it needs the live reading. The
+    // readout defaults to steady figures — see e2e/readings.spec.ts — and
+    // steady would report the whole fall as one band, "0 … 2.4 A", which is a
+    // true description of the run and useless for detecting a fall within it.
+    await page.click('[data-read="live"]');
 
     const amps = async () => {
       const t = await page.locator('#readoutHost .readout').innerText();
