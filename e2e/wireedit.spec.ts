@@ -139,3 +139,45 @@ test('the Pan tool never edits the circuit', async ({ page }) => {
   await expect(page.locator('#nodeCount')).toHaveText(nodes);
   await expect(heading(page)).not.toHaveText('Resistor');
 });
+
+test('picking a part from the rail places one, then hands you back Select',
+  async ({ page }) => {
+    // The tool used to stay armed, so every later click anywhere on the grid
+    // dropped another copy and the only way out was Escape — which meant a
+    // stray click after placing something left a part you had not asked for,
+    // usually noticed several actions later.
+    const g = await blankGrid(page);
+    await page.click('#rail .tool[data-t="R"]');
+    await page.mouse.click(g.at(2, 2).x, g.at(2, 2).y);
+    await expect(page.locator('#rail .tool.active')).toHaveAttribute('data-t', 'select');
+
+    const nodes = await page.locator('#nodeCount').innerText();
+    await page.mouse.click(g.at(2, 8).x, g.at(2, 8).y);
+    await expect(page.locator('#nodeCount'),
+      'a second click should place nothing').toHaveText(nodes);
+  });
+
+test('shift keeps the tool armed for laying out a row', async ({ page }) => {
+  const g = await blankGrid(page);
+  await page.click('#rail .tool[data-t="R"]');
+  await page.keyboard.down('Shift');
+  for (const y of [2, 6, 10]) await page.mouse.click(g.at(2, y).x, g.at(2, y).y);
+  await page.keyboard.up('Shift');
+  await expect(page.locator('#rail .tool.active')).toHaveAttribute('data-t', 'R');
+  await expect(page.locator('#nodeCount')).toHaveText('6 nodes');
+});
+
+test('double-tapping a rail tile locks it, for a phone with no shift key',
+  async ({ page }) => {
+    const g = await blankGrid(page);
+    await page.dblclick('#rail .tool[data-t="R"]');
+    await expect(page.locator('#rail .tool[data-t="R"]')).toHaveClass(/locked/);
+    for (const y of [2, 6, 10]) await page.mouse.click(g.at(2, y).x, g.at(2, y).y);
+    await expect(page.locator('#nodeCount')).toHaveText('6 nodes');
+    await expect(page.locator('#rail .tool.active')).toHaveAttribute('data-t', 'R');
+
+    // Escape lets go of it.
+    await page.keyboard.press('Escape');
+    await expect(page.locator('#rail .tool.active')).toHaveAttribute('data-t', 'select');
+    await expect(page.locator('#rail .tool[data-t="R"]')).not.toHaveClass(/locked/);
+  });

@@ -2637,6 +2637,14 @@ stage.addEventListener('pointerdown',e=>{
       nc.sub=pendingSub; delete nc.value;
     }
     comps.push(nc);
+    // One pick, one part. The tool used to stay armed, so every subsequent
+    // click anywhere on the grid dropped another copy and the only way out was
+    // Escape — which meant a stray click after placing something left a part
+    // you had not asked for, usually noticed several actions later.
+    //
+    // Holding shift keeps the tool armed, for laying out five resistors in a
+    // row without going back to the rail between each.
+    if(!e.shiftKey&&!toolLocked) setTool('select');
     refreshMeta(); commit(); draw(); return;
   }
   if(tool==='wire'){
@@ -2803,7 +2811,7 @@ window.addEventListener('keydown',e=>{
   if(e.key==='-'||e.key==='_'){ zoomAt(cx,cy,1/1.2); return; }
   if(e.key==='0'){ fitView(); return; }
   if(e.key==='r'||e.key==='R'){ ghostRot=turn(ghostRot); if(selected){ selected.rot=turn(rotOf(selected)); refreshMeta(); commit(); } draw(); }
-  if(e.key==='Escape'){ wireStart=null; wireExit=null; wireBox=null; selected=null; selectedWire=null; clearMulti(); setTool('select'); renderInspector(); draw(); }
+  if(e.key==='Escape'){ wireStart=null; wireExit=null; wireBox=null; selected=null; selectedWire=null; toolLocked=false; clearMulti(); setTool('select'); renderInspector(); draw(); }
   if((e.key==='Delete'||e.key==='Backspace')&&multi.length){ deleteMulti(); return; }
   if((e.key==='Delete'||e.key==='Backspace')&&selected){ comps=comps.filter(k=>k!==selected); selected=null; refreshMeta(); commit(); renderInspector(); draw(); return; }
   if((e.key==='Delete'||e.key==='Backspace')&&selectedWire){ deleteSelectedWire(); return; }
@@ -3987,7 +3995,10 @@ function buildRail(){
       b.title=item.full??item.label;
       b.dataset.search=`${item.label} ${item.full??''} ${item.t}`.toLowerCase();
       b.innerHTML=miniSymbol(item.t)+`<span>${item.label}</span>`;
-      b.onclick=()=>setTool(item.t);
+      b.onclick=()=>{ toolLocked=false; setTool(item.t); };
+      b.ondblclick=()=>{ toolLocked=true; setTool(item.t); flashHint(
+        `<b>${item.label}</b> stays selected — place as many as you like. `
+        + 'Pick another tool or press <span class="kbd">Esc</span> when you are done.'); };
       grid.appendChild(b);
     }
     sec.appendChild(grid);
@@ -3996,6 +4007,12 @@ function buildRail(){
   renderBlockRail();
   updateRail();
 }
+
+/** Set by double-tapping a rail tile: the tool stays armed until something else
+ *  is picked. Shift-clicking does the same on a desktop, but a phone has no
+ *  shift key, and going back to the rail between every part is a poor way to
+ *  lay out a row of eight gates. */
+let toolLocked=false;
 
 /** Which definition the next placed block will be an instance of. The tool rail
  *  can only say "SUB"; this says which one. */
@@ -4028,7 +4045,8 @@ function renderBlockRail(){
       + `${d.comps.length} part${d.comps.length===1?'':'s'}`;
     b.dataset.search=`${d.name} block subcircuit`.toLowerCase();
     b.innerHTML=miniSymbol('SUB')+`<span>${d.name}</span>`;
-    b.onclick=()=>{ pendingSub=k; setTool('SUB'); };
+    b.onclick=()=>{ toolLocked=false; pendingSub=k; setTool('SUB'); };
+    b.ondblclick=()=>{ toolLocked=true; pendingSub=k; setTool('SUB'); };
     grid.appendChild(b);
   }
   updateRail();
@@ -4123,8 +4141,11 @@ function setTool(t:Tool){ tool=t; wireStart=null; wireExit=null; wireBox=null; u
 function updateRail(){
   // Every block shares the SUB tool, so which one is armed decides which tile
   // lights up — otherwise picking one block highlights the whole shelf.
-  document.querySelectorAll<HTMLElement>('.tool').forEach(b=>b.classList.toggle('active',
-    b.dataset.t===tool && (b.dataset.t!=='SUB'||b.dataset.sub===pendingSub)));
+  document.querySelectorAll<HTMLElement>('.tool').forEach(b=>{
+    const on=b.dataset.t===tool && (b.dataset.t!=='SUB'||b.dataset.sub===pendingSub);
+    b.classList.toggle('active',on);
+    b.classList.toggle('locked',on&&toolLocked);
+  });
 }
 
 // ---- Example circuits -----------------------------------------------------

@@ -340,6 +340,12 @@
   .tool svg{width:24px;height:24px;flex:0 0 auto}
   .tool span{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.1}
   .tool:hover{background:var(--panel2);color:var(--ink)}
+  /* A locked tool keeps placing. The pin says so without adding a word to a
+     50px tile — and it only appears on the tile that is already active. */
+  .tool.locked{box-shadow:inset 0 0 0 2px var(--accent-ring)}
+  .tool.locked::after{content:'';position:absolute;top:4px;right:4px;
+    width:5px;height:5px;border-radius:50%;background:var(--accent)}
+  .tool{position:relative}
   .tool.active{background:var(--accent-soft);color:var(--accent);border-color:var(--accent-ring);
     box-shadow:inset 0 0 0 1px rgba(31,111,235,.12)}
   .railempty{padding:16px 14px;font-size:12px;color:var(--faint);text-align:center}

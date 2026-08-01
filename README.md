@@ -141,6 +141,12 @@ Wire tool routes, so an end dragged off the wire's own axis becomes a
 right-angled pair rather than a diagonal, and dragging one end onto the other
 removes the wire. Nothing else on the schematic moves.
 
+Picking a part from the rail places **one**, then hands you back the Select
+tool. Hold **shift** while clicking to keep the tool armed, or **double-tap the
+rail tile** to lock it — the tile shows a dot while it is locked, and Escape
+lets go. The double-tap exists because a phone has no shift key and going back
+to the rail between every part is a poor way to lay out a row of eight gates.
+
 There is a **Pan** tool next to Select. Dragging empty grid has always panned,
 and so do the middle button and space-drag, but a schematic that fills the
 screen leaves no empty grid to grab and a phone has neither a middle button nor
