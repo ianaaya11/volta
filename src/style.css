@@ -649,7 +649,16 @@
   /* The mark at hero size. Tighter tracking than the toolbar version — letter
      spacing that reads as deliberate at 15px reads as loose at 76px — and a
      slower sweep, because the same speed over a longer word looks frantic. */
-  .aboutlede .hero{margin:0 0 10px;line-height:1;text-align:center}
+  .aboutlede .hero{margin:0 0 10px;line-height:1;text-align:center;
+    display:flex;align-items:center;justify-content:center;gap:.12em}
+  /* Sized in em so it tracks the wordmark through its clamp() instead of
+     needing its own breakpoints. Filled from the gradient's bright stop and
+     given the same glow, so it reads as part of the mark rather than as an
+     icon that happens to be next to it. */
+  .herobolt{width:.78em;height:.78em;flex:0 0 auto;
+    font-size:clamp(52px,8.5vw,88px);
+    fill:var(--wm-b);stroke:none;
+    filter:drop-shadow(0 0 22px var(--wm-glow))}
   .aboutlede .hero .wordmark{font-size:clamp(52px,8.5vw,88px);letter-spacing:.02em;
     animation-duration:11s}
   @supports ((-webkit-background-clip:text) or (background-clip:text)){
@@ -692,17 +701,20 @@
      re-colours every pane in dark mode, because that block names .aboutme too
      and would otherwise win on specificity and put the white back. */
   /* The developer card is the one card that does NOT take the light treatment.
-     It is a dark pane held by a gold hairline, with the gold repeated in the
-     eyebrow — the colour comes from the border and the type, not from filling
-     the card, which is what keeps it looking deliberate rather than
-     highlighted. */
+     It is a dark pane, with the gold kept in the eyebrow and the name — the
+     colour comes from the type rather than from an outline, which is what
+     stops it reading as a highlighted box.
+     No border at all now, and enough transparency for the circuits behind it
+     to come through. Losing the hairline means the edge is carried by the
+     shadow and by the blur, so the card sits ON the page instead of being cut
+     out of it. */
   #aboutView .aboutme,
   :root[data-theme="dark"] #aboutView .aboutme{
-    /* Nearly opaque on the light page: a 70%-dark pane over a bright backdrop
-       reads as a smudge, not as a card that meant to be dark. In dark mode the
-       page behind is already dark, so it can stay properly translucent. */
-    --glass:rgba(24,31,44,.93);
-    --glass-edge:rgba(198,164,86,.55);
+    /* Translucent, but not so far that the backdrop starts competing with the
+       text: a portrait and three paragraphs still have to be the thing you
+       read. The blur underneath does most of the separating. */
+    --glass:rgba(24,31,44,.78);
+    --glass-edge:transparent;
     --glass-top:rgba(255,255,255,.08);
     --ink:#f2f5fa;
     --ink-soft:#c3ccda;
@@ -769,6 +781,12 @@
   .aboutmetext h2{margin:0;font-size:22px;font-weight:650;color:var(--ink);letter-spacing:-.01em}
   .aboutrole{margin:2px 0 14px;font-size:13px;font-weight:600;color:var(--accent)}
   .aboutmetext p{margin:0 0 12px;font-size:14px;line-height:1.7;color:var(--ink-soft)}
+  /* Both of these are <p> inside .aboutmetext, so the rule above outranks the
+     plain class selectors that set their colour and was quietly turning them
+     grey. That mattered less while a gold hairline held the card; with the
+     border gone the type carries the whole accent, so it has to win. */
+  .aboutmetext .abouteyebrow,
+  .aboutmetext .aboutrole{color:var(--accent)}
 
   .aboutcta{max-width:1040px;margin:32px auto 0;text-align:center;
     border-radius:var(--r-lg);padding:28px}
