@@ -134,6 +134,24 @@ about one and a quarter cycles so they react quickly; averages use eight, over
 completed whole-cycle windows, which is what makes a 3 V sine read 2.12 V rms
 rather than 2.23.
 
+## How wires connect
+Wires join where their **ends** meet — a shared endpoint, or a wire ending
+part-way along another one. That second case is the T-junction everyone uses to
+tap a rail, and it is made real when you draw it: the rail is split in two at
+that point, so what you get is an ordinary three-ended junction with a dot on
+it, indistinguishable from one drawn pin to pin.
+
+Splitting at draw time rather than reinterpreting the geometry afterwards is
+deliberate. A netlist rule that treats any point inside a segment as connected
+would change what circuits *already drawn* mean — the built-in 555 runs its
+discharge rail through the point where the LED's cathode wire begins, and such a
+rule shorts the LED and stops it oscillating. A saved design could have the same
+overlap anywhere in it.
+
+Two wires **crossing** do not connect, as in any schematic. Nor does a component
+pin that merely happens to lie under a passing wire: to attach a part, end a
+wire on its pin.
+
 ## Getting around, and reshaping a wire
 Select a wire and it grows a handle at each end; drag one to extend the wire,
 shorten it, or swing it somewhere else. The result is routed the same way the

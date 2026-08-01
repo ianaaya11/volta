@@ -715,6 +715,68 @@ function pinCurrents(c:Comp,result:Solution):number[]{
   return [i,-i];                                  // 2-terminal: in at A, out at B
 }
 
+/** Does `p` sit part-way along `w`, strictly between its two ends?
+ *
+ *  Strictly, because an endpoint that coincides with another endpoint is
+ *  already joined and needs no help. Interior hits are the T-junctions: a
+ *  branch tapping a rail, or a part dropped onto an existing run.
+ *
+ *  Axis-aligned only. Every wire the editor makes is, and a diagonal — which
+ *  could only arrive from a hand-edited file — is left alone rather than
+ *  guessed at. */
+function pointOnWire(px:number,py:number,w:Wire):boolean{
+  if((px===w.x1&&py===w.y1)||(px===w.x2&&py===w.y2)) return false;
+  if(w.x1===w.x2) return px===w.x1 && py>Math.min(w.y1,w.y2) && py<Math.max(w.y1,w.y2);
+  if(w.y1===w.y2) return py===w.y1 && px>Math.min(w.x1,w.x2) && px<Math.max(w.x1,w.x2);
+  return false;
+}
+
+/** Make a T-junction real, by splitting rather than by reinterpreting.
+ *
+ *  Ending a wire part-way along another wire has to connect — it is how anyone
+ *  taps a rail, and without it a branch can sit visibly on a rail and be no
+ *  part of the circuit. The obvious fix is a netlist rule: treat a point lying
+ *  inside a segment as joined to it. That is the wrong fix, and trying it is
+ *  what showed why: it changes what an EXISTING drawing means. The built-in 555
+ *  runs its discharge rail through the point where the LED's cathode wire
+ *  begins, so the rule shorted the LED and stopped it oscillating — and any
+ *  saved design could have the same overlap anywhere in it, silently rewired on
+ *  the day the app updated.
+ *
+ *  So the split happens when the wire is DRAWN, and only to the wires being
+ *  drawn. The rail is cut in two at the tap point, which leaves three wire ends
+ *  meeting there — an ordinary shared-endpoint junction, indistinguishable from
+ *  one drawn pin to pin, and one that draws its own dot. Nothing already on the
+ *  canvas is reinterpreted; a circuit means today what it meant yesterday.
+ *
+ *  Both directions, because either can be the newcomer: the new wire may end on
+ *  an old one, or an old one may end part-way along the new one. */
+function addWires(segs:Wire[]){
+  const out:Wire[]=[];
+  for(const seg of segs){
+    // Any existing end that lands inside this new run splits the new run.
+    const cuts:Pt[]=[];
+    for(const w of wires) for(const e of [{x:w.x1,y:w.y1},{x:w.x2,y:w.y2}]){
+      if(pointOnWire(e.x,e.y,seg)&&!cuts.some(c=>c.x===e.x&&c.y===e.y)) cuts.push(e);
+    }
+    // Along the run, so the pieces come out in order and stay contiguous.
+    cuts.sort((a,b)=>(a.x-b.x)||(a.y-b.y));
+    if(seg.x1>seg.x2||seg.y1>seg.y2) cuts.reverse();
+    let from={x:seg.x1,y:seg.y1};
+    for(const c of cuts){ out.push({x1:from.x,y1:from.y,x2:c.x,y2:c.y}); from=c; }
+    out.push({x1:from.x,y1:from.y,x2:seg.x2,y2:seg.y2});
+  }
+  // And each new end that lands inside an existing wire splits that one.
+  for(const seg of out) for(const e of [{x:seg.x1,y:seg.y1},{x:seg.x2,y:seg.y2}]){
+    for(let i=wires.length-1;i>=0;i--){
+      const w=wires[i];
+      if(!pointOnWire(e.x,e.y,w)) continue;
+      wires.splice(i,1,{x1:w.x1,y1:w.y1,x2:e.x,y2:e.y},{x1:e.x,y1:e.y,x2:w.x2,y2:w.y2});
+    }
+  }
+  wires.push(...out.filter(w=>w.x1!==w.x2||w.y1!==w.y2));
+}
+
 function buildNetlist():Netlist{
   const parent=new Map<string,string>();
   const key=(x:number,y:number)=>x+','+y;
@@ -2666,7 +2728,7 @@ stage.addEventListener('pointerdown',e=>{
     else {
       const segs=routeWire(wireStart,{x:a.x,y:a.y},wireExit,a.exit,[wireBox,a.box]);
       if(segs.length){
-        wires.push(...segs);
+        addWires(segs);
         wireStart={x:a.x,y:a.y};
         // Carry on from the new point along its own axis if it is a pin;
         // from a bare corner, continue perpendicular to the run just laid so a
@@ -2774,8 +2836,10 @@ function endWireEdit(){
   if(i<0){ selectedWire=null; draw(); return; }
   const segs=routeWire(fixed,to,null,null,comps.map(pinBox));
   // Dragged onto its own other end: the wire has no length left, so it goes.
-  wires.splice(i,1,...segs);
-  selectedWire=segs[0]??null;
+  wires.splice(i,1);
+  const before=wires.length;
+  addWires(segs);            // an end dropped on another wire taps it
+  selectedWire=wires[before]??null;
   refreshMeta(); commit(); renderInspector(); draw();
 }
 
@@ -3203,7 +3267,33 @@ function runBode(){
   flashHint('AC sweep 1 Hz–1 MHz. Solid = gain (dB), dashed = phase (°), per probe.');
   draw();
 }
+/** The devices that can actually influence the solution: those with a path,
+ *  through shared nodes, back to the reference.
+ *
+ *  An island with no route to ground has no reference of its own. The engine
+ *  keeps it numerically defined with a tiny leak to earth and it sits at zero,
+ *  contributing nothing — but it was still getting a vote on the timestep, and
+ *  the timestep is chosen from the FASTEST element present. So a 1 mH inductor
+ *  dropped on the canvas and wired to nothing forced a 10 ns step on a circuit
+ *  whose real dynamics were at 0.67 ms, and everything crawled by a factor of
+ *  a thousand. A part contributing nothing to the answer should not be allowed
+ *  to set the pace at which the answer arrives. */
+function reachesGround(nc:Component[]):Component[]{
+  const parent=new Map<NodeId,NodeId>();
+  const find=(n:NodeId):NodeId=>{ if(!parent.has(n)) parent.set(n,n);
+    while(parent.get(n)!==n){ parent.set(n,parent.get(parent.get(n)!)!); n=parent.get(n)!; } return n; };
+  const union=(a:NodeId,b:NodeId)=>{ parent.set(find(a),find(b)); };
+  for(const c of nc) for(let i=1;i<c.nodes.length;i++) union(c.nodes[0],c.nodes[i]);
+  const g=find(0);
+  const live=nc.filter(c=>c.nodes.some(n=>find(n)===g));
+  // A circuit with no reference at all cannot Run, but chooseTimestep is also
+  // called from the math panel on a half-drawn schematic. Falling back to the
+  // whole list keeps that honest rather than returning nothing.
+  return live.length?live:nc;
+}
+
 function chooseTimestep(nc:Component[]){
+  nc=reachesGround(nc);
   let tau=1e-3;
   let reactive=false;
   // Reference resistance for an inductor's time constant. L/R is the decay it

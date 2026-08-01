@@ -139,7 +139,14 @@ test('a wattmeter reads real power, and its own coils disturb nothing', async ({
   await page.locator('#valInput').dispatchEvent('change');
 
   await g.wire([5, 12], [7, 11]);       // source + into the current coil
-  await g.wire([7, 13], [13, 12]);      // current coil out to the load
+  // Out of the current coil to the load, routed BELOW the meter rather than
+  // straight across at y=13 — which is where the voltage coil's own bottom pin
+  // sits. Ending a wire part-way along another now taps it, so a run that
+  // happens to pass through a pin is a junction waiting to happen the moment
+  // anything is drawn from that pin.
+  await g.wire([7, 13], [7, 15]);
+  await g.wire([7, 15], [13, 15]);
+  await g.wire([13, 15], [13, 12]);     // current coil out to the load
   await g.wire([11, 11], [13, 12]);     // voltage coil across the load
   await g.wire([11, 13], [15, 12]);
   await g.wire([15, 12], [15, 17]);
