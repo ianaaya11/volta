@@ -25,5 +25,20 @@ dev-dist/
 !.vscode/extensions.json
 .idea/
 
-# Local Supabase credentials
-.env.local
+# Local Supabase credentials.
+# `.env.local` is the one actually used; the rest are covered so a stray
+# `.env` or `.env.production` cannot be committed by accident. The example
+# stays — it holds placeholders and is how anyone knows which vars exist.
+.env
+.env.*
+!.env.example
+
+# Build artefacts
+*.tsbuildinfo
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
