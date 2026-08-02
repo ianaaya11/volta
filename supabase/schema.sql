@@ -56,6 +56,26 @@ create table if not exists public.profiles (
 );
 
 -- ---------------------------------------------------------------------------
+--  Columns added after the first version
+-- ---------------------------------------------------------------------------
+--  `create table if not exists` does nothing at all to a table that already
+--  exists — including adding columns that have appeared in it since. On a
+--  database created before consent and approval existed, every policy below
+--  that mentions `approved` or `age_confirmed` would fail on a column that was
+--  never there. So each later column is added again here, separately, where
+--  re-running is genuinely a no-op.
+alter table public.profiles add column if not exists age_confirmed     boolean not null default false;
+alter table public.profiles add column if not exists terms_version     text;
+alter table public.profiles add column if not exists terms_accepted_at timestamptz;
+alter table public.profiles add column if not exists approved          boolean not null default false;
+alter table public.profiles add column if not exists approved_at       timestamptz;
+
+do $$ begin
+  alter table public.profiles add constraint profiles_terms_version_len
+    check (char_length(terms_version) <= 20);
+exception when duplicate_object then null; end $$;
+
+-- ---------------------------------------------------------------------------
 --  designs — a published circuit
 -- ---------------------------------------------------------------------------
 create table if not exists public.designs (
