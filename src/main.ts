@@ -5101,6 +5101,34 @@ function backdropApi(){
       drawDoc(c,d as SavedModel,ox,oy,rev,flow) };
 }
 
+// ---- The inspector panel, put away ----------------------------------------
+// The canvas is the thing the app exists to show, and the panel is 300px of a
+// laptop window or 36% of a phone screen whichever way you hold it. Shutting it
+// is remembered, because someone who wants the room usually wants it every time
+// — and it is a preference about the chrome, not about the circuit, so it does
+// not belong in the document.
+{
+  const KEY='volta.panelShut';
+  const app=el('app'), btn=el('inspectorToggle');
+  const paint=(shut:boolean)=>{
+    app.classList.toggle('panel-shut',shut);
+    btn.setAttribute('aria-expanded',String(!shut));
+    btn.title=shut?'Show the panel':'Hide the panel';
+    // The canvas is sized from its own box, so it has to be measured again
+    // after the grid column changes or the schematic keeps the old width and
+    // every click lands in the wrong place.
+    resize();
+  };
+  let shut=false;
+  try{ shut=localStorage.getItem(KEY)==='1'; }catch{}
+  paint(shut);
+  btn.onclick=()=>{
+    shut=!shut;
+    try{ localStorage.setItem(KEY,shut?'1':'0'); }catch{}
+    paint(shut);
+  };
+}
+
 // ---- Terms & privacy -------------------------------------------------------
 // Wired here rather than in community-ui for the same reason About is: these
 // documents apply whether or not the commons is switched on. The privacy notice

@@ -121,3 +121,34 @@ test('a tapped part opens the inspector for editing', async ({ page }) => {
   await expect(page.locator('#inspectorBody')).toContainText('Resistor');
   await expect(page.locator('#valInput')).toHaveValue('1 k');
 });
+
+test('the inspector folds away on a phone, giving its height to the canvas', async ({ page }) => {
+  // On a phone the panel is a bottom row holding 36vh whatever is in it, which
+  // on a 390x844 screen is most of the room the schematic has. Folding it down
+  // is worth more here than anywhere else, so it is measured here.
+  await page.goto('/');
+  const height = () => page.evaluate(() =>
+    Math.round(document.getElementById('cv')!.getBoundingClientRect().height));
+
+  const open = await height();
+  await page.tap('#inspectorToggle');
+  await expect(page.locator('#inspectorBody')).toBeHidden();
+
+  const shut = await height();
+  expect(shut, 'the canvas should be taller with the panel folded').toBeGreaterThan(open);
+  expect(shut - open, 'and it should be most of the 36vh, not a sliver')
+    .toBeGreaterThan(200);
+
+  // The app still fills the width — a rule written for the three-column desktop
+  // layout leaked into the single-column phone one and squeezed everything into
+  // the left third, which is exactly the sort of thing a measurement catches
+  // and a class-name assertion does not.
+  const w = await page.evaluate(() => ({
+    app: Math.round(document.getElementById('app')!.getBoundingClientRect().width),
+    view: window.innerWidth,
+  }));
+  expect(w.app).toBe(w.view);
+
+  await page.tap('#inspectorToggle');
+  await expect(page.locator('#inspectorBody')).toBeVisible();
+});

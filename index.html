@@ -145,6 +145,14 @@
   </div>
 
   <aside id="inspector">
+    <!-- Outside #inspectorBody deliberately: that element's innerHTML is
+         rewritten on every selection change and every animation frame while
+         running, and a control living inside it would be destroyed mid-click. -->
+    <button id="inspectorToggle" type="button" aria-expanded="true"
+            aria-controls="inspectorBody" title="Hide the panel">
+      <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chevron"/></svg>
+      <span id="inspectorToggleLabel">Panel</span>
+    </button>
     <div id="inspectorBody"></div>
   </aside>
 

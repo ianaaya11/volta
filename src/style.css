@@ -367,6 +367,34 @@
 
   /* ---- Inspector --------------------------------------------------------- */
   #inspector{grid-row:2;background:var(--panel);border-left:1px solid var(--line);padding:16px;overflow-y:auto}
+
+  /* ---- Collapsing the panel ---------------------------------------------
+     On a phone the inspector owns 36% of the screen whatever is in it, which
+     on a small display is most of the room the schematic has. On a laptop it
+     is 300px of a 1280px window. Either way it should be possible to put it
+     away while drawing and bring it back to read a value. */
+  #inspectorToggle{display:flex;align-items:center;gap:6px;width:100%;
+    background:none;border:none;padding:0 0 10px;cursor:pointer;font-family:inherit;
+    font-size:10px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;
+    color:var(--faint)}
+  #inspectorToggle:hover{color:var(--muted)}
+  #inspectorToggle .ic{width:12px;height:12px;stroke-width:2.4;
+    transition:transform .15s;transform:rotate(180deg)}   /* points out, to hide */
+  #app.panel-shut #inspectorToggle .ic{transform:rotate(0deg)}  /* points in, to show */
+  #app.panel-shut #inspectorBody{display:none}
+
+  /* Shut, the column is just wide enough for the chevron. The label goes —
+     40px cannot hold a word — and the button centres what is left.
+     Scoped to widths that HAVE three columns: below 760px the layout is a
+     single column of stacked rows, and a bare `grid-template-columns` here
+     leaked into it and squeezed the whole app into the left third. */
+  @media (min-width:761px){
+    #app.panel-shut,
+    #app.panel-shut.mathmode{grid-template-columns:var(--rail) 1fr 40px}
+    #app.panel-shut #inspector{padding:12px 0}
+    #app.panel-shut #inspectorToggle{justify-content:center;padding:0}
+    #app.panel-shut #inspectorToggleLabel{display:none}
+  }
   #inspector h3{margin:0 0 12px;font-size:10px;text-transform:uppercase;letter-spacing:.07em;
     font-weight:600;color:var(--faint)}
   .field{margin-bottom:14px}
@@ -1003,6 +1031,17 @@
     /* Bottom inset clears the gesture pill / navigation bar. */
     #inspector{grid-row:4;grid-column:1;border-left:none;border-top:1px solid var(--line);
       padding:12px 12px calc(12px + env(safe-area-inset-bottom,0px))}
+    /* Down here the panel is a row, not a column, so shutting it means giving
+       the height back to the canvas — and the chevron turns to match: down to
+       put it away, up to bring it back. */
+    #inspectorToggle .ic{transform:rotate(90deg)}
+    #app.panel-shut #inspectorToggle .ic{transform:rotate(-90deg)}
+    #app.panel-shut{grid-template-rows:calc(var(--hdr) + env(safe-area-inset-top,0px)) 66px 1fr auto}
+    #app.panel-shut #inspector{padding:10px 12px calc(10px + env(safe-area-inset-bottom,0px))}
+    #app.panel-shut #inspectorToggle{justify-content:flex-start;padding:0}
+    /* The label stays on a phone: there is room for it across the full width,
+       and "Panel" is the only thing telling you what the chevron reopens. */
+    #app.panel-shut #inspectorToggleLabel{display:inline}
     #hint{left:10px;right:10px;top:10px;max-width:none}
   }
 
