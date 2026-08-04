@@ -5114,6 +5114,9 @@ function backdropApi(){
     app.classList.toggle('panel-shut',shut);
     btn.setAttribute('aria-expanded',String(!shut));
     btn.title=shut?'Show the panel':'Hide the panel';
+    // Says what pressing it DOES, rather than naming the thing it is attached
+    // to — "Panel" told you nothing and looked like a heading.
+    el('inspectorToggleLabel').textContent=shut?'Show panel':'Hide panel';
     // The canvas is sized from its own box, so it has to be measured again
     // after the grid column changes or the schematic keeps the old width and
     // every click lands in the wrong place.
