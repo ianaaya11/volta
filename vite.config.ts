@@ -8,7 +8,7 @@ export default defineConfig({
   plugins: [
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['icon.svg', 'about-photo.webp'],
+      includeAssets: ['icon.svg', 'apple-touch-icon.png', 'about-photo.webp'],
       manifest: {
         name: 'Volta — Live Circuit Simulator',
         short_name: 'Volta',
@@ -20,8 +20,14 @@ export default defineConfig({
         background_color: '#f7f9fc',
         display: 'standalone',
         orientation: 'any',
+        // The SVG first — it stays crisp at any size on Android — with PNGs
+        // behind it, because installability checks and older launchers want a
+        // raster of a known size and quietly refuse the install without one.
         icons: [
           { src: 'icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any maskable' },
+          { src: 'icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+          { src: 'icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+          { src: 'icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
         ],
       },
       workbox: {

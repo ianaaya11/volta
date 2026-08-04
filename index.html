@@ -8,7 +8,11 @@
 <meta name="theme-color" content="#f7f9fc" media="(prefers-color-scheme: light)" />
 <meta name="theme-color" content="#1b1f27" media="(prefers-color-scheme: dark)" />
 <link rel="icon" href="./icon.svg" type="image/svg+xml" />
-<link rel="apple-touch-icon" href="./icon.svg" />
+<!-- iOS ignores the manifest's icons entirely and reads this link — and it
+     will not accept an SVG, so pointing it at icon.svg gave an iPhone nothing
+     to draw and it fell back to a screenshot of the page. 180px is what iOS
+     asks for. -->
+<link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png" />
 <title>Volta — Live Circuit Simulator</title>
 <script>
   // The app was called Zuri before it was called Volta. Copy anything saved
