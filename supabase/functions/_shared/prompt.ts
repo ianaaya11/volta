@@ -172,6 +172,32 @@ WORKED EXAMPLE — 5 V source, 1 kΩ series resistor, 1 µF cap to ground:
          (4,4)-(6,4)   source plus across to the resistor
          (8,6)-(8,8)   cap bottom down to ground
 
+SEQUENCERS (traffic lights, chasers, anything that steps through N phases):
+CNT4 free-runs to 15, so an N-phase cycle MUST reset itself, and the reset has
+to be decoded from EVERY bit that is high in state N. For three phases that is
+count 3 = Q0 AND Q1. Decoding the reset from Q1 alone is the classic error: the
+counter then only ever reaches 1, so the third lamp never lights at all.
+Reset is asynchronous, so state N lasts one timestep and is never seen.
+Decode each phase from BOTH bits, never from one:
+    count 0 -> nQ1 AND nQ0      count 2 ->  Q1 AND nQ0
+    count 1 -> nQ1 AND  Q0      count 3 ->  Q1 AND  Q0  -> RST
+Build one NOT per counter bit and reuse its output; wiring a lamp to Q1 alone
+lights it in two states, not one.
+
+WORKED EXAMPLE — three-phase traffic light, verified to run:
+  LOGIC at (2,3) value 1        1 Hz clock
+  CNT4  at (6,4)                CLK (6,3), RST (6,5), Q0 (12,1), Q1 (12,3)
+  NOT   at (20,1) -> nQ0 at (24,1)        NOT at (20,5) -> nQ1 at (24,5)
+  AND   at (32,10) -> red LED via 150 R   inputs nQ0, nQ1
+  AND   at (32,16) -> yellow LED via 150 R inputs Q0, nQ1
+  AND   at (32,22) -> green LED via 150 R  inputs Q1, nQ0
+  AND   at (32,28) -> RST                  inputs Q0, Q1
+  Each lamp: gate output -> R (150) -> LED -> GND.
+Run each signal down its own vertical bus and SPLIT the bus at every tap:
+wires join at endpoints, so a run that merely passes over a junction does not
+connect to it. Two wires that cross without sharing an endpoint do not connect,
+so crossings are safe.
+
 RULES:
 - Call build_circuit for any request to build or change a circuit, and return the
   WHOLE circuit — what you return replaces the canvas.

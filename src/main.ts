@@ -4407,6 +4407,7 @@ const GALLERY=[
   {name:'Transformer steps 10 V up to 20 V', fn:loadXfmr},
   {name:'Digital: clock → counter → display', fn:loadCounter},
   {name:'Digital: gates on two switches', fn:loadGates},
+  {name:'Traffic light sequencer', fn:loadTraffic},
   {name:'555 astable blinks an LED', fn:load555},
 ];
 // A circuit you operate rather than watch: throw the switch to power the rail,
@@ -4499,6 +4500,78 @@ function loadXfmr(){
 
 // The digital library end to end: a clock drives a counter and the counter
 // drives a display, so you can watch it count 0–F and wrap.
+// A three-phase sequencer: the circuit behind a traffic light, and the thing an
+// LLM reliably gets wrong. The trap is the reset. A 4-bit counter free-runs to
+// 15, so a 3-state cycle has to reset itself — and it must reset on 3, decoded
+// as Q0 AND Q1. Resetting on Q1 alone makes it count 0,1 and nothing else,
+// which lights red and amber forever and never green. That is exactly the
+// failure this example exists to make visible.
+//
+//   count  Q1 Q0   lamp
+//     0     0  0   red     = nQ1 AND nQ0
+//     1     0  1   amber   = nQ1 AND  Q0
+//     2     1  0   green   =  Q1 AND nQ0
+//     3     1  1   reset   =  Q1 AND  Q0   (asynchronous, so never seen)
+//
+// The two counter bits and their inverses fan out on four vertical buses, each
+// SPLIT at every tap: wires join at endpoints, so a run that merely passes over
+// a junction does not connect to it.
+function loadTraffic(){
+  comps=[]; wires=[]; uid=1;
+  const C=(o:Comp)=>comps.push(o);
+  const W=(x1:number,y1:number,x2:number,y2:number)=>wires.push({x1,y1,x2,y2});
+
+  C({id:'LOGIC'+(uid++),type:'LOGIC',x:2,y:3,rot:0,value:1});       // 1 Hz clock
+  C({id:'CNT4'+(uid++),type:'CNT4',x:6,y:4,rot:0});                 // CLK(6,3) RST(6,5) Q0(12,1) Q1(12,3)
+  W(2,3,6,3);
+
+  // Q0 and Q1 out to their buses, and an inverter for each.
+  W(12,1,14,1);  W(14,1,20,1);
+  W(12,3,16,3);
+  C({id:'NOT'+(uid++),type:'NOT',x:20,y:1,rot:0});                  // A(20,1) Q(24,1) = nQ0
+  C({id:'NOT'+(uid++),type:'NOT',x:20,y:5,rot:0});                  // A(20,5) Q(24,5) = nQ1
+  W(16,5,20,5);
+  W(24,1,26,1);
+  W(24,5,28,5);
+
+  // Vertical buses, split at every tap point.
+  W(14,1,14,15);  W(14,15,14,27);      // Q0  down x=14
+  W(16,3,16,5);   W(16,5,16,21);  W(16,21,16,29);   // Q1  down x=16
+  W(26,1,26,9);   W(26,9,26,23);       // nQ0 down x=26
+  W(28,5,28,11);  W(28,11,28,17);      // nQ1 down x=28
+
+  // Decode. Gates are 4 wide: A(x,y-1) B(x,y+1) Q(x+4,y).
+  const lamp:[string,number,LedColor,number,number][]=[
+    ['RED',   10, 'red',    26,  28],   // nQ0 & nQ1
+    ['AMBER', 16, 'yellow', 14,  28],   //  Q0 & nQ1
+    ['GREEN', 22, 'green',  16,  26],   //  Q1 & nQ0
+  ];
+  for(const [,y,hue,busA,busB] of lamp){
+    C({id:'AND'+(uid++),type:'AND',x:32,y,rot:0});
+    W(busA,y-1,32,y-1);
+    W(busB,y+1,32,y+1);
+    // Gate output -> series resistor -> LED -> ground. 150 R gives ~20 mA from
+    // the 5 V a digital output drives, for every colour here.
+    W(36,y,38,y);
+    C({id:'R'+(uid++),type:'R',x:38,y,rot:0,value:150});
+    W(40,y,42,y);
+    C({id:'LED'+(uid++),type:'LED',x:42,y,rot:0,color:hue});
+    W(44,y,46,y);
+    C({id:'GND'+(uid++),type:'GND',x:46,y});
+  }
+
+  // The reset: count 3 decoded straight back to RST. Async, so state 3 lasts a
+  // single timestep and is never seen — the lamps just step 0,1,2,0,1,2.
+  C({id:'AND'+(uid++),type:'AND',x:32,y:28,rot:0});
+  W(14,27,32,27);
+  W(16,29,32,29);
+  W(36,28,36,32); W(36,32,4,32); W(4,32,4,5); W(4,5,6,5);
+
+  selected=null; refreshMeta(); renderInspector(); fitView(); draw();
+  flashHint('Press <b>Run</b>: the counter steps 0-1-2 and back, lighting '
+    +'<b>red</b>, <b>amber</b>, <b>green</b> in turn. Count 3 resets it instantly.');
+}
+
 function loadCounter(){
   comps=[]; wires=[]; uid=1;
   // No ground symbol: every part here is digital, and digital parts carry

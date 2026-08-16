@@ -179,7 +179,16 @@ the sort of thing a simulator exists to show you before you build it. Size the
 resistor as `R = (Vsupply − Vf) / 0.02` for about 20 mA.
 
 The assistant knows the colours too, so "build a traffic light" gets a red, an
-amber and a green LED with resistors sized for each. An LED saved before this
+amber and a green LED with resistors sized for each. There is a **Traffic light
+sequencer** in the examples menu if you want to see the whole thing working:
+a counter, four gates and three lamps stepping red, amber, green.
+
+The trap in that circuit, and the one an LLM reliably falls into, is the reset.
+`CNT4` free-runs to 15, so a three-phase cycle has to reset itself — and the
+reset must be decoded from **both** bits, `Q0 AND Q1` for count 3. Decode it
+from `Q1` alone and the counter only ever reaches 1: red, amber, red, amber, and
+green never appears. The schematic looks perfectly reasonable either way, which
+is why `e2e/traffic.spec.ts` watches the lamps actually take turns. An LED saved before this
 existed, or built without naming a colour, is red.
 
 ## Reading the numbers while it runs
