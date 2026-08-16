@@ -106,6 +106,10 @@ const KEY_ = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
 
 export const configured = !!(URL_ && KEY_);
 
+/** Where the project lives, for the one caller that needs to build a URL by
+ *  hand rather than go through the SDK: the assistant's Edge Function. */
+export const projectUrl = URL_ ?? '';
+
 let clientPromise: Promise<SupabaseClient> | null = null;
 /** The SDK loads on first use, never at startup. */
 export function client(): Promise<SupabaseClient> {

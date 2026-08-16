@@ -443,3 +443,72 @@ create or replace view public.gallery as
 -- policy still applies through it.
 alter view public.gallery set (security_invoker = on);
 grant select on public.gallery to anon, authenticated;
+
+-- ---------------------------------------------------------------------------
+--  ai_usage — what the assistant has cost, per member, per day
+-- ---------------------------------------------------------------------------
+--  The assistant runs on the owner's Anthropic key, held as a secret by the
+--  `ask` Edge Function. That makes every request the owner's money, so it needs
+--  a bound that a member cannot talk their way past.
+--
+--  The count lives here rather than in the function because edge runtimes are
+--  many short-lived instances: a counter in one of them is a counter per
+--  instance, which is no counter at all. One row per member per UTC day.
+create table if not exists public.ai_usage (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  day     date not null default (now() at time zone 'utc')::date,
+  calls   int  not null default 0,
+  primary key (user_id, day)
+);
+
+alter table public.ai_usage enable row level security;
+
+-- Deliberately no policies and no grants: nothing reaches this table except
+-- ai_take_turn() below, which is security definer. A member cannot read, and
+-- more to the point cannot edit, their own allowance.
+
+-- ---------------------------------------------------------------------------
+--  ai_take_turn — approval and the daily cap, taken as one atomic step
+-- ---------------------------------------------------------------------------
+--  Returns how many calls are left after this one. Raises instead of returning
+--  a code so a caller that forgets to check gets an error rather than a free
+--  request. The insert and the cap test are in one statement, so two requests
+--  racing cannot both see the last remaining call.
+create or replace function public.ai_take_turn(p_cap int default 40)
+returns int
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare n int;
+begin
+  if auth.uid() is null then
+    raise exception 'not signed in';
+  end if;
+
+  -- The same flag the admin page sets. The assistant is invitation-only for
+  -- exactly the reason the commons is: it is a closed pilot.
+  if not exists (select 1 from public.profiles where id = auth.uid() and approved) then
+    raise exception 'not approved';
+  end if;
+
+  -- Aliased because ON CONFLICT DO UPDATE may only refer to the target row by
+  -- the table's bare name or an alias, never a schema-qualified one.
+  insert into public.ai_usage as u (user_id, day, calls)
+       values (auth.uid(), (now() at time zone 'utc')::date, 1)
+  on conflict (user_id, day)
+    do update set calls = u.calls + 1
+    returning u.calls into n;
+
+  -- Raising here rolls the increment back with it, so a member who is over the
+  -- cap stays parked at the cap instead of climbing while being refused.
+  if n > p_cap then
+    raise exception 'daily limit reached';
+  end if;
+
+  return p_cap - n;
+end;
+$$;
+
+revoke all on function public.ai_take_turn(int) from public;
+grant execute on function public.ai_take_turn(int) to authenticated;

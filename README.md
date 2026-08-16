@@ -99,20 +99,69 @@ binaries) and roughly what each would take.
 
 ## AI assistant
 
-Press **✨ Ask** and paste an [Anthropic API key](https://console.anthropic.com/).
-The app calls the Claude API directly from the browser, so it stays a static
-PWA with no backend and nothing to deploy or pay for per user.
+Press **✨ Ask**. There are two ways it can answer, and the app picks whichever
+is available:
 
-> **The key lives in this browser's `localStorage`,** which means any script
-> running on the page could read it. That's an acceptable trade for a personal
-> or self-hosted tool; it is *not* appropriate for a public deployment. If you
-> host this for other people, move the call behind a small server-side proxy
-> holding one key, and drop `dangerouslyAllowBrowser` from `src/ai.ts`.
+| | Who it's for | Whose key |
+|---|---|---|
+| **Served** | Signed-in, approved members on the hosted build | The owner's, held by an Edge Function |
+| **Bring your own** | Offline, self-hosted, or no Supabase configured | The user's, pasted into the browser |
 
 Asking for a circuit replaces the canvas, and lands in the undo stack — ⌘Z
 reverts it like any other edit. Asking a question about the circuit on screen
-("why is this transistor saturated?") just answers in text. The SDK is
-code-split, so the offline app doesn't download it unless you open the panel.
+("why is this transistor saturated?") just answers in text.
+
+### Served — one key for everyone
+
+Volta is a static site, so there is nowhere in the bundle to hide an API key:
+anything shipped to one browser is shipped to all of them. The key therefore
+lives in a Supabase Edge Function, and the browser talks to that:
+
+```
+browser --(member's Supabase JWT)--> ask function --(owner's key)--> Anthropic
+```
+
+Three gates before a request costs anything: a valid signed-in user, that user's
+`approved` flag — the same one the admin page sets — and a per-member daily call
+cap counted in the database. The browser sends only a question and the circuit
+on screen; the system prompt and tool schema are added server-side, in
+`supabase/functions/_shared/prompt.ts`, so an approved member cannot repoint the
+key at a general-purpose conversation.
+
+To turn it on, from the project root:
+
+```sh
+brew install supabase/tap/supabase        # once
+supabase login
+supabase link --project-ref <your-ref>    # Settings -> General in the dashboard
+supabase secrets set ANTHROPIC_API_KEY=sk-ant-...
+supabase functions deploy ask
+```
+
+Then run the `ai_usage` table and `ai_take_turn` function at the end of
+[`supabase/schema.sql`](supabase/schema.sql) in the SQL editor. `SUPABASE_URL`
+and `SUPABASE_ANON_KEY` are injected into the function automatically — only the
+Anthropic key needs setting. Set a hard spend limit in the Anthropic console
+too: the daily cap bounds each member, the console bounds the bill.
+
+The cap is `DAILY_CAP` in [`supabase/functions/ask/index.ts`](supabase/functions/ask/index.ts).
+It counts attempts, not successes, because a retry loop against a failing model
+is exactly what a cap exists to bound.
+
+### Bring your own — the offline fallback
+
+With no Supabase credentials in the build, or no one signed in, the panel asks
+for an [Anthropic API key](https://console.anthropic.com/) instead and calls the
+API straight from the page. This is what keeps Volta honest as a static
+offline-capable PWA: a self-hosted copy needs no server of any kind.
+
+> **A pasted key lives in that browser's `localStorage`,** which means any
+> script running on the page could read it, and the browser may evict it —
+> Safari clears local storage after seven days of not visiting a site. That's an
+> acceptable trade for a personal tool. For anyone else, use the served path.
+
+Only this path loads the Anthropic SDK, in `src/ai-direct.ts`. A served member
+never downloads it.
 
 ## Reading the numbers while it runs
 The readouts show **settled figures, not the instantaneous solution**. A value

@@ -4924,16 +4924,35 @@ const loadKey=()=>localStorage.getItem(AI_KEY)??'';
 const saveKey=(k:string)=>localStorage.setItem(AI_KEY,k.trim());
 const clearKey=()=>localStorage.removeItem(AI_KEY);
 
+// A signed-in member is answered by the `ask` Edge Function on the owner's key,
+// so there is nothing for them to paste and nothing to lose when their browser
+// clears its storage. Falling back to a personal key is what keeps a build with
+// no Supabase credentials — a self-hosted or offline copy — fully working.
+let aiServed=false;
+async function aiToken():Promise<string|null>{
+  if(!community.configured) return null;
+  try{ return (await community.session())?.access_token??null; }catch{ return null; }
+}
+
 const aiModal=el('aiModal');
 const aiOut=()=>el('aiOut');
-function aiRefreshMode(){
-  const has=!!loadKey();
+async function aiRefreshMode(){
+  aiServed=!!await aiToken();
+  const has=aiServed||!!loadKey();
   el('aiKeySetup').hidden=has;
   el('aiChat').hidden=!has;
+  // Forgetting a key is meaningless when the server holds it, and offering it
+  // would suggest the member has one to lose.
+  const forget=document.getElementById('aiForget'); if(forget) forget.hidden=aiServed;
 }
 function openAi(){
-  aiModal.hidden=false; aiRefreshMode();
-  (document.getElementById(loadKey()?'aiPrompt':'aiKeyInput') as HTMLElement|null)?.focus();
+  aiModal.hidden=false;
+  // Show the last known state immediately, then correct it once the session is
+  // known — resolving a token takes a moment and an empty modal reads as broken.
+  el('aiKeySetup').hidden=aiServed||!!loadKey();
+  el('aiChat').hidden=!(aiServed||!!loadKey());
+  void aiRefreshMode().then(()=>
+    (document.getElementById(aiServed||loadKey()?'aiPrompt':'aiKeyInput') as HTMLElement|null)?.focus());
 }
 async function runAi(){
   const prompt=(el('aiPrompt') as HTMLTextAreaElement).value.trim();
@@ -4941,8 +4960,16 @@ async function runAi(){
   const btn=el('aiSend') as HTMLButtonElement;
   btn.disabled=true; aiOut().innerHTML='<div class="empty">Thinking…</div>';
   try{
-    const {askAssistant}=await import('./ai');     // loads the SDK chunk on first use
-    const reply=await askAssistant({key:loadKey(),prompt,circuit:serializeModel()});
+    const token=await aiToken();
+    let reply;
+    if(token){
+      const {askViaServer}=await import('./ai');   // no SDK on this path
+      reply=await askViaServer({supabaseUrl:community.projectUrl,token,prompt,
+        circuit:serializeModel()});
+    } else {
+      const {askAssistant}=await import('./ai-direct');  // loads the SDK chunk
+      reply=await askAssistant({key:loadKey(),prompt,circuit:serializeModel()});
+    }
     if(reply.kind==='circuit'){
       applyAiCircuit(reply.circuit);
       // Close the sheet. It is a full-screen scrim over the canvas, so leaving
@@ -4969,9 +4996,9 @@ el('aiClose').onclick=()=>{ aiModal.hidden=true; };
 aiModal.onclick=e=>{ if(e.target===aiModal) aiModal.hidden=true; };
 el('aiKeySave').onclick=()=>{
   const v=(el('aiKeyInput') as HTMLInputElement).value.trim();
-  if(v){ saveKey(v); (el('aiKeyInput') as HTMLInputElement).value=''; aiRefreshMode(); }
+  if(v){ saveKey(v); (el('aiKeyInput') as HTMLInputElement).value=''; void aiRefreshMode(); }
 };
-el('aiForget').onclick=()=>{ clearKey(); aiOut().innerHTML=''; aiRefreshMode(); };
+el('aiForget').onclick=()=>{ clearKey(); aiOut().innerHTML=''; void aiRefreshMode(); };
 el('aiSend').onclick=runAi;
 el('aiPrompt').addEventListener('keydown',e=>{
   if((e as KeyboardEvent).key==='Enter'&&((e as KeyboardEvent).metaKey||(e as KeyboardEvent).ctrlKey)) runAi();

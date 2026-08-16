@@ -604,10 +604,12 @@
         <button class="btn icon ghost" id="aiClose" title="Close"><svg class="ic" viewBox="0 0 24 24"><use href="#i-close"/></svg></button>
       </div>
       <div id="aiKeySetup" hidden>
-        <p class="empty">Paste an Anthropic API key to enable the assistant. It is stored in
-          this browser's local storage and sent only to api.anthropic.com — which means any
-          script running on this page could read it. Use a key you're comfortable with that,
-          and revoke it if you share this device.</p>
+        <p class="empty"><b>Sign in to use the assistant</b> — approved members get it with no
+          key and nothing to set up. Close this and use <b>Sign in</b> in the toolbar.</p>
+        <p class="empty">Running Volta offline or self-hosted, with no account? Paste your own
+          Anthropic API key instead. It is stored in this browser's local storage and sent only
+          to api.anthropic.com — which means any script running on this page could read it. Use
+          a key you're comfortable with that, and revoke it if you share this device.</p>
         <div class="field"><input id="aiKeyInput" type="password" placeholder="sk-ant-..." /></div>
         <button class="btn primary" id="aiKeySave">Save key</button>
       </div>
