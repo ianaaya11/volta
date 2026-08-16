@@ -3,7 +3,7 @@
 // the inspector fields, the scope axes and the Bode gridlines all go through
 // fmt(), and every edit the user makes comes back through parseVal().
 import { describe, it, expect } from 'vitest';
-import { fmt, parseVal } from '../src/format';
+import { fmt, parseVal, stepValue } from '../src/format';
 
 describe('fmt — engineering notation', () => {
   it('zero is special-cased (no prefix, and no space)', () => {
@@ -70,5 +70,49 @@ describe('parseVal — reading what the user types', () => {
     }
     expect(parseVal('1M')).toBe(1e6);      // mega
     expect(parseVal('1m')).toBe(1e-3);     // milli
+  });
+});
+
+// The -/+ buttons on every inspector value field walk this ladder. A fixed
+// increment would be useless across twelve decades of component values, so the
+// contract worth pinning is that a step always lands on a round bench value and
+// always moves in the direction asked.
+describe('stepValue — the 1-2-5 ladder', () => {
+  it('walks the rungs of a decade', () => {
+    expect(stepValue(1, 1)).toBeCloseTo(2);
+    expect(stepValue(2, 1)).toBeCloseTo(5);
+    expect(stepValue(5, 1)).toBeCloseTo(10);
+    expect(stepValue(10, -1)).toBeCloseTo(5);
+    expect(stepValue(1, -1)).toBeCloseTo(0.5);
+  });
+
+  it('snaps an off-ladder part value to the next rung', () => {
+    expect(stepValue(4700, 1)).toBeCloseTo(5000);    // 4.7k -> 5k
+    expect(stepValue(4700, -1)).toBeCloseTo(2000);   // 4.7k -> 2k
+    expect(stepValue(3.3e-6, 1)).toBeCloseTo(5e-6);
+  });
+
+  it('holds its precision down at picofarads', () => {
+    expect(stepValue(100e-12, 1)).toBeCloseTo(200e-12, 15);
+    expect(stepValue(1e-12, -1)).toBeCloseTo(5e-13, 15);
+    expect(stepValue(1e9, 1)).toBeCloseTo(2e9);
+  });
+
+  it('steps a negative offset without crossing zero', () => {
+    expect(stepValue(-5, 1)).toBeCloseTo(-2);        // + moves the number up, toward zero
+    expect(stepValue(-5, -1)).toBeCloseTo(-10);      // - drives the rail further down
+    expect(Math.sign(stepValue(-0.1, -1))).toBe(-1); // and never flips sign on the way
+  });
+
+  it('is total on the values a blank field can hold', () => {
+    expect(stepValue(0, 1)).toBe(1);
+    expect(stepValue(0, -1)).toBe(-1);   // a 0 V offset can be stepped negative
+    expect(Number.isFinite(stepValue(NaN, 1))).toBe(true);
+  });
+
+  it('round-trips through the formatter the field displays', () => {
+    let v = 1000;
+    for (let i = 0; i < 6; i++) v = stepValue(parseVal(fmt(v, '')), 1);
+    expect(v).toBeCloseTo(1e5, 0);                   // 1k -> 2k -> 5k -> 10k -> 20k -> 50k -> 100k
   });
 });

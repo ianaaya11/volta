@@ -47,6 +47,35 @@ export function fmt(v: number, unit: string): string {
   return v.toExponential(2) + unit;
 }
 
+// The rungs of the 1-2-5 ladder every decade is built from. Instrument ranges
+// and parts bins are stocked on this sequence, so stepping along it lands on
+// values a real bench would have.
+const LADDER = [1, 2, 5];
+
+// Move a component value one rung up or down the 1-2-5 ladder: 4.7k steps up to
+// 5k and down to 2k, 100n up to 200n. Component values span a dozen decades, so
+// a fixed increment is useless — a +/- button has to be multiplicative to be
+// worth pressing. Negative values step by magnitude and never cross zero, which
+// keeps a -5 V offset on the same ladder as a +5 V one.
+export function stepValue(v: number, dir: 1 | -1): number {
+  const a = Math.abs(v);
+  // A field sitting at zero has no decade to work from, so start it at the
+  // bottom rung. Going negative matters for the one field that allows it (a DC
+  // offset); callers that only accept positives reject the -1 and stay put.
+  if (!isFinite(a) || a === 0) return dir > 0 ? 1 : -1;
+  const sign = v < 0 ? -1 : 1;
+  const d = dir * sign;                        // + on a negative value walks it toward zero
+  const dec = Math.floor(Math.log10(a) + 1e-12);
+  const rungs: number[] = [];
+  for (const e of [dec - 1, dec, dec + 1]) for (const m of LADDER) rungs.push(m * Math.pow(10, e));
+  rungs.sort((x, y) => x - y);
+  const eps = 1 + 1e-9;                        // tolerate the float error in 10^-9 etc
+  const next = d > 0
+    ? rungs.find(r => r > a * eps)
+    : rungs.slice().reverse().find(r => r * eps < a);
+  return sign * (next ?? (d > 0 ? a * 2 : a / 2));
+}
+
 // Parse a user-typed value back to a number: "4.7k" -> 4700, "1µ" -> 1e-6.
 // Unit letters are optional and ignored, so "4.7kΩ" and "4.7k" agree.
 // Returns NaN when nothing numeric can be read.

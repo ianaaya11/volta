@@ -1,6 +1,6 @@
 import { Circuit } from './engine';
 import type { Component, NodeId, Pair, Quad, Solution, SolveTrace, Triple } from './engine';
-import { fmt, parseVal } from './format';
+import { fmt, parseVal, stepValue } from './format';
 // The assistant module pulls in the Anthropic SDK, which is several times the
 // size of the whole app. It is imported dynamically at the point of use so the
 // offline PWA doesn't pay for it on every load — only `import type` here, which
@@ -3412,6 +3412,17 @@ function updateVRange(){
 // ===========================================================================
 //  PART 7 — INSPECTOR / UI CHROME
 // ===========================================================================
+// A numeric inspector field with a -/+ button either side. Typing a value is
+// still the fast path for anyone who knows what they want; the buttons are for
+// sweeping a value to see what it does, which is most of what this app is for.
+function numField(id:string,value:string){
+  return `<div class="stepwrap">
+    <button class="stepbtn" type="button" data-step="-1" data-for="${id}" aria-label="Decrease" tabindex="-1">&minus;</button>
+    <input id="${id}" value="${value}" inputmode="decimal"/>
+    <button class="stepbtn" type="button" data-step="1" data-for="${id}" aria-label="Increase" tabindex="-1">+</button>
+  </div>`;
+}
+
 function renderInspector(){
   const body=el('inspectorBody');
   // A wire selection is a reference INTO the wires array, and several paths
@@ -3473,15 +3484,15 @@ function renderInspector(){
     'SW','PB','PBNC',...(Object.keys(DIGITAL) as PartType[])];
   if(!noValue.includes(sel.type)){
     html+=`<div class="field"><label>Value (${t.unit}) — e.g. 4.7k, 100n, 12</label>
-      <input id="valInput" value="${fmt(sel.value??t.def,'').trim()}"/></div>`;
+      ${numField('valInput',fmt(sel.value??t.def,'').trim())}</div>`;
   }
   if(sel.type==='VS'||sel.type==='SQ'){
-    html+=`<div class="field"><label>Amplitude (V)</label><input id="ampInput" value="${fmt(sel.amp??0,'').trim()}"/></div>
-      <div class="field"><label>Frequency (Hz)</label><input id="freqInput" value="${fmt(sel.freq??0,'').trim()}"/></div>
-      <div class="field"><label>DC offset (V)</label><input id="offInput" value="${fmt(sel.off||0,'').trim()}"/></div>`;
+    html+=`<div class="field"><label>Amplitude (V)</label>${numField('ampInput',fmt(sel.amp??0,'').trim())}</div>
+      <div class="field"><label>Frequency (Hz)</label>${numField('freqInput',fmt(sel.freq??0,'').trim())}</div>
+      <div class="field"><label>DC offset (V)</label>${numField('offInput',fmt(sel.off||0,'').trim())}</div>`;
     if(sel.type==='SQ'){
       html+=`<div class="field"><label>Duty cycle (0–1) — 0.5 is a symmetric square</label>
-        <input id="dutyInput" value="${sel.duty??0.5}"/></div>`;
+        ${numField('dutyInput',String(sel.duty??0.5))}</div>`;
     }
   }
   if(sel.type==='POT'){
@@ -3502,7 +3513,7 @@ function renderInspector(){
   if(sel.type==='LOGIC'){
     const clock=(sel.value??0)>0;
     html+=`<div class="field"><label>Clock frequency (Hz) — 0 makes it a manual switch</label>
-      <input id="valInput2" value="${fmt(sel.value??0,'').trim()}"/></div>`;
+      ${numField('valInput2',fmt(sel.value??0,'').trim())}</div>`;
     if(!clock){
       html+=`<div class="field"><label>Level — currently <b>${sel.on?'1':'0'}</b></label>
         <button class="btn" id="logicBtn">Drive ${sel.on?'0':'1'}</button></div>
@@ -3531,9 +3542,9 @@ function renderInspector(){
   }
   if(sel.type==='XF'){
     html+=`<div class="field"><label>Secondary inductance (H)</label>
-      <input id="l2Input" value="${fmt(sel.l2??sel.value??1,'').trim()}"/></div>
+      ${numField('l2Input',fmt(sel.l2??sel.value??1,'').trim())}</div>
       <div class="field"><label>Coupling k (0–1)</label>
-      <input id="kInput" value="${sel.k??0.99}"/></div>
+      ${numField('kInput',String(sel.k??0.99))}</div>
       <div class="field"><div class="empty">Turns ratio is √(L₂/L₁), so L₂ = 4·L₁ steps the
         voltage up by 2. Perfect coupling (k = 1) makes the two windings linearly
         dependent and the matrix singular — 0.99 is the useful default.</div></div>`;
@@ -3596,7 +3607,7 @@ function renderInspector(){
   }
   if(sel.type==='MCU'){
     html+=`<div class="field"><label>Digital pin number</label>
-      <input id="pinInput" value="${sel.pin??13}"/></div>
+      ${numField('pinInput',String(sel.pin??13))}</div>
       <div class="field"><div class="empty">Drives 0–5 V when your sketch sets this pin
         to OUTPUT; reads as HIGH above 2.5 V when set to INPUT. Write the sketch
         under <b>Code</b> in the toolbar.</div></div>`;
@@ -3609,25 +3620,50 @@ function renderInspector(){
     <button class="btn danger" onclick="deleteSel()"><svg class="ic" viewBox="0 0 24 24"><use href="#i-trash"/></svg>Delete</button>
   </div>`;
   body.innerHTML=html;
-  const vi=document.getElementById('valInput') as HTMLInputElement|null;
-  if(vi){ vi.addEventListener('change',()=>{ const v=parseVal(vi.value); if(!isNaN(v)&&v>0){ sel.value=v; commit(); if(circuit&&running){ syncValues(); } draw(); } });
-    vi.addEventListener('keydown',e=>{ if(e.key==='Enter') vi.blur(); }); }
-  const bindNum=(id:string,set:(v:number)=>void)=>{
+  // Every numeric field commits down one path whether the number was typed,
+  // arrowed or clicked in with -/+, so an edit made mid-run reaches the live
+  // solver instead of restarting it. `set` returns what it actually stored, so
+  // a clamped field shows the clamp rather than what the user asked for.
+  type Opts={sine?:boolean; step?:(v:number,d:1|-1)=>number; show?:(v:number)=>string; ok?:(v:number)=>boolean};
+  const bindNum=(id:string,set:(v:number)=>number,opts:Opts={})=>{
     const inp=document.getElementById(id) as HTMLInputElement|null; if(!inp) return;
-    inp.addEventListener('change',()=>{ const v=parseVal(inp.value); if(!isNaN(v)){ set(v); commit(); if(circuit&&running) syncSine(); draw(); } });
-    inp.addEventListener('keydown',ev=>{ if(ev.key==='Enter') inp.blur(); }); };
-  bindNum('ampInput',v=>sel.amp=v);
-  bindNum('freqInput',v=>sel.freq=v);
-  bindNum('offInput',v=>sel.off=v);
-  bindNum('dutyInput',v=>sel.duty=Math.max(0.01,Math.min(0.99,v)));
-  bindNum('pinInput',v=>sel.pin=Math.max(0,Math.round(v)));
-  bindNum('l2Input',v=>sel.l2=Math.max(1e-12,v));
-  bindNum('valInput2',v=>sel.value=Math.max(0,v));
+    const push=(v:number)=>{
+      if(!isFinite(v)||(opts.ok&&!opts.ok(v))) return;
+      const stored=set(v);
+      inp.value=(opts.show??(x=>fmt(x,'').trim()))(stored);
+      commit(); if(circuit&&running){ if(opts.sine===false) syncValues(); else syncSine(); } draw();
+    };
+    inp.addEventListener('change',()=>push(parseVal(inp.value)));
+    inp.addEventListener('keydown',ev=>{
+      if(ev.key==='Enter'){ inp.blur(); return; }
+      const d=ev.key==='ArrowUp'?1:ev.key==='ArrowDown'?-1:0;
+      if(d&&opts.step){ ev.preventDefault(); push(opts.step(parseVal(inp.value),d as 1|-1)); }
+    });
+    if(!opts.step) return;
+    inp.parentElement?.querySelectorAll<HTMLButtonElement>('.stepbtn').forEach(b=>
+      b.addEventListener('click',()=>{
+        const cur=parseVal(inp.value);
+        if(isFinite(cur)) push(opts.step!(cur,Number(b.dataset.step) as 1|-1));
+      }));
+  };
+  // Linear stepping for the handful of fields that live on a fixed 0-1 scale or
+  // count whole things; everything else spans decades and rides the 1-2-5 ladder.
+  const lin=(by:number)=>(v:number,d:1|-1)=>Math.round((v+d*by)/by)*by;
+  const plain=(x:number)=>String(Math.round(x*1e6)/1e6);
+
+  bindNum('valInput',v=>sel.value=v,{sine:false,step:stepValue,ok:v=>v>0});
+  bindNum('ampInput',v=>sel.amp=v,{step:stepValue,ok:v=>v>=0});
+  bindNum('freqInput',v=>sel.freq=v,{step:stepValue,ok:v=>v>=0});
+  bindNum('offInput',v=>sel.off=v,{step:stepValue});
+  bindNum('dutyInput',v=>sel.duty=Math.max(0.01,Math.min(0.99,v)),{step:lin(0.05),show:plain});
+  bindNum('pinInput',v=>sel.pin=Math.max(0,Math.round(v)),{step:lin(1),show:plain});
+  bindNum('l2Input',v=>sel.l2=Math.max(1e-12,v),{step:stepValue});
+  bindNum('valInput2',v=>sel.value=Math.max(0,v),{step:stepValue});
   const lb=document.getElementById('logicBtn');
   if(lb) lb.addEventListener('click',()=>{
     sel.on=!sel.on; commit(); if(running) syncValues(); renderInspector(); draw();
   });
-  bindNum('kInput',v=>sel.k=Math.max(0,Math.min(0.9999,v)));
+  bindNum('kInput',v=>sel.k=Math.max(0,Math.min(0.9999,v)),{step:lin(0.05),show:plain});
   // The wiper streams on `input`, not `change`: sweeping a pot and watching the
   // circuit follow is most of the point of having one.
   const pos=document.getElementById('posInput') as HTMLInputElement|null;

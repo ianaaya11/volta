@@ -411,6 +411,18 @@
   .field input:focus{outline:none;border-color:var(--accent);background:var(--panel);
     box-shadow:0 0 0 3px var(--accent-soft)}
   .field input[type=range]{padding:0;background:none;border:none;box-shadow:none;accent-color:var(--accent)}
+  /* Value steppers. The buttons flank the field rather than stacking beside it
+     so they stay a comfortable thumb target on a phone, where nudging a value
+     to watch the circuit respond beats typing one in. */
+  .stepwrap{display:flex;align-items:stretch;gap:6px}
+  .stepwrap input{flex:1 1 auto;min-width:0;text-align:center}
+  .stepbtn{flex:0 0 38px;background:var(--bg);border:1px solid var(--line);border-radius:var(--r-sm);
+    color:var(--muted);font-size:17px;line-height:1;font-family:inherit;cursor:pointer;
+    display:flex;align-items:center;justify-content:center;user-select:none;
+    transition:background .12s,border-color .12s,color .12s}
+  .stepbtn:hover{background:var(--panel);border-color:var(--accent);color:var(--ink)}
+  .stepbtn:active{background:var(--accent-soft);border-color:var(--accent)}
+  @media (max-width:760px){ .stepbtn{flex-basis:44px} }
   /* The Steady/Live switch sits on the Node voltages heading — next to the
      numbers it governs, rather than in a settings panel away from them. */
   .readhead{display:flex;align-items:center;justify-content:space-between;gap:8px}
