@@ -184,3 +184,60 @@ test('holding a push button on the canvas closes the contact for as long as it i
   await page.mouse.up();
   await expect.poll(count9, { message: 'releasing it should un-power the lamp' }).toBe(1);
 });
+
+test('a lamp lights at an ordinary power, not only at a full watt', async ({ page }) => {
+  // Brightness was linear in dissipated power against a 1 W reference, so an
+  // everyday circuit — a lamp on a 5 V rail drawing tens of milliwatts — came
+  // out at a brightness of about 0.1 and stayed dark. The LED beside it has
+  // always used a log curve on current and lights happily at a milliamp.
+  const GRID = 26, PAD = 40;
+  await page.goto('/');
+  await page.click('#clearBtn');
+  await page.click('#fitBtn');
+  const box = (await page.locator('#cv').boundingBox())!;
+  const at = (gx: number, gy: number) => ({ x: box.x + PAD + gx * GRID, y: box.y + PAD + gy * GRID });
+  const place = async (tool: string, gx: number, gy: number) => {
+    await page.click(`#rail .tool[data-t="${tool}"]`);
+    const q = at(gx, gy); await page.mouse.click(q.x, q.y);
+  };
+  const wire = async (...pts: [number, number][]) => {
+    await page.click('#rail .tool[data-t="wire"]');
+    for (const [gx, gy] of pts) { const q = at(gx, gy); await page.mouse.click(q.x, q.y); }
+    const last = at(...pts[pts.length - 1]); await page.mouse.click(last.x, last.y);
+  };
+
+  await place('V', 2, 2);
+  await place('LAMP', 7, 2);        // 100 ohm default -> 250 mW on 5 V
+  await place('GND', 2, 7);
+  await wire([4, 2], [7, 2]);
+  await wire([9, 2], [9, 7]);
+  await wire([9, 7], [2, 7]);
+  await wire([2, 2], [2, 7]);
+  await page.click('#rail .tool[data-t="select"]');
+
+  // Count warm pixels — what a person actually sees — rather than reading a
+  // brightness variable that could be right while nothing renders.
+  const warm = () => page.evaluate(() => {
+    const cv = document.getElementById('cv') as HTMLCanvasElement;
+    const d = cv.getContext('2d')!.getImageData(0, 0, cv.width, cv.height).data;
+    let n = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      // amber: red high, green mid, blue clearly lower than both
+      if (d[i] > 240 && d[i + 1] > 185 && d[i + 1] < 250 && d[i + 2] < 200
+          && d[i] - d[i + 2] > 60) n++;
+    }
+    return n;
+  });
+
+  expect(await warm(), 'nothing should glow before Run').toBeLessThan(20);
+  await page.click('#runBtn');
+  await expect(page.locator('#runBtn')).toHaveText(/Stop/);
+  await expect.poll(warm, { message: 'a 250 mW lamp should visibly light' })
+    .toBeGreaterThan(200);
+
+  // And it goes out when the circuit is broken.
+  await page.click('#rail .tool[data-t="delete"]');
+  await page.mouse.click(at(5, 7).x, at(5, 7).y);                    // cut the return
+  await expect.poll(warm, { message: 'an open circuit should put it out' })
+    .toBeLessThan(20);
+});

@@ -2006,17 +2006,31 @@ function drawComponent(c:Comp,nodeColor:NodeColor){
       }
     }
   } else if(c.type==='LAMP'){
-    // Filament lamp: a circle with a crossed filament, glowing with dissipated
-    // power. Referenced to 1 W so an ordinary indicator bulb reads as fully on.
+    // Filament lamp: a circle with a crossed filament, glowing with the power
+    // it dissipates — on a LOG scale, as the LED beside it already used for
+    // current.
+    //
+    // It was linear and referenced to 1 W, which meant it only really lit in a
+    // circuit built to drive a full watt. An ordinary one — a lamp on a 5 V
+    // rail behind a series resistor, a few tens of milliwatts — came out at a
+    // brightness of 0.02 and stayed dark, which is the one thing a lamp must
+    // not do. A decade per third of the range puts 1 mW faintly alight, 100 mW
+    // clearly on and 1 W at full brightness.
     const v=running&&lastResult?(lastResult.voltageAcross[c.id]||0):0;
     const i=running&&lastResult?(lastResult.current[c.id]||0):0;
-    const lit=Math.max(0,Math.min(1,Math.abs(v*i)));
+    const watts=Math.abs(v*i);
+    const lit=Math.max(0,Math.min(1,Math.log10(1+watts/1e-3)/3));
     if(lit>0.02){
-      const g=ctx.createRadialGradient(mx,my,2,mx,my,22);
-      g.addColorStop(0,`rgba(255,205,90,${0.85*lit})`); g.addColorStop(1,'rgba(255,205,90,0)');
-      ctx.fillStyle=g; ctx.beginPath(); ctx.arc(mx,my,22,0,7); ctx.fill();
+      const g=ctx.createRadialGradient(mx,my,2,mx,my,10+16*lit);
+      g.addColorStop(0,`rgba(255,190,70,${0.8*lit})`); g.addColorStop(1,'rgba(255,190,70,0)');
+      ctx.fillStyle=g; ctx.beginPath(); ctx.arc(mx,my,10+16*lit,0,7); ctx.fill();
     }
-    ctx.fillStyle=lit>0.02?`rgba(255,225,140,${lit})`:'transparent';
+    // Amber when dim, white-hot at full power — which is both what a filament
+    // does and what keeps a dim lamp visible on a white canvas. The old pale
+    // cream at low alpha was indistinguishable from the page it sat on.
+    ctx.fillStyle=lit>0.02
+      ? `rgba(255,${Math.round(150+90*lit)},${Math.round(20+170*lit)},${0.35+0.65*lit})`
+      : 'transparent';
     ctx.strokeStyle=T.ink;
     ctx.beginPath(); ctx.arc(mx,my,11,0,7); if(lit>0.02) ctx.fill(); ctx.stroke();
     const d=11/Math.SQRT2;
