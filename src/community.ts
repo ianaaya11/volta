@@ -54,7 +54,24 @@ export interface Profile {
 export const MIN_AGE = 15;
 
 /** Which terms these are. Bumping this makes every member accept again, which
- *  is the point of recording a version rather than a boolean. */
+ *  is the point of recording a version rather than a boolean.
+ *
+ *  DEBT, deliberately taken and written down rather than forgotten: the terms
+ *  and the privacy notice were both changed after this version was issued, to
+ *  describe the circuit assistant — that questions and circuits go to Anthropic,
+ *  and that a per-member daily count is kept. The version was NOT bumped at the
+ *  time, because doing so mid-pilot would have thrown a re-acceptance screen at
+ *  the professors and students then testing the app, for a document that is
+ *  still an unreviewed draft.
+ *
+ *  So members who accepted 2026-08-01 accepted wording that has since changed.
+ *  That is exactly the situation versioning exists to prevent, and it is only
+ *  tolerable because the pilot is closed, small, and pre-launch.
+ *
+ *  BEFORE THE PILOT ENDS, OR BEFORE ANY PUBLIC LAUNCH, WHICHEVER COMES FIRST:
+ *  bump this. Every member will be asked to accept again, which is correct and
+ *  is the whole point. Do it together with the lawyer's review, so people are
+ *  asked once rather than twice. */
 export const TERMS_VERSION = '2026-08-01';
 
 /** Whole years old on `on`, from a date of birth. */

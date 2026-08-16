@@ -133,3 +133,58 @@ test('the admin tabs are not in an unconfigured build', async ({ page }) => {
   await expect(page.locator('#galleryReports')).toBeHidden();
   await expect(page.locator('#memberQueue')).toBeHidden();
 });
+
+// ---------------------------------------------------------------------------
+//  The privacy notice has to keep up with the software
+// ---------------------------------------------------------------------------
+//  This document went stale the moment the served assistant shipped: it still
+//  said nothing left your device, while a signed-in member's question and whole
+//  circuit were being sent to a third party. Nobody noticed, because nothing
+//  was watching.
+//
+//  So these watch. They are deliberately keyed to CAPABILITIES rather than to
+//  wording — if the app can send data to Anthropic, the notice must say so, and
+//  a rewrite that keeps the meaning will still pass.
+test.describe('privacy notice matches what the app actually does', () => {
+  const openPrivacy = async (page: import('@playwright/test').Page) => {
+    await page.goto('/');
+    await page.evaluate(() =>
+      (document.querySelector('[data-legal="privacy"]') as HTMLElement)?.click());
+    await expect(page.locator('#legalPrivacy')).toBeVisible();
+    return (await page.locator('#legalPrivacy').textContent())!.replace(/\s+/g, ' ');
+  };
+
+  test('names the third party that answers assistant questions', async ({ page }) => {
+    const t = await openPrivacy(page);
+    expect(t).toMatch(/Anthropic/);
+  });
+
+  test('says what is sent, not merely that something is', async ({ page }) => {
+    const t = await openPrivacy(page);
+    // The question AND the circuit both go. Naming only one would understate it.
+    expect(t).toMatch(/question/i);
+    expect(t).toMatch(/circuit currently on the canvas/i);
+  });
+
+  test('discloses the per-member usage count the database keeps', async ({ page }) => {
+    // ai_usage holds a row per member per day. It is small, but it is retained
+    // personal data and an undisclosed one is the kind of thing that matters.
+    const t = await openPrivacy(page);
+    expect(t).toMatch(/count/i);
+    expect(t).toMatch(/per day|today/i);
+  });
+
+  test('still distinguishes the bring-your-own-key route, which we never see', async ({ page }) => {
+    const t = await openPrivacy(page);
+    expect(t).toMatch(/never touches our server|we never see it/i);
+  });
+
+  test('the terms warn that assistant output is unchecked', async ({ page }) => {
+    await page.goto('/');
+    await page.evaluate(() =>
+      (document.querySelector('[data-legal="terms"]') as HTMLElement)?.click());
+    const t = (await page.locator('#legalTerms').textContent())!.replace(/\s+/g, ' ');
+    expect(t).toMatch(/not checked by anyone|looks right and is not/i);
+    expect(t).toMatch(/rationed|per member per day/i);
+  });
+});

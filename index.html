@@ -344,7 +344,10 @@
       <p class="draftbanner"><b>Draft — not yet reviewed by a lawyer.</b>
         This was written to be accurate about what Volta actually does, so that
         somebody qualified has a real document to correct rather than a blank
-        page. Do not publish it as it stands.</p>
+        page. Still outstanding: a contact address, a decision on whether 15 is
+        the right age in every country this reaches, and a review of the
+        assistant clauses now that questions are sent to a third party. Do not
+        publish it as it stands.</p>
 
       <article id="legalTerms">
         <h1>Terms of use</h1>
@@ -384,24 +387,36 @@
           information about someone who has not agreed to it; or anything that
           exists to interfere with the service or with other members.</p>
 
-        <h2>6. Moderation</h2>
+        <h2>6. The circuit assistant</h2>
+        <p>Signed-in members can ask the assistant to build or explain a circuit.
+          It is answered by a language model, which means <b>its output is not
+          checked by anyone</b> — it can produce a circuit that looks right and
+          is not. Treat what it gives you as a draft to simulate and inspect, on
+          the same terms as clause 8: it is not a substitute for your judgement.</p>
+        <p>Because each request costs us money, the assistant is rationed to a
+          fixed number of requests per member per day, and we may change that
+          number, or withdraw the assistant, without notice. Use it for circuits.
+          Using it as a general-purpose language model, or trying to get round
+          the limit, is grounds for losing access to it.</p>
+
+        <h2>7. Moderation</h2>
         <p>Every published design carries a Report button. A moderator can
           remove a design from the commons. We may suspend or remove an account
           that repeatedly breaks these terms.</p>
 
-        <h2>7. Leaving</h2>
+        <h2>8. Leaving</h2>
         <p>You can delete your account at any time from the account panel. That
           removes your login, your profile and every design you have published.
           It is immediate and cannot be undone.</p>
 
-        <h2>8. No warranty</h2>
+        <h2>9. No warranty</h2>
         <p>Volta is a teaching and design tool, not a certified engineering
           instrument. Its results are as good as its models and its author can
           make them, and they are not a substitute for your own judgement.
           <b>Do not rely on it for anything where a wrong answer is dangerous or
           expensive.</b> It is provided as it is, without warranty of any kind.</p>
 
-        <h2>9. Changes</h2>
+        <h2>10. Changes</h2>
         <p>If these terms change materially, the version number changes and you
           will be asked to accept the new ones before publishing again.</p>
       </article>
@@ -421,7 +436,31 @@
         <p>Nothing leaves your device. Your circuits, your preferences and your
           Anthropic API key if you set one are stored in your own browser and
           are never sent to us. There is no analytics and there are no tracking
-          cookies.</p>
+          cookies. The one exception is the circuit assistant, which has to send
+          your question somewhere to answer it — see below.</p>
+
+        <h2>The circuit assistant</h2>
+        <p>Asking the assistant a question sends <b>your question and the
+          circuit currently on the canvas</b> away to be answered. Nothing else
+          goes with it: not your email, not your handle, not your other designs.
+          It happens only when you press Ask, never in the background.</p>
+        <p>There are two routes, and which one you are on decides who sees it:</p>
+        <table class="legaltable">
+          <tr><th>Route</th><th>Where your question goes</th><th>What we keep</th></tr>
+          <tr><td><b>Signed in</b> — the assistant works with no key of your own</td>
+              <td>To our server, and on to <b>Anthropic</b>, whose model writes the
+                  answer. We do not store the question or the circuit.</td>
+              <td>A count of how many times you asked, per day, so one member
+                  cannot exhaust the service for everyone. A number and a date,
+                  not your words.</td></tr>
+          <tr><td><b>Your own API key</b> — offline, self-hosted, or signed out</td>
+              <td>Straight from your browser to <b>Anthropic</b>. It never
+                  touches our server, and we never see it.</td>
+              <td>Nothing. We are not part of it.</td></tr>
+        </table>
+        <p>Anthropic processes the request in order to answer it, under their own
+          terms. If you would rather nothing left your machine at all, do not use
+          the assistant — every other part of the editor works without it.</p>
 
         <h2>If you join the commons</h2>
         <table class="legaltable">
@@ -432,6 +471,9 @@
           <tr><td>School</td><td>Optional, and off by default</td><td>Only if you switch it on</td></tr>
           <tr><td>That you confirmed your age and accepted these terms</td><td>To show we asked</td><td>No</td></tr>
           <tr><td>Designs you publish</td><td>They are the point of the commons</td><td>Yes</td></tr>
+          <tr><td>How many times you used the assistant today</td>
+              <td>To stop one member exhausting it for everyone. A count, never the questions</td>
+              <td>No</td></tr>
         </table>
 
         <h2>Your date of birth</h2>
@@ -464,8 +506,9 @@
         <p>Accounts and published designs are stored with Supabase, our database
           provider, in the region chosen when the project was set up. Email for
           sign-up confirmation and password resets is sent through our email
-          provider. Neither uses your data for anything but providing that
-          service to us.</p>
+          provider. Questions you put to the circuit assistant are answered by
+          <b>Anthropic</b>. None of the three uses your data for anything but
+          providing that service to us.</p>
 
         <h2>Children</h2>
         <p>The commons is for members of 15 and over. If you believe a younger

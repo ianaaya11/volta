@@ -15,11 +15,16 @@
 #        VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY
 #   3. Supabase → Authentication → URL Configuration: add the Pages URL to
 #      Redirect URLs, or password-reset links will bounce.
+#
+# Runs on BOTH branches, but only one of them publishes. A push to `dev` builds
+# and tests and stops there; a push to `main` does that and then deploys. Work
+# happens on `dev`, so finding out it was broken at merge time was finding out
+# too late.
 name: Deploy
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch:
 
 permissions:
@@ -28,9 +33,10 @@ permissions:
   id-token: write
 
 # Let a running deploy finish rather than cancelling it — a half-published site
-# is worse than a slightly stale one.
+# is worse than a slightly stale one. Keyed by branch so a `dev` build can never
+# queue behind, or hold up, a `main` deploy.
 concurrency:
-  group: pages
+  group: pages-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -59,12 +65,16 @@ jobs:
       # and the failure mode is a silently missing asset.
       - run: touch dist/.nojekyll
 
+      # Only `main` produces something to publish. On `dev` the job has already
+      # done its job by getting this far.
       - uses: actions/upload-pages-artifact@v3
+        if: github.ref == 'refs/heads/main'
         with:
           path: dist
 
   deploy:
     needs: build
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
