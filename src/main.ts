@@ -1,6 +1,7 @@
 import { Circuit } from './engine';
 import type { Component, NodeId, Pair, Quad, Solution, SolveTrace, Triple } from './engine';
 import { fmt, parseVal, stepValue } from './format';
+import { toKicad, type ExportPart } from './netlist';
 // The assistant module pulls in the Anthropic SDK, which is several times the
 // size of the whole app. It is imported dynamically at the point of use so the
 // offline PWA doesn't pay for it on every load — only `import type` here, which
@@ -4754,6 +4755,52 @@ function saveFile(){
   document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
   flashHint('Saved <b>spark-circuit.json</b> to your downloads.');
 }
+// ---- KiCad netlist export ---------------------------------------------------
+// Deliberately walks `comps`, NOT buildNetlist's `netComps`. Those are engine
+// devices: a pot is already two resistors there, a relay is a resistor and an
+// inductor, a block is flattened, and there are synthetic internal nodes with
+// no place on the grid. A board wants the parts as DRAWN. The node map is the
+// same one the solver uses, so the connectivity cannot disagree with what was
+// simulated — which is the entire value of exporting from here rather than
+// redrawing it by hand.
+function exportParts():ExportPart[]{
+  const net=buildNetlist();
+  return comps.map(c=>({
+    id:c.id, type:c.type, value:c.value, amp:c.amp, freq:c.freq, color:c.color,
+    nodes:pinsOf(c).map(p=>net.nodeOf(p.x,p.y)),
+  }));
+}
+
+function openPcb(){
+  const {text,report}=toKicad(exportParts(),fmt,new Date().toISOString().slice(0,10));
+  const box=el('pcbReport');
+  const tierName:Record<string,string>=
+    {real:'real part',bench:'bench',behavioural:'needs a chip',dropped:'dropped'};
+  box.innerHTML=
+    `<div class="pcbcount">${report.counts.real} real ·
+      ${report.counts.bench} bench · ${report.counts.behavioural} need a chip ·
+      ${report.counts.dropped} dropped</div>`
+    +(report.warnings.length
+      ? `<ul class="pcbwarn">${report.warnings.map(w=>`<li>${escapeHtml(w)}</li>`).join('')}</ul>`
+      : '')
+    +(report.lines.length
+      ? `<table class="pcbtable"><thead><tr><th>Ref</th><th>On canvas</th><th></th><th>Note</th></tr></thead>
+         <tbody>${report.lines.map(l=>
+           `<tr><td>${escapeHtml(l.ref)}</td><td>${escapeHtml(l.id)}</td>
+             <td class="t-${l.tier}">${tierName[l.tier]}</td>
+             <td>${escapeHtml(l.note)}</td></tr>`).join('')}</tbody></table>`
+      : '<div class="empty">Every part maps to a real component. Nothing needed a decision.</div>');
+  (el('pcbDownload') as HTMLButtonElement).onclick=()=>{
+    const blob=new Blob([text],{type:'text/plain'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a'); a.href=url; a.download='volta-circuit.net';
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    el('pcbModal').hidden=true;
+    flashHint('Saved <b>volta-circuit.net</b>. In KiCad: Pcbnew &rarr; File &rarr; Import &rarr; Netlist.');
+  };
+  el('pcbModal').hidden=false;
+}
+
 function openFile(){
   const inp=document.createElement('input'); inp.type='file'; inp.accept='.json,application/json';
   inp.onchange=()=>{ const f=inp.files?.[0]; if(!f) return; const r=new FileReader();
@@ -4960,6 +5007,9 @@ el('rotateBtn').onclick=()=>{ ghostRot=turn(ghostRot); if(selected){selected.rot
 el('saveBtn').onclick=saveFile;
 el('openBtn').onclick=openFile;
 el('shareBtn').onclick=shareURL;
+el('pcbBtn').onclick=openPcb;
+el('pcbClose').onclick=()=>{ el('pcbModal').hidden=true; };
+el('pcbModal').onclick=e=>{ if(e.target===el('pcbModal')) el('pcbModal').hidden=true; };
 
 // Palette search. Escape clears rather than closing anything, since the field
 // is always on screen — and blurs, so the canvas shortcuts come back.

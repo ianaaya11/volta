@@ -431,6 +431,23 @@
   .hue:hover{transform:scale(1.12);border-color:var(--muted)}
   .hue.on{border-color:var(--ink);box-shadow:0 0 0 3px var(--accent-soft)}
   @media (max-width:760px){ .hue{width:34px;height:34px} }
+  /* Netlist export report. The warnings come first and are meant to be read:
+     a netlist that looks complete but silently dropped half a board is worse
+     than no export at all. */
+  .pcbcount{font-size:12px;color:var(--muted);margin-bottom:10px;
+    font-variant-numeric:tabular-nums}
+  .pcbwarn{margin:0 0 14px;padding-left:18px}
+  .pcbwarn li{font-size:12.5px;line-height:1.5;color:var(--ink);margin-bottom:6px}
+  .pcbtable{width:100%;border-collapse:collapse;font-size:12px;
+    display:block;max-height:40vh;overflow-y:auto}
+  .pcbtable th{text-align:left;font-weight:600;color:var(--faint);font-size:10px;
+    text-transform:uppercase;letter-spacing:.06em;padding:4px 8px 4px 0;
+    position:sticky;top:0;background:var(--panel)}
+  .pcbtable td{padding:5px 8px 5px 0;border-top:1px solid var(--line);
+    vertical-align:top;color:var(--muted)}
+  .pcbtable td:first-child{color:var(--ink);font-weight:600;white-space:nowrap}
+  .t-behavioural{color:var(--warn,#c2761a);white-space:nowrap}
+  .t-dropped,.t-bench{white-space:nowrap}
   /* The Steady/Live switch sits on the Node voltages heading — next to the
      numbers it governs, rather than in a settings panel away from them. */
   .readhead{display:flex;align-items:center;justify-content:space-between;gap:8px}
@@ -476,18 +493,19 @@
   .btn.danger:hover{background:var(--bad-soft);border-color:var(--bad-line);color:var(--bad)}
 
   /* ---- Modal sheets ------------------------------------------------------ */
-  #aiModal,#codeModal{position:fixed;inset:0;background:var(--scrim);z-index:50;
+  #aiModal,#codeModal,#pcbModal{position:fixed;inset:0;background:var(--scrim);z-index:50;
     backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);
     display:flex;align-items:center;justify-content:center;padding:20px}
-  #aiModal[hidden],#codeModal[hidden]{display:none}
-  #aiModal .sheet,#codeModal .sheet{background:var(--panel);border:1px solid var(--line);
+  #aiModal[hidden],#codeModal[hidden],#pcbModal[hidden]{display:none}
+  #aiModal .sheet,#codeModal .sheet,#pcbModal .sheet{background:var(--panel);border:1px solid var(--line);
     border-radius:var(--r-lg);padding:18px;width:min(560px,100%);max-height:86vh;overflow-y:auto;
     box-shadow:var(--shadow-3)}
   #codeModal .sheet{width:min(660px,100%)}
+  #pcbModal .sheet{width:min(680px,100%)}
   .sheethead{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
-  #aiModal h3,#codeModal h3{display:flex;align-items:center;gap:7px;margin:0;font-size:11px;
+  #aiModal h3,#codeModal h3,#pcbModal h3{display:flex;align-items:center;gap:7px;margin:0;font-size:11px;
     text-transform:uppercase;letter-spacing:.07em;font-weight:600;color:var(--muted)}
-  #aiModal h3 .ic,#codeModal h3 .ic{width:15px;height:15px;color:var(--accent)}
+  #aiModal h3 .ic,#codeModal h3 .ic,#pcbModal h3 .ic{width:15px;height:15px;color:var(--accent)}
   .sheetfoot{display:flex;align-items:center;justify-content:flex-end;gap:8px;margin-top:4px}
   #aiModal textarea,#codeModal textarea{width:100%;background:var(--bg);border:1px solid var(--line);
     border-radius:var(--r-sm);color:var(--ink);padding:9px;font-size:13px;font-family:inherit;resize:vertical}

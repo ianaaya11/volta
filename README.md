@@ -207,6 +207,40 @@ At the default 1 Hz that is 4 s red, 4 s green, 1 s amber. Select the clock and
 change its frequency to run the whole cycle faster or slower. An LED saved before this
 existed, or built without naming a colour, is red.
 
+## Taking a circuit to a PCB
+
+Volta simulates; it does not lay out boards. What it does have is the thing a
+PCB tool needs to start — which pin is joined to which — so the toolbar's
+**board icon** exports a **KiCad netlist** (`.net`, imported via Pcbnew → File →
+Import → Netlist). The connectivity comes from the same node map the solver
+used, so the board cannot disagree with the circuit you proved.
+
+It shows you what it could *not* carry across **before** the download, because a
+netlist that looks complete but quietly dropped half a board is worse than no
+export at all. Parts fall into three tiers:
+
+| tier | what it is | what happens |
+|---|---|---|
+| **real** | `R C CP L D LED LAMP SW PB PBNC POT XF RLY MOT QN QP MN MP NE555` | exported with a default through-hole footprint |
+| **bench** | `V VS SQ I` supplies, `VM AM OM WM` meters | supplies become 2-pin headers; meters are dropped |
+| **behavioural** | gates, `DFF`, `CNT4`, `SEG7`, `DAC4`, `OA`, `MCU` | exported as placeholders with **no** footprint |
+
+That third tier is the honest limit. A `CNT4` is not a chip — it is a 74HC161 or
+a 4017, and you pick. Worse, Volta's digital parts **carry no VCC or GND pin at
+all**, so a digital design exports as correct logic and an incomplete board:
+power distribution and every decoupling cap are missing. The report says exactly
+that, names each part, and suggests a chip without choosing one.
+
+Two things it also catches for free: a **pin wired to nothing** (ground excepted,
+since that meets a plane), and the reminder that **footprints are defaults** —
+Volta's resistor is a *resistance*, with no package, tolerance or power rating,
+so 0603-versus-through-hole was never its call to make.
+
+So: analog transfers nearly 1:1, and an RC filter or LED driver exports as a
+usable board. Digital gives you a proven logic core to build the real thing
+around. Either way it beats re-drawing by hand, which is where transcription
+mistakes actually come from.
+
 ## Reading the numbers while it runs
 The readouts show **settled figures, not the instantaneous solution**. A value
 that is oscillating reads as its bounds — `±3 V` when the swing is symmetric,
