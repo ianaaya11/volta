@@ -62,11 +62,18 @@ interface Spec {
 // Footprints are KiCad's standard through-hole libraries. They are a starting
 // point and the report says so: reassign anything that matters in KiCad's
 // footprint assignment tool rather than trusting a simulator's guess.
+//
+// Every name here is checked against the real library by
+// scripts/verify-footprints.mjs. That script exists because the first draft of
+// this table contained a footprint that does not exist — plausible, correctly
+// formed, and invented. KiCad's failure mode for a bad name is a missing
+// footprint on import, which is recoverable but wastes the user's time proving
+// the export works. Run the script after editing this table.
 const THT = {
   res: 'Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal',
   cap: 'Capacitor_THT:C_Disc_D5.0mm_W2.5mm_P5.00mm',
   pol: 'Capacitor_THT:CP_Radial_D5.0mm_P2.50mm',
-  ind: 'Inductor_THT:L_Radial_D8.0mm_P5.00mm',
+  ind: 'Inductor_THT:L_Axial_L20.0mm_D8.0mm_P25.40mm_Horizontal',
   diode: 'Diode_THT:D_DO-35_SOD27_P7.62mm_Horizontal',
   led: 'LED_THT:LED_D5.0mm',
   to92: 'Package_TO_SOT_THT:TO-92_Inline',

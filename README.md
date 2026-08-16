@@ -231,6 +231,11 @@ all**, so a digital design exports as correct logic and an incomplete board:
 power distribution and every decoupling cap are missing. The report says exactly
 that, names each part, and suggests a chip without choosing one.
 
+The footprint names are checked against KiCad's actual library by
+`node scripts/verify-footprints.mjs` — run it after editing the table. A wrong
+name is plausible, correctly formed, and only shows up when someone imports the
+file, so it is worth a script rather than a careful read.
+
 Two things it also catches for free: a **pin wired to nothing** (ground excepted,
 since that meets a plane), and the reminder that **footprints are defaults** —
 Volta's resistor is a *resistance*, with no package, tolerance or power rating,
