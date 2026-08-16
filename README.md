@@ -163,6 +163,25 @@ offline-capable PWA: a self-hosted copy needs no server of any kind.
 Only this path loads the Anthropic SDK, in `src/ai-direct.ts`. A served member
 never downloads it.
 
+## LEDs have colours, and colours are forward voltages
+
+An LED's colour is its band gap, and its band gap is its forward voltage. Pick
+one from the swatches in the inspector and you pick a different diode, not a
+different paint:
+
+| | red | amber | yellow | green | blue | white |
+|---|---|---|---|---|---|---|
+| Vf | 1.8 V | 2.0 V | 2.1 V | 2.2 V | 3.0 V | 3.1 V |
+
+So the same series resistor on the same supply gives a red LED more current than
+a blue one, and a blue LED will not light from two AA cells at all — which is
+the sort of thing a simulator exists to show you before you build it. Size the
+resistor as `R = (Vsupply − Vf) / 0.02` for about 20 mA.
+
+The assistant knows the colours too, so "build a traffic light" gets a red, an
+amber and a green LED with resistors sized for each. An LED saved before this
+existed, or built without naming a colour, is red.
+
 ## Reading the numbers while it runs
 The readouts show **settled figures, not the instantaneous solution**. A value
 that is oscillating reads as its bounds — `±3 V` when the swing is symmetric,

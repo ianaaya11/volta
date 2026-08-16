@@ -126,10 +126,19 @@ test.describe('the switch/pot/LED panel example', () => {
     // drop — NOT the 3.15 V a bare 35 % divider would give. That number can
     // only come out right if the pot reached the solver as two resistors AND
     // the LED reached it as a diode.
-    expect(v.some(s => /^7\d\d mV$/.test(s)),
-      `expected a ~0.7 V LED node, got ${JSON.stringify(v)}`).toBe(true);
-    // The push button is open, so its branch is dead.
-    expect(v.some(s => /[num]V$/.test(s)), `expected a dead branch, got ${JSON.stringify(v)}`).toBe(true);
+    //
+    // ~1.8 V, not the ~0.7 V this asserted before colours existed: an LED is
+    // not a silicon diode, and a red one drops 1.8 V. The old number was the
+    // bug this test was unwittingly guarding.
+    expect(v.some(s => /^1\.[6-9]\d* V$/.test(s)),
+      `expected a ~1.8 V red LED node, got ${JSON.stringify(v)}`).toBe(true);
+    // The push button is open, so its branch is dead. The old pattern here was
+    // /[num]V$/, which matched the LED node's own "756 mV" and so passed no
+    // matter what the button did — it only came to light when the LED moved to
+    // 1.76 V and took the accidental match away with it. µ is its own
+    // character, not a "u", which is why it was never really being tested.
+    expect(v.some(s => /[µunp]V$/.test(s)),
+      `expected a dead branch, got ${JSON.stringify(v)}`).toBe(true);
   });
 
 });

@@ -47,7 +47,15 @@ export interface WaveSource extends Part {
   /** Square wave only: fraction of each period spent high. Defaults to 0.5. */
   duty?: number;
 }
-export interface Diode extends Part { type: 'D'; nodes: Pair }
+// Is and n default to an ordinary small-signal silicon diode (~0.7 V forward).
+// An LED is the same equation with a much smaller saturation current, which is
+// what puts its knee at 1.8 V for a red one and 3.0 V for a blue: the colour is
+// the band gap, and the band gap is the forward voltage. vmax is the
+// Newton-Raphson clamp, which has to clear that knee or the device can never
+// reach its own operating point.
+export interface Diode extends Part {
+  type: 'D'; nodes: Pair; Is?: number; n?: number; vmax?: number;
+}
 export interface Bjt extends Part { type: 'QN' | 'QP'; nodes: Triple; Is?: number; bf?: number; br?: number }
 export interface Mosfet extends Part { type: 'MN' | 'MP'; nodes: Triple; vth?: number; k?: number; lam?: number }
 export interface OpAmp extends Part { type: 'OA'; nodes: Triple; gain?: number }
@@ -438,9 +446,9 @@ export class Circuit {
           // Newton-Raphson linearization around the present guess vk:
           //   Geq = dI/dV = (Is/(nVt)) exp(vk/(nVt))
           //   Ieq = i(vk) - Geq * vk       (the equivalent current source)
-          const Is = 1e-14, Vt = 0.025852, nEm = 1.0;
+          const Is = c.Is ?? 1e-14, Vt = 0.025852, nEm = c.n ?? 1.0;
           let vk = nodeV(a) - nodeV(b);
-          vk = Math.max(-5, Math.min(vk, 0.8)); // clamp to help convergence
+          vk = Math.max(-5, Math.min(vk, c.vmax ?? 0.8)); // clamp to help convergence
           const ex = Math.exp(vk / (nEm * Vt));
           const id = Is * (ex - 1);
           const Geq = (Is / (nEm * Vt)) * ex;
@@ -705,8 +713,9 @@ export class Circuit {
           if (np >= 0) A[br][np] = csub(A[br][np], cx(gain));
           if (nm >= 0) A[br][nm] = cadd(A[br][nm], cx(gain));
         } else if (c.type === 'D') {
-          const vd = Math.max(-5, Math.min((Vdc[c.nodes[0]] ?? 0) - (Vdc[c.nodes[1]] ?? 0), 0.8));
-          stampY(A, a, b, cx((1e-14 / Vt) * Math.exp(vd / Vt) + 1e-12));
+          const dIs = c.Is ?? 1e-14, dn = c.n ?? 1;
+          const vd = Math.max(-5, Math.min((Vdc[c.nodes[0]] ?? 0) - (Vdc[c.nodes[1]] ?? 0), c.vmax ?? 0.8));
+          stampY(A, a, b, cx((dIs / (dn * Vt)) * Math.exp(vd / (dn * Vt)) + 1e-12));
         } else if (c.type === 'QN' || c.type === 'QP') {
           const s = (c.type === 'QN') ? 1 : -1; const Is = c.Is || 1e-15, bf = c.bf || 100, br2 = c.br || 1;
           const nc = this._ni(c.nodes[0]), nb = this._ni(c.nodes[1]), ne = this._ni(c.nodes[2]);
@@ -797,8 +806,8 @@ export class Circuit {
       }
       else if (c.type === 'C') current[c.id] = h ? (c.value / h) * (dv - st.v) : 0;
       else if (c.type === 'D') {
-        const Is = 1e-14, Vt = 0.025852;
-        current[c.id] = Is * (Math.exp(Math.max(-5, Math.min(dv, 0.8)) / Vt) - 1);
+        const Is = c.Is ?? 1e-14, Vt = 0.025852, nEm = c.n ?? 1;
+        current[c.id] = Is * (Math.exp(Math.max(-5, Math.min(dv, c.vmax ?? 0.8)) / (nEm * Vt)) - 1);
       } else if (c.type === 'QN' || c.type === 'QP') {
         const s = (c.type === 'QN') ? 1 : -1;
         const Is = c.Is || 1e-15, Vt = 0.025852, bf = c.bf || 100, br = c.br || 1;

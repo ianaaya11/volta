@@ -34,6 +34,8 @@ export interface AiPart {
   freq?: number;
   off?: number;
   duty?: number;
+  /** LED only. Also picks its forward voltage — see LED_COLORS in main.ts. */
+  color?: string;
 }
 export interface AiWire { x1: number; y1: number; x2: number; y2: number }
 export interface AiCircuit { parts: AiPart[]; wires: AiWire[]; notes: string }

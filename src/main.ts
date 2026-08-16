@@ -59,6 +59,7 @@ interface Comp {
   k?: number;       // transformer coupling coefficient, 0..1
   // Mechanical state the editor integrates alongside the electrical solve —
   // the solver has no notion of either, so they live on the placed part.
+  color?: string;   // LED only: which colour, and so which forward voltage
   sub?: string;     // SUB only: which definition in `subDefs` this instance is
   omega?: number;   // DC motor shaft speed, rad/s
   angle?: number;   // DC motor shaft angle, radians (for the animation only)
@@ -357,6 +358,36 @@ const TYPES:Record<PartType,TypeInfo>={
     [t,{name:spec.name,unit:'',def:0}])) as Record<DigitalType,TypeInfo>,
 };
 
+// ---- LED colours -----------------------------------------------------------
+// An LED's colour is its band gap, and its band gap is its forward voltage — so
+// these are not six paint options over one part. A red LED drops 1.8 V and a
+// blue one 3.0 V, which is why the same series resistor from the same supply
+// gives them different currents, and why a blue LED simply will not light from
+// two AA cells. Getting that wrong would teach the opposite of the thing a
+// simulator exists to show, so the colour picks the model, not just the pixels.
+type LedColor='red'|'amber'|'yellow'|'green'|'blue'|'white';
+const LED_N=2;                       // emission coefficient, typical for an LED
+const LED_VT=0.025852;               // thermal voltage at room temperature
+const LED_RATED=0.02;                // 20 mA — the current a datasheet quotes Vf at
+
+/** Saturation current that puts the knee at `vf` when 20 mA flows. */
+const ledIs=(vf:number)=>LED_RATED/Math.exp(vf/(LED_N*LED_VT));
+
+const LED_COLORS:Record<LedColor,{name:string; vf:number;
+  lit:[number,number,number]; off:[number,number,number]}>={
+  red:    {name:'Red',    vf:1.8, lit:[255, 70, 60],  off:[150, 62, 58]},
+  amber:  {name:'Amber',  vf:2.0, lit:[255,145, 40],  off:[150, 98, 46]},
+  yellow: {name:'Yellow', vf:2.1, lit:[255,214, 60],  off:[148,128, 56]},
+  green:  {name:'Green',  vf:2.2, lit:[ 70,230, 90],  off:[ 62,140, 74]},
+  blue:   {name:'Blue',   vf:3.0, lit:[ 80,155,255],  off:[ 64,102,150]},
+  white:  {name:'White',  vf:3.1, lit:[240,248,255],  off:[130,138,148]},
+};
+/** An LED saved before colours existed, or with a colour we no longer know,
+ *  is red — the colour a part bin gives you when you just ask for "an LED". */
+const ledColor=(c:Comp):LedColor=>
+  (c.color && c.color in LED_COLORS ? c.color : 'red') as LedColor;
+
+
 // ---- Digital co-simulation state -------------------------------------------
 // Kept beside the schematic rather than on it: this is simulation state, not
 // something the user drew, so it must not end up in a saved file or a shared
@@ -583,7 +614,13 @@ function toDevices(c:Comp,nodes:NodeId[],alloc:()=>NodeId):Component[]{
     case 'D': return [{id:c.id,type:'D',nodes:pair}];
     // An LED is a diode the renderer lights up. Electrically it is one, so it
     // shares the model rather than duplicating it.
-    case 'LED': return [{id:c.id,type:'D',nodes:pair}];
+    case 'LED': {
+      // The clamp has to clear the knee or Newton can never reach the LED's own
+      // operating point; the margin above it keeps the linearisation current
+      // finite without capping any realistic drive.
+      const vf=LED_COLORS[ledColor(c)].vf;
+      return [{id:c.id,type:'D',nodes:pair,Is:ledIs(vf),n:LED_N,vmax:vf+0.4}];
+    }
     // A filament lamp is a resistor that glows with the power it dissipates.
     case 'LAMP': return [{id:c.id,type:'R',nodes:pair,value}];
     case 'SW': case 'PB': case 'PBNC':
@@ -1984,12 +2021,18 @@ function drawComponent(c:Comp,nodeColor:NodeColor){
       // show almost nothing over most of the useful range.
       const i=running&&lastResult?(lastResult.current[c.id]||0):0;
       const lit=Math.max(0,Math.min(1,Math.log10(1+Math.abs(i)/1e-4)/2.6));
+      const hue=LED_COLORS[ledColor(c)];
+      const [lr,lg,lb]=hue.lit;
       if(lit>0.02){
         const g=ctx.createRadialGradient(mx,my,2,mx,my,20);
-        g.addColorStop(0,`rgba(255,120,60,${0.75*lit})`); g.addColorStop(1,'rgba(255,120,60,0)');
+        g.addColorStop(0,`rgba(${lr},${lg},${lb},${0.75*lit})`);
+        g.addColorStop(1,`rgba(${lr},${lg},${lb},0)`);
         ctx.fillStyle=g; ctx.beginPath(); ctx.arc(mx,my,20,0,7); ctx.fill();
       }
-      ctx.fillStyle=lit>0.02?`rgb(${Math.round(200+55*lit)},${Math.round(70+90*lit)},60)`:T.ink;
+      // A dark LED still shows its own colour, muted. Which lamp is the red one
+      // matters most while the circuit is stopped and you are still wiring it.
+      const body=hue.off.map((v,k)=>Math.round(v+(hue.lit[k]-v)*lit));
+      ctx.fillStyle=`rgb(${body[0]},${body[1]},${body[2]})`;
     }
     const t1=P(-6,7),t2=P(-6,-7),tip=P(6,0);
     ctx.beginPath(); ctx.moveTo(t1.x,t1.y); ctx.lineTo(t2.x,t2.y); ctx.lineTo(tip.x,tip.y); ctx.closePath(); ctx.fill();
@@ -3592,8 +3635,17 @@ function renderInspector(){
       not the product of two averages.</div></div>`;
   }
   if(sel.type==='LED'){
-    html+=`<div class="field"><div class="empty">A diode that lights with forward current. Add a series
-      resistor — a bare LED across a supply is a short.</div></div>`;
+    const cur=ledColor(sel);
+    html+=`<div class="field"><label>Colour — sets the forward voltage</label>
+      <div class="hues">${(Object.keys(LED_COLORS) as LedColor[]).map(k=>{
+        const h=LED_COLORS[k];
+        return `<button class="hue${k===cur?' on':''}" data-hue="${k}" type="button"
+          title="${h.name} — ${h.vf} V forward"
+          style="--hue:rgb(${h.lit[0]},${h.lit[1]},${h.lit[2]})"></button>`;
+      }).join('')}</div></div>
+      <div class="field"><div class="empty"><b>${LED_COLORS[cur].name}</b> drops about
+        <b>${LED_COLORS[cur].vf} V</b> when lit — the colour is the band gap, so it sets the
+        forward voltage. Add a series resistor; a bare LED across a supply is a short.</div></div>`;
   }
   if(sel.type==='CP'){
     html+=`<div class="field"><div class="empty">Polarized: the <b>+</b> plate must sit at the higher
@@ -3659,6 +3711,14 @@ function renderInspector(){
   bindNum('pinInput',v=>sel.pin=Math.max(0,Math.round(v)),{step:lin(1),show:plain});
   bindNum('l2Input',v=>sel.l2=Math.max(1e-12,v),{step:stepValue});
   bindNum('valInput2',v=>sel.value=Math.max(0,v),{step:stepValue});
+  body.querySelectorAll<HTMLButtonElement>('.hue').forEach(b=>
+    b.addEventListener('click',()=>{
+      sel.color=b.dataset.hue; commit();
+      // A different colour is a different diode, so the running solver needs the
+      // new model rather than just a repaint.
+      if(running) rebuildLive();
+      renderInspector(); draw();
+    }));
   const lb=document.getElementById('logicBtn');
   if(lb) lb.addEventListener('click',()=>{
     sel.on=!sel.on; commit(); if(running) syncValues(); renderInspector(); draw();
@@ -4910,6 +4970,9 @@ function applyAiCircuit(c:AiCircuit){
       comp.amp=p.amp??1; comp.freq=p.freq??1000; comp.off=p.off??0;
       if(p.type==='SQ') comp.duty=p.duty??0.5;
     }
+    // Anything unrecognised falls back to red in ledColor, so a colour the
+    // model invents costs a wrong hue rather than a broken part.
+    if(p.type==='LED'&&p.color) comp.color=p.color;
     return comp;
   });
   applyModel({v:1,comps,wires:c.wires.map(w=>({...w})),probes:[]});

@@ -40,6 +40,11 @@ const PART_SCHEMA = {
     freq: { type: 'number', description: 'VS and SQ only: frequency in Hz.' },
     off: { type: 'number', description: 'VS and SQ only: DC offset in volts.' },
     duty: { type: 'number', description: 'SQ only: duty cycle, 0 to 1.' },
+    color: {
+      type: 'string',
+      enum: ['red', 'amber', 'yellow', 'green', 'blue', 'white'],
+      description: 'LED only: which colour, which also sets its forward voltage.',
+    },
   },
   required: ['type', 'x', 'y', 'rot', 'value'],
   additionalProperties: false,
@@ -98,9 +103,14 @@ GEOMETRY — get this exactly right or the circuit will not connect:
 PART VALUES:
 - R ohms, C farads, L henries, V volts, I amps. D, LED, QN, QP, MN, MP, OA, GND,
   SW, PB and PBNC take value 0.
-- LED is a diode that lights — always give it a series resistor. LAMP is a
-  filament bulb; its value is its resistance in ohms. CP is a polarized
-  capacitor (value in farads); its first pin is the + plate.
+- LED is a diode that lights — always give it a series resistor. Set its
+  \`color\` to red, amber, yellow, green, blue or white; the default is red.
+  Colour is not decoration, it is the forward voltage: red 1.8 V, amber 2.0,
+  yellow 2.1, green 2.2, blue 3.0, white 3.1. Size the series resistor from the
+  colour you chose, R = (Vsupply - Vf) / 0.02 for about 20 mA, and remember a
+  blue or white LED needs a supply above 3 V to light at all.
+- LAMP is a filament bulb; its value is its resistance in ohms. CP is a
+  polarized capacitor (value in farads); its first pin is the + plate.
 - SW is a latching switch, PB a push button that is open until held, PBNC one
   that is closed until held. All three start in their resting state.
 - POT is a 3-pin potentiometer: value is the whole track in ohms, and its pins

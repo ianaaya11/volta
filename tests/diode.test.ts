@@ -59,3 +59,69 @@ describe('half-wave rectifier', () => {
     expect(trough).toBeGreaterThan(-0.01);   // negative half-cycle blocked
   });
 });
+
+// ---------------------------------------------------------------------------
+//  LEDs — the same equation with a much smaller saturation current
+// ---------------------------------------------------------------------------
+//  A red LED drops 1.8 V and a blue one 3.0 V, and that difference is the whole
+//  reason the colours exist as separate models rather than six paint options.
+//  Before this, every LED in Volta was a 0.7 V silicon diode wearing a colour,
+//  which gets a traffic light wrong in a way a student would be right to
+//  believe: it says a blue LED will happily run off two AA cells.
+//
+//  These mirror LED_COLORS in main.ts. If the constants there change, this
+//  fails, which is the point — the numbers are a claim about real parts.
+const LED_N = 2, LED_RATED = 0.02;
+const ledIs = (vf: number) => LED_RATED / Math.exp(vf / (LED_N * VT));
+const led = (vf: number) => ({
+  id: 'D1' as const, type: 'D' as const, nodes: [2, 0] as [number, number],
+  Is: ledIs(vf), n: LED_N, vmax: vf + 0.4,
+});
+
+/** supply -> series resistor -> LED -> ground */
+const litBy = (supply: number, r: number, vf: number) => new Circuit([
+  { id: 'V1', type: 'V', nodes: [1, 0], value: supply },
+  { id: 'R', type: 'R', nodes: [1, 2], value: r },
+  led(vf),
+]);
+
+describe('LED forward voltage tracks its colour', () => {
+  const COLOURS: [string, number][] = [
+    ['red', 1.8], ['amber', 2.0], ['yellow', 2.1],
+    ['green', 2.2], ['blue', 3.0], ['white', 3.1],
+  ];
+
+  it.each(COLOURS)('a %s LED at 20 mA sits at its rated %s V', (_name, vf) => {
+    // Pick the resistor that would deliver exactly 20 mA at the rated drop, so
+    // a correct model lands on the datasheet number.
+    const c = litBy(5, (5 - vf) / LED_RATED, vf);
+    const r = c.dc();
+    expect(r.nodeVoltage[2]).toBeCloseTo(vf, 2);
+    expect(r.current['D1']).toBeCloseTo(LED_RATED, 3);
+  });
+
+  it('separates red from blue on the same supply and resistor', () => {
+    const red = litBy(5, 220, 1.8).dc();
+    const blue = litBy(5, 220, 3.0).dc();
+    // Same circuit, different part: the blue one takes noticeably less current
+    // because more of the supply is spent crossing its junction.
+    expect(red.current['D1']).toBeGreaterThan(blue.current['D1'] * 1.5);
+    expect(blue.nodeVoltage[2] - red.nodeVoltage[2]).toBeCloseTo(1.2, 1);
+  });
+
+  it('will not light a blue LED from 2.5 V, but will light a red one', () => {
+    const blue = litBy(2.5, 220, 3.0).dc();
+    const red = litBy(2.5, 220, 1.8).dc();
+    expect(blue.current['D1']).toBeLessThan(1e-4);      // dark
+    expect(red.current['D1']).toBeGreaterThan(2e-3);    // clearly lit
+  });
+
+  it('still converges when driven hard, without the clamp capping it', () => {
+    // 5 V behind 10 R on a red LED is an abusive drive; the solver must reach a
+    // real operating point rather than parking on the linearisation clamp.
+    const r = litBy(5, 10, 1.8).dc();
+    expect(Number.isFinite(r.current['D1'])).toBe(true);
+    expect(r.nodeVoltage[2]).toBeGreaterThan(1.8);
+    expect(r.nodeVoltage[2]).toBeLessThan(2.2);
+  });
+});

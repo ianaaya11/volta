@@ -423,6 +423,14 @@
   .stepbtn:hover{background:var(--panel);border-color:var(--accent);color:var(--ink)}
   .stepbtn:active{background:var(--accent-soft);border-color:var(--accent)}
   @media (max-width:760px){ .stepbtn{flex-basis:44px} }
+  /* LED colour swatches. Round, because the thing being chosen is a lamp. */
+  .hues{display:flex;gap:8px;flex-wrap:wrap}
+  .hue{width:28px;height:28px;padding:0;border-radius:50%;cursor:pointer;
+    background:var(--hue);border:2px solid var(--line);
+    transition:transform .12s,border-color .12s,box-shadow .12s}
+  .hue:hover{transform:scale(1.12);border-color:var(--muted)}
+  .hue.on{border-color:var(--ink);box-shadow:0 0 0 3px var(--accent-soft)}
+  @media (max-width:760px){ .hue{width:34px;height:34px} }
   /* The Steady/Live switch sits on the Node voltages heading — next to the
      numbers it governs, rather than in a settings panel away from them. */
   .readhead{display:flex;align-items:center;justify-content:space-between;gap:8px}
