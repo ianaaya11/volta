@@ -1,82 +1,81 @@
 // The traffic light sequencer.
 //
-// A 4-bit counter free-runs to 15, so a three-phase cycle has to reset itself,
-// and the reset has to be decoded from BOTH bits — count 3 is Q0 AND Q1. Reset
-// on Q1 alone and the counter only ever reaches 1: red, amber, red, amber, and
-// green never appears at all. That is a mistake worth having a test for,
-// because the circuit still looks entirely reasonable on the schematic.
+// Two mistakes are baked into this circuit as things NOT to do, because an LLM
+// asked for a traffic light makes both of them and the schematic looks fine
+// either way:
+//
+//   The reset. CNT4 free-runs to 15, so the cycle has to reset itself, decoded
+//   from every bit high in the state it stops at. Decode count 3 as Q1 alone
+//   and the counter never passes 1 — red, amber, red, amber, no green.
+//
+//   The timing. One count per phase gives every phase the same length, which no
+//   real light has. Decoding RANGES off the counter's high bits costs no extra
+//   gates and gives red 4 ticks, green 4, amber 1.
+//
+// These assert on the solver rather than on pixels. A wire at 5 V is exactly as
+// red as a lit red LED, and earlier attempts to separate them by thresholding
+// canvas pixels reported the lamps permanently on, then permanently wrong.
 import { test, expect, type Page } from '@playwright/test';
 
-/** The three lamps sit in one column, six grid rows apart, and the example
- *  always loads at the same fit. If these ever drift the lamps simply never
- *  light and the test fails loudly, rather than measuring blank canvas. */
-const LAMPS = [
-  { name: 'red', x: 750, y: 192 },
-  { name: 'amber', x: 750, y: 300 },
-  { name: 'green', x: 750, y: 395 },
-];
-/** What follows what, forever. */
-const NEXT: Record<string, string> = { red: 'amber', amber: 'green', green: 'red' };
+test.setTimeout(60_000);
 
-/** How many pixels around a lamp are strongly its own colour.
- *
- *  A count, not a peak: a lit LED paints a filled glow disc of ~400 px, while
- *  the red-for-high-voltage wire running through the same box is a thin line
- *  worth a few dozen. Peak brightness cannot tell those apart; area can. */
-const litness = (page: Page) => page.evaluate((L) => L.map(l => {
-  const cv = document.getElementById('cv') as HTMLCanvasElement;
-  const r = cv.getBoundingClientRect();
-  const s = cv.width / r.width;                 // CSS px -> backing store px
-  const half = Math.round(30 * s);
-  const d = cv.getContext('2d')!
-    .getImageData(Math.round(l.x * s) - half, Math.round(l.y * s) - half, half * 2, half * 2).data;
-  let red = 0, amb = 0, grn = 0;
-  for (let i = 0; i < d.length; i += 4) {
-    const R = d[i], G = d[i + 1], B = d[i + 2];
-    if (R > 200 && G < 120 && B < 120) red++;
-    else if (R > 200 && G > 150 && B < 130) amb++;
-    else if (G > 170 && R < 150 && B < 150) grn++;
-  }
-  return [red, amb, grn];
-}), LAMPS);
+/** Which LEDs are passing real forward current, right now. */
+const litNow = (page: Page) => page.evaluate(() => {
+  const v = (window as unknown as { __volta: {
+    comps: () => { id: string; type: string; color?: string }[];
+    currents: () => Record<string, number>;
+  } }).__volta;
+  const hue = new Map(v.comps().filter(c => c.type === 'LED').map(c => [c.id, c.color ?? 'red']));
+  const cur = v.currents();
+  return [...hue].filter(([id]) => Math.abs(cur[id] ?? 0) > 1e-3).map(([, c]) => c);
+});
 
-test('the lamps take turns: red, amber, green, round again', async ({ page }) => {
+test('red, green, amber — in that order, and amber is the brief one', async ({ page }) => {
   await page.goto('/');
   await page.selectOption('#gallery', { label: 'Traffic light sequencer' });
   await page.click('#fitBtn');
   await page.click('#runBtn');
 
-  const ON = 200;                        // a lit glow measures ~400; nothing else comes close
-  const seen: string[] = [];
-  const everLit = new Set<string>();
+  // A full lap is 9 ticks at 1 Hz. Twenty seconds is two whole laps, which
+  // matters for the timing check below: the first and last phases are clipped
+  // by when sampling started and stopped, so only a second lap guarantees a
+  // complete run of every colour to measure.
+  const runs: [string, number][] = [];
+  for (let t = 0; t < 200; t++) {
+    await page.waitForTimeout(100);
+    const lit = await litNow(page);
 
-  // 1 Hz clock, three states: six seconds is two full laps whichever state the
-  // counter happens to be in when Run is pressed.
-  for (let t = 0; t < 40; t++) {
-    await page.waitForTimeout(150);
-    const counts = await litness(page);
-    const lit = LAMPS.map((l, i) => counts[i][i] > ON ? l.name : null).filter(Boolean) as string[];
-
-    // The decode is mutually exclusive by construction. Two lamps at once means
+    // The decode is mutually exclusive by construction; two lamps at once means
     // a gate is reading the wrong bit.
     expect(lit.length, `two lamps lit at t=${t}: ${lit}`).toBeLessThan(2);
-    if (lit.length) {
-      everLit.add(lit[0]);
-      if (seen[seen.length - 1] !== lit[0]) seen.push(lit[0]);
-    }
+    const now = lit[0] ?? '-';
+    if (runs.length && runs[runs.length - 1][0] === now) runs[runs.length - 1][1]++;
+    else runs.push([now, 1]);
   }
 
-  // The bit that fails when the reset is decoded from one bit instead of two:
-  // the counter never reaches 2, and green is never featured.
-  expect([...everLit].sort(), `only saw ${JSON.stringify(seen)}`)
-    .toEqual(['amber', 'green', 'red']);
+  const phases = runs.filter(([n]) => n !== '-');
+  const order = phases.map(([n]) => n);
+  expect(new Set(order), `only saw ${JSON.stringify(order)}`)
+    .toEqual(new Set(['red', 'green', 'yellow']));
 
-  // Two full laps, so this is a cycle and not a one-shot.
-  expect(seen.length, `sequence was ${JSON.stringify(seen)}`).toBeGreaterThanOrEqual(4);
+  // Round again, not a one-shot.
+  expect(order.length, `sequence was ${JSON.stringify(order)}`).toBeGreaterThanOrEqual(4);
 
-  // And they arrive in the right order, wherever the cycle was caught.
-  for (let i = 1; i < seen.length; i++) {
-    expect(seen[i], `after ${seen[i - 1]} came ${seen[i]} (${JSON.stringify(seen)})`)
-      .toBe(NEXT[seen[i - 1]]);
+  // The order a real light uses: amber belongs between green and red, never
+  // between red and green.
+  // 'yellow' is the LED's colour; 'amber' is what the phase is called.
+  const NEXT: Record<string, string> = { red: 'green', green: 'yellow', yellow: 'red' };
+  for (let i = 1; i < order.length; i++) {
+    expect(order[i], `after ${order[i - 1]} came ${order[i]} (${JSON.stringify(order)})`)
+      .toBe(NEXT[order[i - 1]]);
   }
+
+  // The timing. Only complete runs count — the first and last are clipped by
+  // when sampling started and stopped.
+  const whole = phases.slice(1, -1);
+  const longest = (n: string) =>
+    Math.max(...whole.filter(([p]) => p === n).map(([, k]) => k), 0);
+  expect(longest('yellow'), `phase lengths: ${JSON.stringify(whole)}`).toBeGreaterThan(0);
+  expect(longest('yellow') * 2).toBeLessThan(longest('red'));
+  expect(longest('yellow') * 2).toBeLessThan(longest('green'));
 });

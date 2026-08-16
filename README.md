@@ -183,12 +183,28 @@ amber and a green LED with resistors sized for each. There is a **Traffic light
 sequencer** in the examples menu if you want to see the whole thing working:
 a counter, four gates and three lamps stepping red, amber, green.
 
-The trap in that circuit, and the one an LLM reliably falls into, is the reset.
-`CNT4` free-runs to 15, so a three-phase cycle has to reset itself — and the
-reset must be decoded from **both** bits, `Q0 AND Q1` for count 3. Decode it
-from `Q1` alone and the counter only ever reaches 1: red, amber, red, amber, and
-green never appears. The schematic looks perfectly reasonable either way, which
-is why `e2e/traffic.spec.ts` watches the lamps actually take turns. An LED saved before this
+Two traps live in that circuit, and an LLM asked for a traffic light falls into
+both. The schematic looks perfectly reasonable either way, which is why
+`e2e/traffic.spec.ts` watches the lamps actually take turns.
+
+**The reset.** `CNT4` free-runs to 15, so the cycle has to reset itself — decoded
+from *every* bit high in the state it stops at. Decode it from one bit when two
+are high and the counter never gets past that state, so the phases after it are
+dead and their lamps never light.
+
+**The timing.** One count per phase makes every phase the same length, which no
+real light has. Decode *ranges* off the counter's high bits instead — a bit
+boundary already is a range, so it costs no extra gates:
+
+| count | Q3 Q2 | lamp | ticks | decode |
+|---|---|---|---|---|
+| 0–3 | 0 0 | red | 4 | `nQ3 AND nQ2` |
+| 4–7 | 0 1 | green | 4 | `nQ3 AND Q2` |
+| 8 | 1 0 | amber | 1 | `Q3` — no gate needed |
+| 9 | 1 0 | reset | — | `Q3 AND Q0`, async, never seen |
+
+At the default 1 Hz that is 4 s red, 4 s green, 1 s amber. Select the clock and
+change its frequency to run the whole cycle faster or slower. An LED saved before this
 existed, or built without naming a colour, is red.
 
 ## Reading the numbers while it runs

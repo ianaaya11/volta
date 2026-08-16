@@ -4501,75 +4501,81 @@ function loadXfmr(){
 // The digital library end to end: a clock drives a counter and the counter
 // drives a display, so you can watch it count 0–F and wrap.
 // A three-phase sequencer: the circuit behind a traffic light, and the thing an
-// LLM reliably gets wrong. The trap is the reset. A 4-bit counter free-runs to
-// 15, so a 3-state cycle has to reset itself — and it must reset on 3, decoded
-// as Q0 AND Q1. Resetting on Q1 alone makes it count 0,1 and nothing else,
-// which lights red and amber forever and never green. That is exactly the
-// failure this example exists to make visible.
+// LLM reliably gets wrong twice over — the reset, and the timing.
 //
-//   count  Q1 Q0   lamp
-//     0     0  0   red     = nQ1 AND nQ0
-//     1     0  1   amber   = nQ1 AND  Q0
-//     2     1  0   green   =  Q1 AND nQ0
-//     3     1  1   reset   =  Q1 AND  Q0   (asynchronous, so never seen)
+// THE RESET. CNT4 free-runs to 15, so the cycle has to reset itself, decoded
+// from every bit that is high in the state you stop at. Miss one and the
+// counter never reaches the states after it, and those lamps simply never
+// light.
 //
-// The two counter bits and their inverses fan out on four vertical buses, each
-// SPLIT at every tap: wires join at endpoints, so a run that merely passes over
-// a junction does not connect to it.
+// THE TIMING. Decoding one count per phase gives every phase the same length,
+// which no real light has: amber is a glance, red and green are a wait. Decode
+// RANGES instead, and the counter's high bits hand them to you for free —
+// a bit boundary IS a range, so no extra gates are needed:
+//
+//   count  Q3 Q2   lamp      how long
+//   0..3    0  0   red       4 ticks   = nQ3 AND nQ2
+//   4..7    0  1   green     4 ticks   = nQ3 AND  Q2
+//   8       1  0   amber     1 tick    =  Q3
+//   9       1  0   reset     -         =  Q3 AND  Q0   (async, never seen)
+//
+// Which also puts the phases in the order a real light uses: red, green, amber,
+// red. Amber belongs between green and red, not between red and green.
+//
+// At the default 1 Hz that is 4 s red, 4 s green, 1 s amber. Select the clock
+// and change its frequency to run the whole cycle faster or slower.
 function loadTraffic(){
   comps=[]; wires=[]; uid=1;
   const C=(o:Comp)=>comps.push(o);
   const W=(x1:number,y1:number,x2:number,y2:number)=>wires.push({x1,y1,x2,y2});
 
-  C({id:'LOGIC'+(uid++),type:'LOGIC',x:2,y:3,rot:0,value:1});       // 1 Hz clock
-  C({id:'CNT4'+(uid++),type:'CNT4',x:6,y:4,rot:0});                 // CLK(6,3) RST(6,5) Q0(12,1) Q1(12,3)
+  C({id:'LOGIC'+(uid++),type:'LOGIC',x:2,y:3,rot:0,value:1});     // 1 Hz clock
+  C({id:'CNT4'+(uid++),type:'CNT4',x:6,y:4,rot:0});               // CLK(6,3) RST(6,5) Q0(12,1) Q2(12,5) Q3(12,7)
   W(2,3,6,3);
 
-  // Q0 and Q1 out to their buses, and an inverter for each.
-  W(12,1,14,1);  W(14,1,20,1);
-  W(12,3,16,3);
-  C({id:'NOT'+(uid++),type:'NOT',x:20,y:1,rot:0});                  // A(20,1) Q(24,1) = nQ0
-  C({id:'NOT'+(uid++),type:'NOT',x:20,y:5,rot:0});                  // A(20,5) Q(24,5) = nQ1
-  W(16,5,20,5);
-  W(24,1,26,1);
-  W(24,5,28,5);
+  // Counter bits out to their own vertical buses.
+  W(12,1,14,1);   // Q0
+  W(12,5,16,5);   // Q2
+  W(12,7,18,7);   // Q3
 
-  // Vertical buses, split at every tap point.
-  W(14,1,14,15);  W(14,15,14,27);      // Q0  down x=14
-  W(16,3,16,5);   W(16,5,16,21);  W(16,21,16,29);   // Q1  down x=16
-  W(26,1,26,9);   W(26,9,26,23);       // nQ0 down x=26
-  W(28,5,28,11);  W(28,11,28,17);      // nQ1 down x=28
+  // One inverter per bit that needs one, reused by every gate downstream.
+  C({id:'NOT'+(uid++),type:'NOT',x:20,y:5,rot:0});   // A(20,5) Q(24,5) = nQ2
+  C({id:'NOT'+(uid++),type:'NOT',x:20,y:9,rot:0});   // A(20,9) Q(24,9) = nQ3
+  W(16,5,20,5);  W(18,9,20,9);
+  W(24,5,26,5);  W(24,9,28,9);
+
+  // Buses, SPLIT at every tap: wires join at endpoints, so a run that merely
+  // passes over a junction does not connect to it. Crossings are safe.
+  W(14,1,14,29);                                  // Q0
+  W(16,5,16,23);                                  // Q2
+  W(18,7,18,9);  W(18,9,18,18);  W(18,18,18,31);  // Q3
+  W(26,5,26,11);                                  // nQ2
+  W(28,9,28,13); W(28,13,28,25);                  // nQ3
 
   // Decode. Gates are 4 wide: A(x,y-1) B(x,y+1) Q(x+4,y).
-  const lamp:[string,number,LedColor,number,number][]=[
-    ['RED',   10, 'red',    26,  28],   // nQ0 & nQ1
-    ['AMBER', 16, 'yellow', 14,  28],   //  Q0 & nQ1
-    ['GREEN', 22, 'green',  16,  26],   //  Q1 & nQ0
-  ];
-  for(const [,y,hue,busA,busB] of lamp){
-    C({id:'AND'+(uid++),type:'AND',x:32,y,rot:0});
-    W(busA,y-1,32,y-1);
-    W(busB,y+1,32,y+1);
-    // Gate output -> series resistor -> LED -> ground. 150 R gives ~20 mA from
-    // the 5 V a digital output drives, for every colour here.
-    W(36,y,38,y);
+  C({id:'AND'+(uid++),type:'AND',x:32,y:12,rot:0});   // red   = nQ2 & nQ3
+  W(26,11,32,11); W(28,13,32,13);
+  C({id:'AND'+(uid++),type:'AND',x:32,y:24,rot:0});   // green =  Q2 & nQ3
+  W(16,23,32,23); W(28,25,32,25);
+
+  // Lamps. Amber needs no gate at all — Q3 is only high for its one count.
+  const lamp:[number,LedColor,number][]=[[12,'red',36],[18,'yellow',18],[24,'green',36]];
+  for(const [y,hue,from] of lamp){
+    W(from,y,38,y);
     C({id:'R'+(uid++),type:'R',x:38,y,rot:0,value:150});
     W(40,y,42,y);
     C({id:'LED'+(uid++),type:'LED',x:42,y,rot:0,color:hue});
     W(44,y,46,y);
     C({id:'GND'+(uid++),type:'GND',x:46,y});
   }
-
-  // The reset: count 3 decoded straight back to RST. Async, so state 3 lasts a
-  // single timestep and is never seen — the lamps just step 0,1,2,0,1,2.
-  C({id:'AND'+(uid++),type:'AND',x:32,y:28,rot:0});
-  W(14,27,32,27);
-  W(16,29,32,29);
-  W(36,28,36,32); W(36,32,4,32); W(4,32,4,5); W(4,5,6,5);
+  // Reset on count 9, straight back to RST.
+  C({id:'AND'+(uid++),type:'AND',x:32,y:30,rot:0});
+  W(14,29,32,29); W(18,31,32,31);
+  W(36,30,36,34); W(36,34,4,34); W(4,34,4,5); W(4,5,6,5);
 
   selected=null; refreshMeta(); renderInspector(); fitView(); draw();
-  flashHint('Press <b>Run</b>: the counter steps 0-1-2 and back, lighting '
-    +'<b>red</b>, <b>amber</b>, <b>green</b> in turn. Count 3 resets it instantly.');
+  flashHint('Press <b>Run</b>: <b>red</b> 4 s, <b>green</b> 4 s, <b>amber</b> 1 s, round again. '
+    +'Select the clock to change how fast the whole cycle runs.');
 }
 
 function loadCounter(){
@@ -5468,3 +5474,19 @@ fitView();                      // frame whatever we loaded rather than strandin
 // The circuit we boot with is the baseline: undo can't rewind past it.
 historyPrev=snapshot();
 updateHistoryButtons();
+
+// ---- A read-only window onto the running model, for the e2e suite ----------
+// Reading pixels is the honest way to test what the USER sees, and several
+// tests rightly do that. It is a terrible way to test what the SOLVER computed:
+// a wire at 5 V is exactly as red as a lit red LED, and a lamp's glow is the
+// same colour as its body. Tests that tried to tell those apart by thresholding
+// pixels were the least reliable thing in this repo.
+//
+// So: copies out, nothing in. Nothing here can change the circuit, and the app
+// never reads it back.
+(window as unknown as { __volta: unknown }).__volta = {
+  comps: () => comps.map(c => ({ ...c })),
+  currents: () => ({ ...(lastResult?.current ?? {}) }),
+  nodes: () => ({ ...(lastResult?.nodeVoltage ?? {}) }),
+  running: () => running,
+};
