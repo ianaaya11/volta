@@ -448,6 +448,32 @@
   .pcbtable td:first-child{color:var(--ink);font-weight:600;white-space:nowrap}
   .t-behavioural{color:var(--warn,#c2761a);white-space:nowrap}
   .t-dropped,.t-bench{white-space:nowrap}
+  /* Breadboard view. A full view rather than a panel: a board is 30 columns
+     wide and cramming it into the scope strip would make it unreadable, which
+     defeats the point of drawing it at all. */
+  #bbView{position:fixed;inset:0;background:var(--bg);z-index:44;display:flex;
+    flex-direction:column;overflow:hidden}
+  #bbView[hidden]{display:none}
+  .bbstatus{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .bbwrap{flex:1;display:grid;grid-template-columns:1fr 300px;gap:18px;
+    padding:18px;overflow:auto;align-items:start}
+  /* The global `canvas` rule absolutely positions every canvas so the editor's
+     fills its pane. This one is a document, laid out in a grid, so it has to
+     opt back into normal flow — without which it leaves the grid entirely and
+     the side panel slides into its column. */
+  #bbCanvas{position:static;max-width:100%;touch-action:auto}
+  .bbside{background:var(--panel);border:1px solid var(--line);
+    border-radius:var(--r-md);padding:14px;position:sticky;top:0;
+    max-height:calc(100vh - 120px);overflow-y:auto}
+  .bbside h3{margin:0 0 10px;font-size:10px;text-transform:uppercase;
+    letter-spacing:.07em;font-weight:600;color:var(--faint)}
+  .bbside h3+*{margin-bottom:16px}
+  .bblist{margin:0 0 16px;padding-left:20px;font-size:12.5px;line-height:1.7}
+  .bblist li{color:var(--muted)}
+  .bblist b{color:var(--ink);font-weight:600}
+  .bblist span{font-variant-numeric:tabular-nums}
+  @media (max-width:900px){ .bbwrap{grid-template-columns:1fr}
+    .bbside{position:static;max-height:none} }
   /* The Steady/Live switch sits on the Node voltages heading — next to the
      numbers it governs, rather than in a settings panel away from them. */
   .readhead{display:flex;align-items:center;justify-content:space-between;gap:8px}

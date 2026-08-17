@@ -41,6 +41,10 @@ export interface ExportPart {
   amp?: number;
   freq?: number;
   color?: string;
+  /** Where it sits on the schematic. The breadboard lays parts out in this
+   *  order, so the board reads the way the drawing does. */
+  x?: number;
+  y?: number;
   nodes: number[];
 }
 

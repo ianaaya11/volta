@@ -207,6 +207,34 @@ At the default 1 Hz that is 4 s red, 4 s green, 1 s amber. Select the clock and
 change its frequency to run the whole cycle faster or slower. An LED saved before this
 existed, or built without naming a colour, is red.
 
+## Building it on a breadboard
+
+The toolbar's **breadboard icon** shows the circuit you have simulated as
+something to build: which hole every leg goes in, which jumpers to run, and what
+belongs on the bench instead of on the board.
+
+A breadboard is electrically almost nothing — five holes in a bank are one node,
+the channel keeps the two banks apart, two rails run the length — and that
+simplicity is what makes this trustworthy. **Every layout is read back off the
+board and compared to the netlist it came from.** Follow the spring clips, group
+the pins that end up sharing a node, and if that partition is not exactly the
+circuit you drew, the layout is wrong and it is refused rather than drawn. A
+wrong breadboard picture gets followed hole by hole by somebody who trusts it.
+
+Placement is heuristics and always will be, so it is fuzzed: 300 random circuits
+per run, checked for the round trip, for legs that would not reach, for a part
+shorting itself, and for two legs sent to one hole. That last one is invisible
+to the round trip — five holes in a strip really are one node — and completely
+unbuildable, which is exactly how it survived the first version of the suite.
+
+Ground goes to a rail, a supply becomes flying leads, meters clip on where you
+want them. Parts Volta only models behaviourally — gates, counters, the ideal
+op-amp — are refused with a reason: a breadboard needs a physical chip, and
+Volta was never told which one.
+
+Analog circuits breadboard well today. Digital needs the chip mapping that the
+PCB export also stops short of.
+
 ## Taking a circuit to a PCB
 
 Volta simulates; it does not lay out boards. What it does have is the thing a

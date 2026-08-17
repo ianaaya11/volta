@@ -2,6 +2,8 @@ import { Circuit } from './engine';
 import type { Component, NodeId, Pair, Quad, Solution, SolveTrace, Triple } from './engine';
 import { fmt, parseVal, stepValue } from './format';
 import { toKicad, type ExportPart } from './netlist';
+import { layout as bbLayout, type Hole as BbHole, type Layout as BbLayout,
+         type Row as BbRow } from './breadboard';
 // The assistant module pulls in the Anthropic SDK, which is several times the
 // size of the whole app. It is imported dynamically at the point of use so the
 // offline PWA doesn't pay for it on every load — only `import type` here, which
@@ -4766,7 +4768,7 @@ function saveFile(){
 function exportParts():ExportPart[]{
   const net=buildNetlist();
   return comps.map(c=>({
-    id:c.id, type:c.type, value:c.value, amp:c.amp, freq:c.freq, color:c.color,
+    id:c.id, type:c.type, value:c.value, amp:c.amp, freq:c.freq, color:c.color, x:c.x, y:c.y,
     nodes:pinsOf(c).map(p=>net.nodeOf(p.x,p.y)),
   }));
 }
@@ -5540,3 +5542,124 @@ updateHistoryButtons();
   nodes: () => ({ ...(lastResult?.nodeVoltage ?? {}) }),
   running: () => running,
 };
+
+// ===========================================================================
+//  BREADBOARD VIEW — the circuit as something to build
+// ===========================================================================
+//  The layout itself is computed and verified in breadboard.ts. Everything here
+//  is paint. If the verifier came back with problems, this refuses to draw them
+//  and says so instead: a wrong breadboard picture is followed hole by hole by
+//  someone who trusts it, which is a worse failure than no picture at all.
+{
+  const view=el('bbView'), cv=el('bbCanvas') as HTMLCanvasElement;
+  const PITCH=22, R=3.1;                       // hole spacing and radius, px
+
+  const holeXY=(h:BbHole,x0:number,y0:number)=>{
+    const cx=x0+(h.col-1)*PITCH;
+    const rows:Record<string,number>=
+      {'+':0,'-':1,A:3,B:4,C:5,D:6,E:7,F:9,G:10,H:11,I:12,J:13};
+    return {x:cx,y:y0+rows[h.row]*PITCH};
+  };
+
+  function paint(l:BbLayout){
+    const dpr=Math.min(window.devicePixelRatio||1,2);
+    const w=Math.min(l.cols*PITCH+80, 1600), h=15*PITCH+60;
+    cv.width=w*dpr; cv.height=h*dpr; cv.style.width=w+'px'; cv.style.height=h+'px';
+    const g=cv.getContext('2d')!; g.setTransform(dpr,0,0,dpr,0,0);
+    g.clearRect(0,0,w,h);
+    const x0=40, y0=30;
+
+    // The board itself.
+    g.fillStyle=T.panelBg; g.strokeStyle=T.panelLine; g.lineWidth=1;
+    g.beginPath(); g.roundRect(16,16,w-32,h-32,8); g.fill(); g.stroke();
+    // The channel down the middle is the whole reason a DIP works, so draw it.
+    g.fillStyle=T.gridMinor;
+    g.fillRect(24,holeXY({col:1,row:'F'},x0,y0).y-PITCH+4,w-48,PITCH-8);
+
+    // Rails.
+    for(const [row,col] of [['+', '#d05050'],['-', '#4a6fd0']] as const){
+      const y=holeXY({col:1,row:row as BbRow},x0,y0).y;
+      g.strokeStyle=col; g.lineWidth=1.5; g.globalAlpha=.55;
+      g.beginPath(); g.moveTo(x0-14,y); g.lineTo(x0+(l.cols-1)*PITCH+14,y); g.stroke();
+      g.globalAlpha=1;
+    }
+
+    // Holes.
+    g.fillStyle=T.label;
+    for(const row of ['+','-','A','B','C','D','E','F','G','H','I','J'] as BbRow[]){
+      for(let c=1;c<=l.cols;c++){
+        const {x,y}=holeXY({col:c,row},x0,y0);
+        g.beginPath(); g.arc(x,y,R,0,7); g.fill();
+      }
+    }
+    // Column numbers every five, as a real board marks them.
+    g.fillStyle=T.label; g.font='10px ui-sans-serif,system-ui'; g.textAlign='center';
+    for(let c=5;c<=l.cols;c+=5){
+      const {x}=holeXY({col:c,row:'A'},x0,y0);
+      g.fillText(String(c),x,holeXY({col:c,row:'A'},x0,y0).y-PITCH*0.7);
+    }
+
+    // Jumpers, drawn as arcs so they read as wire rather than as another part.
+    g.strokeStyle=T.accent; g.lineWidth=2.4; g.lineCap='round';
+    for(const j of l.jumpers){
+      const a=holeXY(j.from,x0,y0), b=holeXY(j.to,x0,y0);
+      g.beginPath(); g.moveTo(a.x,a.y);
+      g.quadraticCurveTo((a.x+b.x)/2,Math.max(a.y,b.y)+16,b.x,b.y); g.stroke();
+    }
+
+    // Parts.
+    g.textAlign='center'; g.lineCap='butt';
+    for(const p of l.parts){
+      const pts=p.holes.map(hh=>holeXY(hh,x0,y0));
+      g.strokeStyle=T.ink; g.lineWidth=1.6;
+      g.beginPath(); pts.forEach((q,i)=>i?g.lineTo(q.x,q.y):g.moveTo(q.x,q.y)); g.stroke();
+      const a=pts[0], b=pts[pts.length-1];
+      const mx=(a.x+b.x)/2, my=(a.y+b.y)/2;
+      // The body sits ALONG the leads, not across them. A capacitor dropping
+      // from a column to the rail is a vertical part, and drawing it as a
+      // horizontal box is the sort of picture somebody builds wrong.
+      const ang=Math.atan2(b.y-a.y,b.x-a.x);
+      const len=Math.max(24,Math.hypot(b.x-a.x,b.y-a.y)-16);
+      const isLed=p.type==='LED';
+      g.save(); g.translate(mx,my); g.rotate(ang);
+      g.fillStyle=isLed?'#e0533f':T.body; g.strokeStyle=T.ink; g.lineWidth=1.4;
+      g.beginPath(); g.roundRect(-len/2,-8,len,16,4); g.fill(); g.stroke();
+      if(Math.abs(ang)>Math.PI/2) g.rotate(Math.PI);   // keep the label upright
+      g.fillStyle=isLed?'#fff':T.ink; g.font='600 10px ui-sans-serif,system-ui';
+      g.textAlign='center'; g.fillText(p.label,0,3.5);
+      g.restore();
+    }
+  }
+
+  function openBb(){
+    const parts=exportParts();
+    const {layout:l,problems}=bbLayout(parts);
+    const side=el('bbSide');
+    if(problems.length){
+      // Refuse rather than mislead. This is a bug in the placer, not the user's
+      // circuit, and saying so is the difference between a report and a blame.
+      el('bbStatus').textContent='Could not lay this out';
+      side.innerHTML=`<h3>Something is wrong</h3><p class="empty">The layout did not
+        match your circuit, so it has not been drawn — following it would build the
+        wrong thing. This is a fault in Volta, not in your schematic.</p>
+        <ul class="pcbwarn">${problems.slice(0,6).map(w=>`<li>${escapeHtml(w)}</li>`).join('')}</ul>`;
+      cv.width=0; cv.height=0;
+    } else {
+      el('bbStatus').textContent=
+        `${l.parts.length} part${l.parts.length===1?'':'s'} · ${l.jumpers.length} jumper${l.jumpers.length===1?'':'s'}`;
+      paint(l);
+      side.innerHTML=
+        `<h3>On the board</h3><ol class="bblist">${l.parts.map(p=>{
+          const where=p.holes.map(hh=>hh.row==='+'?'+ rail':hh.row==='-'?'− rail':`${hh.col}${hh.row}`).join(' → ');
+          return `<li><b>${escapeHtml(p.label)}</b> <span>${escapeHtml(where)}</span></li>`;
+        }).join('')}</ol>`
+        +(l.jumpers.length?`<h3>Jumpers</h3><ol class="bblist">${l.jumpers.map(j=>
+          `<li><span>${j.from.col}${j.from.row} → ${j.to.col}${j.to.row}</span></li>`).join('')}</ol>`:'')
+        +(l.offBoard.length?`<h3>Not on the board</h3><ul class="pcbwarn">${l.offBoard.map(o=>
+          `<li><b>${escapeHtml(o.id)}</b> — ${escapeHtml(o.why)}</li>`).join('')}</ul>`:'');
+    }
+    view.hidden=false;
+  }
+  el('bbBtn').onclick=openBb;
+  el('bbClose').onclick=()=>{ view.hidden=true; };
+}
