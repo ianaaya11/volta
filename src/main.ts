@@ -5484,13 +5484,15 @@ function openLegal(which:'terms'|'privacy'){
     if(e.key==='Escape'&&!about.hidden) closeAbout();
   });
 
-  // About is the landing page. Two exceptions, both cases where showing it
-  // would be in the way rather than a welcome: a shared-circuit link, which
-  // someone followed to see a specific circuit, and a return visit — once you
-  // have been into the editor, the toolbar button is the way back.
-  let seen=false;
-  try{ seen=localStorage.getItem(SEEN)==='1'; }catch{}
-  if(!seen&&!location.hash) openAbout();
+  // The editor is the landing page. About used to be, on the reasoning that a
+  // stranger deserves to know what they have opened before being handed a
+  // canvas — but the people this is being tested with arrive knowing exactly
+  // what it is, and a page they have to dismiss is a page in the way. About is
+  // one toolbar button away, and #about opens it directly for anyone linking to
+  // it. The seen-flag is left in place: it costs nothing and it means turning
+  // the welcome back on is a one-line change rather than an archaeology
+  // exercise.
+  if(location.hash==='#about') openAbout();
 }
 
 if(community.configured){
