@@ -207,6 +207,38 @@ At the default 1 Hz that is 4 s red, 4 s green, 1 s amber. Select the clock and
 change its frequency to run the whole cycle faster or slower. An LED saved before this
 existed, or built without naming a colour, is red.
 
+## Embedding Volta in another site
+
+Volta is a static site with nothing to install, so another platform integrates it
+by pointing an iframe at the deployed URL:
+
+```html
+<iframe src="https://ianaaya11.github.io/volta/"
+        style="width:100%;height:80vh;border:0"
+        title="Volta circuit simulator"></iframe>
+```
+
+Nothing is served that forbids framing, and because they embed the **URL rather
+than a copy**, every deploy reaches their students immediately — there is no
+build for them to re-upload and no version for them to fall behind on. That is
+the whole reason to integrate this way round.
+
+`e2e/embed.spec.ts` holds it up as a supported configuration: the editor loads
+inside a genuinely cross-origin frame, simulates, keeps its storage, and lands on
+the canvas rather than a page about itself. Embedded failures surface on somebody
+else's site, where nobody thinks to look at us, so they need a test here.
+
+Two things worth telling an integrator:
+
+- **Storage is partitioned, not shared.** Saved circuits, theme and the assistant
+  key live per embedding site, which is what browsers do with third-party storage
+  and is usually what you want. Stricter privacy settings can block it outright,
+  in which case the editor still works but forgets between visits.
+- **Accounts inside a frame are the weak spot.** The commons and the served AI
+  assistant both need a signed-in Supabase session, and third-party auth in an
+  iframe is exactly what browser storage policy is tightening against. If those
+  matter to the integration, open Volta in a tab for sign-in rather than a frame.
+
 ## Building it on a breadboard
 
 The toolbar's **breadboard icon** shows the circuit you have simulated as
